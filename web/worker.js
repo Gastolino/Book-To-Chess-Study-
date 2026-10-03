@@ -34,7 +34,7 @@ onmessage = async (event) => {
       const html = driver.process(path, say, msg.selection || null);
       postMessage({ type: "index", html, seconds: (performance.now() - t0) / 1000 });
     } else if (msg.type === "chapter") {
-      const html = driver.chapter(msg.name, say);
+      const html = driver.chapter(msg.name, say, !!msg.small);
       postMessage({ type: "page", name: msg.name, hash: msg.hash || "", html });
     } else if (msg.type === "index") {
       postMessage({ type: "page", name: "index.html", hash: msg.hash || "", html: driver.index() });
