@@ -93,7 +93,7 @@ import re
 import sys
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -102,8 +102,9 @@ import pymupdf
 
 from . import pdftext as pt
 from . import selection as sel
-from .movetext import GlyphModel, clean_run, decode, find_sequences
-from .movetext import LETTER_SETS, FIGURINES, _strip_suffix
+from .movetext import GlyphModel, clean_run, decode, find_sequences, numbering_counts
+from .movetext import DOTLESS_MIN, DOTLESS_SHARE
+from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -150,6 +151,8 @@ _SETUP_RE = re.compile(r"\b(?:White|Black)\s*[:(]", re.I)
 _SENTENCE_END_RE = re.compile(r"(?:[^\W\d_]{2}[.!?]|;)\s|[.!?]\s+(?=[A-Z][a-z]+ )")
 _REAL_WORD_RE = re.compile(r"^[^\W\d_]{2,}")
 _BARE_NUMBER_RE = re.compile(r"^[0-9lIO]{1,3}$")
+_NUMBER_LINE_RE = re.compile(r"^[0-9lIOS]{1,3}(?: [0-9lIOS])?(?: ?[.…•·]+)*$")
+_DOTS_RE = re.compile(r"^[.…•·]+$")
 _RESULT_NORM = {"1-0": "1-0", "l-0": "1-0", "1:0": "1-0", "0-1": "0-1", "0-l": "0-1",
                 "0:1": "0-1"}
 
@@ -160,6 +163,25 @@ def _ply(tok):
     if tok.number is None:
         return None
     return (tok.number - 1) * 2 + int(bool(tok.black))
+
+
+def _renumbered(run, ply):
+    """The run read with the first move number that ply implies, when the
+    number as printed can be read that way (OCR's "s" stands for 5 as well
+    as 8; "l" for 1 as well as 7), else None."""
+    first = run.tokens[0]
+    if first.kind != "number" or first.number is None or ply is None:
+        return None
+    n, black = ply // 2 + 1, bool(ply % 2)
+    if n == first.number or n not in _number_values(first):
+        return None
+    if first.side_known and bool(first.black) != black:
+        return None
+    toks = list(run.tokens)
+    _relabel(toks, n, black)
+    moves = [t for t in toks if t.kind == "move"]
+    return _Run(run.kind, toks, moves, run.start, run.end, run.depth, _ply(moves[0]), run.result,
+                run.home, run.context)
 
 
 def _ply_label(ply):
@@ -596,8 +618,10 @@ def _fit(decs):
 
 
 class _Builder:
-    def __init__(self, doc, fonts, chapters, diagrams, selection, decoder, diagram_fens=None):
+    def __init__(self, doc, fonts, chapters, diagrams, selection, decoder, diagram_fens=None,
+                 dotless=False):
         self.doc, self.fonts, self.chapters = doc, fonts, chapters
+        self.dotless = dotless          # the book prints move numbers without a dot
         self.diagrams = diagrams
         self.selection = selection
         self.dec = decoder
@@ -674,7 +698,11 @@ class _Builder:
             else:
                 out.append(None)
         # A word in neither font (dots set in a symbol font: "1 • • • Re6+!")
-        # goes with the word before it, or else the word after it.
+        # goes with the word before it, or else the word after it; a plain word
+        # of prose in a third font (OCR fonts set body text in many) is a note.
+        for i, c in enumerate(out):
+            if c is None and len(words[i]) >= 2 and words[i].isalpha() and not _shape(words[i]):
+                out[i] = "n"
         for i, c in enumerate(out):
             if c is None:
                 before = next((out[j] for j in range(i - 1, -1, -1) if out[j]), None)
@@ -732,13 +760,20 @@ class _Builder:
             dpos = self.diagram_positions(p, lines)
             by_line = defaultdict(list)
             for did, k in dpos.items():
+                # a margin icon or a drawing that the selection leaves out is no
+                # position for a line to start from
+                if self.kinds.get(did) in ("icon", "illustration") and \
+                        not self.selection.diagram_selected(did):
+                    continue
                 by_line[k].append(did)
             st.event("page", p)
-            prev = None
+            prev = prev_classes = None
             for k, ln in enumerate(lines):
                 for did in sorted(by_line.get(k, []), key=sel.id_key):
                     st.event("diagram", did)
                 role = ln["role"]
+                if role == "label" and self.move_number_label(lines, k):
+                    role = "text"
                 if role in ("head", "coord", "blank", "label"):
                     continue
                 if role in ("heading", "game_header", "caption"):
@@ -746,6 +781,9 @@ class _Builder:
                     prev = None
                     continue
                 classes = self.word_classes(ln)
+                if prev is not None and prev_classes:
+                    self.number_line_move(prev, prev_classes, ln, classes)
+                prev_classes = classes
                 text = ln["text"]
                 mask = 0
                 para = self.para_start(p, ln, prev)
@@ -781,6 +819,35 @@ class _Builder:
                 st.event("diagram", did)
         st.finish()
         return st
+
+    def move_number_label(self, lines, k):
+        """True when a number taken for a diagram's label is a move number set
+        in the move font on a line of its own, with the move on the next line
+        ("16" / "tLlb2!!" beside a board)."""
+        ln = lines[k]
+        if not self.moves_font or not _BARE_NUMBER_RE.match(ln["text"]) or k + 1 >= len(lines):
+            return False
+        if not all(s["role"] == "moves" for s in ln["spans"] if s["text"].strip()):
+            return False
+        nxt = lines[k + 1]
+        return (nxt["role"] in ("moves", "text") and nxt["col"] == ln["col"]
+                and bool(_shape(nxt["text"].split(" ")[0])))
+
+    @staticmethod
+    def number_line_move(prev, prev_classes, ln, classes):
+        """Moves set as a narrow table: a move number in the move font alone on
+        its line, the move on the next line ("12" / "ttJxd5"). OCR fonts often
+        set that move in another font; it belongs to the main line all the
+        same, as do the moves that follow it on its line."""
+        if (prev["col"] != ln["col"] or not all(c == "m" for c in prev_classes)
+                or not _NUMBER_LINE_RE.match(prev["text"])):
+            return
+        for k, w in enumerate(ln["text"].split(" ")):
+            if classes[k] == "m":
+                continue
+            if not (_shape(w) or _DOTS_RE.match(w)):
+                break
+            classes[k] = "m"
 
     def centred(self, page, ln):
         edges = self.column_edges(page, ln["col"])
@@ -821,9 +888,9 @@ class _Builder:
                     continue
                 # the main-font text holds moves only, so junk standing where
                 # the numbering expects a move is kept as an unreadable move
-                for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font):
-                    toks = [t.__class__(t.kind, t.raw, t.start + a, t.end + a, t.number, t.black,
-                                        t.side_known, t.layout) for t in s.tokens]
+                for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font,
+                                        dotless=self.dotless):
+                    toks = [replace(t, start=t.start + a, end=t.end + a) for t in s.tokens]
                     for part in _split_at_diagrams(toks, diagrams):
                         moves = [t for t in part if t.kind == "move"]
                         if not moves:
@@ -1284,6 +1351,8 @@ class _Builder:
     # -------------------------------------------------------- main runs
     def on_main(self, run):
         L = self.active
+        if L is not None and run.ply != L.next_ply:
+            run = _renumbered(run, L.next_ply) or self.misnumbered(L, run) or run
         P = run.ply
         if P is None and L is not None and run.moves[0].black:
             # "... Kd8": Black's move with no number. When the line expects
@@ -1353,6 +1422,29 @@ class _Builder:
             self.active = L2
             self.extend(L2, run)
             self.adopt_pre_notes(L2)
+
+    def misnumbered(self, L, run):
+        """The run renumbered to continue L when its printed number differs from
+        the expected one in a single digit ("1 ... fxe4" printed for 7...fxe4)
+        and its moves read cleanly as the continuation of L, else None."""
+        first = run.tokens[0]
+        if (L.waiting or L.broken or not L.last_fen or first.kind != "number"
+                or first.number is None):
+            return None
+        n, black = L.next_ply // 2 + 1, bool(L.next_ply % 2)
+        if first.side_known and bool(first.black) != black:
+            return None
+        printed = re.sub(r"\D", "", first.raw)
+        want = str(n)
+        if len(printed) != len(want) or sum(a != b for a, b in zip(printed, want)) != 1:
+            return None
+        toks = list(run.tokens)
+        _relabel(toks, n, black)
+        if _fit(self.dec.run(L.last_fen, toks))[0] != 0:
+            return None
+        moves = [t for t in toks if t.kind == "move"]
+        return _Run(run.kind, toks, moves, run.start, run.end, run.depth, _ply(moves[0]),
+                    run.result, run.home, run.context)
 
     def gap(self, L, run, P, follow=True):
         """The numbering skips moves that the text does not show (P is the ply
@@ -1919,9 +2011,10 @@ class _Builder:
 
 # ---------------------------------------------------------------- top level
 
-def _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens, only=None):
+def _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens, only=None,
+              dotless=False):
     dec = _Decoder(glyphs, letters)
-    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens)
+    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens, dotless)
     for ci, ch in enumerate(chapters):
         if ch["end"] < ch["start"]:
             continue
@@ -1952,13 +2045,15 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     diagrams = sel.expand_boards(load_stage1(pdf_path, out_root, doc.page_count))
     chapters = book_chapters(structure, doc.page_count)
     selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
-    say(f"layout and structure read in {time.perf_counter() - t0:.1f} s")
+    numbering = book_numbering(doc)
+    say(f"layout and structure read in {time.perf_counter() - t0:.1f} s; move numbers "
+        f"{'without' if numbering['dotless'] else 'with'} dots")
     glyphs = GlyphModel()
     timings = []
     for k in range(max(1, passes)):
         t1 = time.perf_counter()
         builder, dec = _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters,
-                                 diagram_fens)
+                                 diagram_fens, dotless=numbering["dotless"])
         timings.append(round(time.perf_counter() - t1, 1))
         say(f"pass {k + 1}: {len(builder.lines)} lines, {len(builder.nodes)} nodes, "
             f"{dec.calls} decodes in {timings[-1]} s")
@@ -1967,6 +2062,7 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
             for decs in dec.accepted:
                 glyphs.learn_run(decs)
     book = _book_dict(pdf_path, doc, chapters, diagrams, selection, builder, glyphs, structure)
+    book["numbering"] = numbering
     book["stats"]["seconds"] = round(time.perf_counter() - t0, 1)
     book["stats"]["pass_seconds"] = timings
     if write:
@@ -1975,6 +2071,15 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
         out.write_text(json.dumps(book, ensure_ascii=False, separators=(",", ":")),
                        encoding="utf-8")
     return book
+
+
+def book_numbering(doc):
+    """How the book numbers its moves, learnt from its text: {"dotless": True when
+    it prints numbers without a dot ("1 e4 c5 2 Nf3"), "counts": the clean
+    dotless and dotted examples found (movetext.numbering_counts)}."""
+    counts = numbering_counts(page.get_text() for page in doc)
+    dotless = counts["dotless"] >= DOTLESS_MIN and counts["dotless"] >= DOTLESS_SHARE * counts["dotted"]
+    return {"dotless": dotless, "counts": counts}
 
 
 def _book_title(doc, structure, pdf_path):

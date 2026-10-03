@@ -49,7 +49,7 @@ import chess
 __all__ = [
     "Token", "Sequence", "Decoded", "GlyphModel", "LETTER_SETS", "FIGURINES",
     "COMMON_GLYPH_JUNK", "tokenize", "find_sequences", "decode", "decode_sequence",
-    "clean_run", "parse_move_text",
+    "clean_run", "parse_move_text", "numbering_counts", "uses_dotless_numbers",
 ]
 
 PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING = (chess.PAWN, chess.KNIGHT, chess.BISHOP,
@@ -172,6 +172,8 @@ class Token:
     side_known is False when the dots could be read either way.
     layout marks 'other' tokens that stand alone on their line (diagram
     labels, board coordinates): they do not interrupt a run of moves.
+    dotless marks a move number printed without a dot ("12 Nf3"), which
+    tokenize() reads only when asked to (books that number moves that way).
     """
     kind: str
     raw: str
@@ -181,6 +183,7 @@ class Token:
     black: bool = False
     side_known: bool = True
     layout: bool = False
+    dotless: bool = False
 
 
 @dataclass
@@ -1124,7 +1127,19 @@ def _pieces(text: str) -> list[tuple[int, int]]:
                 pos = cut
             out.append((pos, e))
         out.extend(reversed(trail))
+    # castling split by a space: "o -o", "0- 0-0"
+    k = 0
+    while k + 1 < len(out):
+        (a, b), (c, d) = out[k], out[k + 1]
+        if c - b == 1 and text[b] == " " and _SPLIT_CASTLE_RE.match(text[a:b] + text[c:d]) \
+                and _CASTLE_RE.match(_strip_suffix(text[a:b] + text[c:d])[0]):
+            out[k:k + 2] = [(a, d)]
+            continue
+        k += 1
     return out
+
+
+_SPLIT_CASTLE_RE = re.compile(r"^[0Oo][-–][0Oo](?:[-–][0Oo])?[+#!?t]*$")
 
 
 def _open_parens(text: str, pos: int, window: int = 300) -> int:
@@ -1154,6 +1169,47 @@ def _glue_cut(text: str, s: int, e: int) -> Optional[int]:
         if first is None and re.search(r"[a-h£]", text[s:p]):
             first = p
     return first
+
+
+_SQUARE_END_RE = re.compile(r"[a-h£][1-8][+#!?]*")
+_BARE_SQUARE_RE = re.compile(r"^[a-h][1-8]$")
+
+
+@lru_cache(maxsize=20000)
+def _glued_moves(w: str) -> Optional[int]:
+    """Where a second move starts in a word that holds two moves printed without
+    a space ("lDc4lDg6", "Nf3Nc6"), if it does. Both parts must look clearly
+    like moves; two bare squares ("e2e4") are one move in long notation."""
+    if len(w) < 5:
+        return None
+    for m in _SQUARE_END_RE.finditer(w, 2):
+        p = m.end()
+        left, right = w[:p], w[p:]
+        if len(right) < 3 or right[0] in "-–—x:×=+#!?.,;()" or right[0].isdigit():
+            continue
+        if _shape(left) != "strong" or _shape(right) != "strong":
+            continue
+        if _BARE_SQUARE_RE.match(left) and _BARE_SQUARE_RE.match(_strip_suffix(right)[0]):
+            continue
+        return p
+    return None
+
+
+# Letters that OCR prints for a one-digit move number ("g Nxes" for 9 Nxe5).
+_OCR_NUMBER_WORDS = {"g": 9, "s": 5, "S": 5, "l": 1, "I": 1}
+
+
+def _square_word(w: str) -> bool:
+    """A short word that reads as a square ("es" for e5, "as" for a5)."""
+    core = _strip_suffix(w)[0]
+    return bool(re.fullmatch(r"[a-h][1-8lIiSsBbGZz]", core))
+
+
+def _move_like(w: str) -> bool:
+    """A weakly shaped word that still has a move's build: a piece letter before
+    a file letter ("Bbs", "Raes") or a capture between two files ("gxfs")."""
+    core = _strip_suffix(w)[0]
+    return bool(re.match(r"^(?:[KQRBN][a-h1-8]?x?|[a-h]x)[a-h£][1-8lIiSsBbGZz]$", core))
 
 
 def _alone_on_line(text: str, s: int, e: int) -> bool:
@@ -1218,8 +1274,13 @@ def _side(text, groups, rest) -> tuple[bool, bool]:
     return True, True
 
 
-def _scan_number(text, pieces, i, st: Optional[_TokState]):
-    """Read a move number starting at piece i: (token, next index, move span) or None."""
+def _scan_number(text, pieces, i, st: Optional[_TokState], dotless: bool = False):
+    """Read a move number starting at piece i: (token, next index, move span) or None.
+
+    With dotless, a number printed without dots ("12 Nf3") also counts when
+    the word after it looks like a move; the token then has dotless=True and
+    the caller decides from the context whether it is a move number at all.
+    """
     s, e = pieces[i]
     w = text[s:e]
     digit_spans, groups, rest = [], [], None
@@ -1263,8 +1324,13 @@ def _scan_number(text, pieces, i, st: Optional[_TokState]):
         return None
     if rest is None:
         j, rest = _collect_dots(text, pieces, j, groups)
+        if (dotless and m is None and len(groups) == 1 and groups[0][1] - groups[0][0] == 1
+                and rest is not None and rest[0] == groups[0][1]):
+            # a book without dots: "13 .txd5" is 13 and a glyph (".t") that starts
+            # with a dot
+            rest, groups = (groups[0][0], rest[1]), []
     if not groups:
-        return None
+        return _dotless_number(text, pieces, digit_spans, j, st, rest) if dotless else None
     digits = " ".join(text[a:b] for a, b in digit_spans)
     vals = _read_number(digits)
     if not vals:
@@ -1277,6 +1343,38 @@ def _scan_number(text, pieces, i, st: Optional[_TokState]):
     black, known = _side(text, groups, rest)
     start, end = digit_spans[0][0], groups[-1][1]
     return Token("number", text[start:end], start, end, num, black, known), j, rest
+
+
+MAX_DOTLESS = 200      # highest move number read without a dot
+
+
+def _dotless_number(text, pieces, digit_spans, j, st, rest=None):
+    """A move number printed without dots ("12 Nf3", the digits split "1 1 Nb5"):
+    (token, next index, move span) when the word after it looks like a move.
+    rest is the move's span when it is already known (else piece j); the
+    move span returned is None when the move is piece j."""
+    digits = " ".join(text[a:b] for a, b in digit_spans)
+    vals = _read_number(digits)
+    if not vals or vals[0] > MAX_DOTLESS or (rest is None and j >= len(pieces)):
+        return None
+    if not re.fullmatch(r"[0-9]+(?: [0-9]+)*", digits):
+        # "I" and "s" are words in prose: an OCR letter read as a digit ("s Bbs"
+        # for 5 Bb5) counts only where the run expects that very number
+        exp = st.expect() if st is not None and st.in_seq and st.prev == "move" else (None, None)
+        if exp[0] is None or (exp[0] + 1 if exp[1] else exp[0]) not in vals:
+            return None
+    a, b = rest or pieces[j]
+    w2 = text[a:b]
+    if (_NUM_DOTS_RE.match(w2) or _BARE_NUM_RE.match(w2) or _RESULT_RE.match(w2)
+            or w2 in "([{)]}" or not (_shape(w2) or _square_word(w2))):
+        return None
+    num = vals[0]
+    if st is not None and st.in_seq:
+        exp_n, _ = st.expect()
+        if exp_n in vals:
+            num = exp_n
+    start, end = digit_spans[0][0], digit_spans[-1][1]
+    return Token("number", text[start:end], start, end, num, False, True, dotless=True), j, rest
 
 
 def _scan_continuation(text, pieces, i):
@@ -1296,7 +1394,7 @@ def _scan_continuation(text, pieces, i):
     return Token("number", text[s:e], s, e, None, True, True), j, rest
 
 
-def tokenize(text: str, lenient: bool = False) -> list[Token]:
+def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[Token]:
     """Split book text into number, move, result and other tokens.
 
     Offsets index into text and raw == text[start:end]. A word becomes a move
@@ -1309,6 +1407,14 @@ def tokenize(text: str, lenient: bool = False) -> list[Token]:
     exactly where the numbering expects a move ("16.b3 gam 17.Bb2") or that
     ends in an annotation ("Nf5 ttlge???") is kept as a move, so that the run
     goes on and the unreadable move shows.
+
+    dotless is for books that print move numbers without a dot ("1 e4 c5
+    2 Nc3", see uses_dotless_numbers()). A number with no dot then counts as
+    a move number when the word after it looks like a move and the number
+    fits: inside a run it must be the number the run expects next; elsewhere
+    the word after it must look clearly like a move ("13 Bh6", not "2 pawns"),
+    and no word such as "Diagram" or "page" may stand before it. Whether the
+    move is legal is for decode() to tell.
     """
     pieces = _pieces(text)
     toks: list[Token] = []
@@ -1321,6 +1427,11 @@ def tokenize(text: str, lenient: bool = False) -> list[Token]:
             st.prev = "other"
 
     def move(s, e):
+        cut = _glued_moves(text[s:e])
+        if cut:                                  # two moves printed without a space
+            move(s, s + cut)
+            move(s + cut, e)
+            return
         n, b = st.expect()
         if n is None:                            # after a bare "...": sides alternate
             b = st.last_black == (st.moves_since % 2 == 0)
@@ -1341,9 +1452,9 @@ def tokenize(text: str, lenient: bool = False) -> list[Token]:
             return True
         a, b = pieces[j]
         w = text[a:b]
-        if _RESULT_RE.match(w) or w in ")]};," or _DOTS_ONLY_RE.match(w):
+        if _RESULT_RE.match(w) or w in ")]};,([" or _DOTS_ONLY_RE.match(w):
             return True
-        return _scan_number(text, pieces, j, None) is not None
+        return _scan_number(text, pieces, j, None, dotless) is not None
 
     def next_is_strong(j):
         return j < len(pieces) and _shape(text[pieces[j][0]:pieces[j][1]]) == "strong"
@@ -1404,13 +1515,47 @@ def tokenize(text: str, lenient: bool = False) -> list[Token]:
         if exp_n is None:
             return False
         want = (exp_n + 1, False) if exp_b else (exp_n, True)
-        r = _scan_number(text, pieces, j, None)
+        r = _scan_number(text, pieces, j, None, dotless)
         if r is None:
             mg = _DOTLESS_RE.match(text[pieces[j][0]:pieces[j][1]])
             return bool(mg) and not want[1] and int(mg.group(1)) == want[0] \
                 and bool(_shape(mg.group(2)))
         tok = r[0]
         return want[0] in _number_values(tok) and (not tok.side_known or tok.black == want[1])
+
+    def dotless_ok(tok, j, rest):
+        """Whether a number printed without a dot is a move number here (the
+        move is the span rest, or else piece j)."""
+        if rest is None:
+            w2 = text[pieces[j][0]:pieces[j][1]]
+            j += 1
+        else:
+            w2 = text[rest[0]:rest[1]]
+        shp = _shape(w2)
+        exp_n, exp_b = st.expect()
+        vals = _number_values(tok)
+        if st.in_seq and st.prev == "move" and exp_n is not None:
+            want = exp_n + 1 if exp_b else exp_n
+            if want in vals:
+                tok.number = want
+                return True
+            if exp_b and exp_n in vals:
+                # the number repeated before Black's reply, as in books that set
+                # the moves as a table ("12 ltJd5" / "12 ttJxd5")
+                tok.number, tok.black = exp_n, True
+                return True
+        if shp == "strong":
+            return True
+        if shp != "weak":
+            # a word that is also a square ("es" for e5) only with a move's
+            # annotation or between moves
+            return _square_word(w2) and (_strip_suffix(w2)[2] != "" or next_is_boundary(j)
+                                         or next_is_strong(j))
+        core = _strip_suffix(w2)[0]
+        if not core.isalpha() or _move_like(w2):
+            return True              # junk glyph, piece letter or capture: "dxeS", "Bbs"
+        return (next_is_boundary(j) or next_is_strong(j) or text[pieces[j][0]] == "("
+                or _move_like(text[pieces[j][0]:pieces[j][1]]))
 
     def lenient_move(i, w):
         if not lenient or len(w) > 10 or _ANNOT_RE.match(w) or _RESULT_RE.match(w) \
@@ -1442,7 +1587,9 @@ def tokenize(text: str, lenient: bool = False) -> list[Token]:
             other(s, e)
             i += 1
             continue
-        r = _scan_number(text, pieces, i, st)
+        r = _scan_number(text, pieces, i, st, dotless)
+        if r is not None and r[0].dotless and not dotless_ok(*r):
+            r = None
         if r is not None and i > 0 and pieces[i - 1][1] < s \
                 and _REF_WORD_RE.match(text[pieces[i - 1][0]:pieces[i - 1][1]]):
             r = None                     # "Position 68. The": a number in the text
@@ -1495,6 +1642,10 @@ def tokenize(text: str, lenient: bool = False) -> list[Token]:
             in_ctx = st.in_seq and st.prev == "move" and exp_n == val and _shape(rest_w)
             alone = (len(mg.group(1)) >= 2 and _shape(rest_w) == "strong"
                      and not rest_w[0].islower() and not rest_w[0].isdigit())
+            if dotless and not alone and _shape(rest_w) == "strong" \
+                    and not rest_w[0].isdigit() and val <= MAX_DOTLESS:
+                # a dotless book glues numbers to junk glyphs too: "25lt)c4"
+                alone = not re.match(r"[a-h]x?[a-h]?[1-8]", rest_w) or len(mg.group(1)) >= 2
             if in_ctx or alone:
                 ds = s + len(mg.group(1))
                 number(Token("number", text[s:ds], s, ds, val, bool(exp_b) if in_ctx else False,
@@ -1517,9 +1668,19 @@ def tokenize(text: str, lenient: bool = False) -> list[Token]:
                 move(s, b)
                 i += 2
                 continue
+        if dotless and st.in_seq and st.prev == "move" and w in _OCR_NUMBER_WORDS \
+                and i + 1 < len(pieces) and _shape(text[pieces[i + 1][0]:pieces[i + 1][1]]):
+            exp_n, exp_b = st.expect()
+            if exp_n is not None and not exp_b and exp_n == _OCR_NUMBER_WORDS[w]:
+                # a one-digit move number that OCR read as a letter: "g Nxes" for 9 Nxe5
+                number(Token("number", w, s, e, exp_n, False, True, dotless=True))
+                i = after_number(pieces[i + 1][0], pieces[i + 1][1], i + 2)
+                continue
         if st.in_seq and st.prev == "move":
             shp = _shape(w)
-            if shp == "strong" or (shp == "weak" and (next_is_boundary(i + 1) or next_is_strong(i + 1))):
+            if shp == "strong" or (shp == "weak" and (
+                    next_is_boundary(i + 1) or next_is_strong(i + 1) or _move_like(w)
+                    or (i + 1 < len(pieces) and text[pieces[i + 1][0]] == "("))):
                 move(s, e)
                 i += 1
                 continue
@@ -1536,6 +1697,39 @@ def tokenize(text: str, lenient: bool = False) -> list[Token]:
         other(s, e)
         i += 1
     return toks
+
+
+# ---------------------------------------------------------------------------
+# The book's way of numbering moves
+# ---------------------------------------------------------------------------
+_PLAIN_MOVE = r"(?:[KQRBN]?[a-h1-8]?x?[a-h][1-8](?:=[QRBN])?|O-O(?:-O)?|0-0(?:-0)?)[+#!?]*"
+_PAIR_DOTLESS_RE = re.compile(
+    rf"(?<![\w.,])(\d{{1,3}}) {_PLAIN_MOVE}(?: {_PLAIN_MOVE})? (\d{{1,3}}) {_PLAIN_MOVE}(?!\w)")
+_PAIR_DOTTED_RE = re.compile(
+    rf"(?<![\w.,])(\d{{1,3}})\. ?{_PLAIN_MOVE}(?: {_PLAIN_MOVE})? (\d{{1,3}})\. ?{_PLAIN_MOVE}(?!\w)")
+DOTLESS_MIN = 3           # dotless pairs a book must show ...
+DOTLESS_SHARE = 0.08      # ... and their least share of the dotted pairs
+
+
+def numbering_counts(texts: Iterable[str]) -> dict:
+    """How often the text numbers moves with and without a dot.
+
+    Only clean evidence counts: two consecutive move numbers with one or two
+    plainly printed moves after the first ("3 f4 g6 4 Nf3" or "3.f4 g6 4.Nf3"),
+    which prose never produces by accident."""
+    out = {"dotless": 0, "dotted": 0}
+    for t in texts:
+        t = re.sub(r"\s+", " ", t)
+        for key, rx in (("dotless", _PAIR_DOTLESS_RE), ("dotted", _PAIR_DOTTED_RE)):
+            out[key] += sum(1 for m in rx.finditer(t) if int(m.group(2)) == int(m.group(1)) + 1)
+    return out
+
+
+def uses_dotless_numbers(texts: Iterable[str]) -> bool:
+    """True when a book prints move numbers without a dot ("1 e4 c5 2 Nf3"), in
+    all its moves or beside dotted numbers; tokenize() then reads such numbers."""
+    c = numbering_counts(texts)
+    return c["dotless"] >= DOTLESS_MIN and c["dotless"] >= DOTLESS_SHARE * c["dotted"]
 
 
 # ---------------------------------------------------------------------------
@@ -1572,15 +1766,15 @@ def _relabel(tokens: list, number: Optional[int], black: bool) -> tuple:
     return n, b
 
 
-def find_sequences(text: str, lenient: bool = False) -> list[Sequence]:
+def find_sequences(text: str, lenient: bool = False, dotless: bool = False) -> list[Sequence]:
     """Maximal runs of moves that begin at a move number or a "..." continuation.
 
     Parenthesised sub-lines come out as runs of their own with depth > 0.
     Within a run, the side of each move follows the run's numbering, which
-    also settles numbers whose dots could be read either way. lenient is
-    passed to tokenize().
+    also settles numbers whose dots could be read either way. lenient and
+    dotless are passed to tokenize().
     """
-    toks = tokenize(text, lenient)
+    toks = tokenize(text, lenient, dotless)
     seqs: list[Sequence] = []
     opens: list[int] = []        # offsets of open parentheses
     cur: Optional[dict] = None
