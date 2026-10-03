@@ -100,6 +100,7 @@ from typing import Optional
 import chess
 import pymupdf
 
+from . import figurines
 from . import pdftext as pt
 from . import selection as sel
 from .movetext import GlyphModel, clean_run, decode, find_sequences
@@ -328,6 +329,18 @@ def parse_game_header(text):
             "year": year, "text": text.strip()}
 
 
+def _stage1_current(folder, page_count):
+    """Whether Stage 1's results in folder are for a book of page_count pages
+    (any count when None) and as recent as this code (pages.json records how
+    many text diagrams each page holds)."""
+    try:
+        pages = json.loads((Path(folder) / "pages.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return ((page_count is None or len(pages) == page_count)
+            and all("text_diagrams" in p for p in pages))
+
+
 def load_stage1(pdf_path, output_dir=None, page_count=None):
     """Stage 1's diagrams.json for the book. When output_dir lacks it, the
     project's own Stage 1 results for the same book are copied, or Stage 1 is
@@ -338,15 +351,13 @@ def load_stage1(pdf_path, output_dir=None, page_count=None):
     out = Path(output_dir or OUTPUT_DIR)
     dest = out / pdf_path.stem / "stage1"
     path = dest / "diagrams.json"
+    if path.exists() and (dest / "pages.json").exists() and not _stage1_current(dest, None):
+        path.unlink()                   # written before Stage 1 read text diagrams
     if not path.exists():
         shared = OUTPUT_DIR / pdf_path.stem / "stage1"
         same = False
         if shared.resolve() != dest.resolve() and (shared / "diagrams.json").exists():
-            try:
-                pages = json.loads((shared / "pages.json").read_text(encoding="utf-8"))
-                same = page_count is None or len(pages) == page_count
-            except (OSError, ValueError):
-                same = False
+            same = _stage1_current(shared, page_count)
         if same:
             src = shared
         else:
@@ -1054,7 +1065,7 @@ class _Builder:
         if self.exercise is not None:
             return self.exercise[1]
         for doff, did in reversed(self.diagram_events):
-            if doff >= off:
+            if doff > off:
                 continue
             if doff < max(self.cut, self.last_token_end):
                 return None
@@ -1064,7 +1075,7 @@ class _Builder:
     def last_diagram(self, off):
         """The last diagram before off in reading order in this chapter, if any."""
         for doff, did in reversed(self.diagram_events):
-            if doff < off:
+            if doff <= off:
                 return did
         return None
 
@@ -1950,23 +1961,59 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     structure = pt.book_structure(doc)
     # a picture of stacked boards counts as one diagram per board
     diagrams = sel.expand_boards(load_stage1(pdf_path, out_root, doc.page_count))
+    # Diagrams printed as text in a chess font carry their position already.
+    text_fens = {did: d["fen"] for did, d in zip(sel.diagram_ids(diagrams), diagrams)
+                 if d.get("fen")}
+    if text_fens:
+        diagram_fens = {**text_fens, **(diagram_fens or {})}
     chapters = book_chapters(structure, doc.page_count)
     selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
     say(f"layout and structure read in {time.perf_counter() - t0:.1f} s")
     glyphs = GlyphModel()
     timings = []
-    for k in range(max(1, passes)):
+    figmap, learnt = {}, {}
+    fig_cands = figurines.candidates(
+        (pt._raw_page(doc, i) for i in range(doc.page_count)),
+        {f["font"] for f in fonts.get("figurines") or []})
+    k = 0
+    while k < max(1, passes):
         t1 = time.perf_counter()
         builder, dec = _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters,
                                  diagram_fens)
         timings.append(round(time.perf_counter() - t1, 1))
-        say(f"pass {k + 1}: {len(builder.lines)} lines, {len(builder.nodes)} nodes, "
+        say(f"pass {len(timings)}: {len(builder.lines)} lines, {len(builder.nodes)} nodes, "
             f"{dec.calls} decodes in {timings[-1]} s")
-        if k + 1 < passes:
-            glyphs = GlyphModel()
+        if k + 1 < passes or fig_cands:
+            learned = GlyphModel()
             for decs in dec.accepted:
-                glyphs.learn_run(decs)
+                learned.learn_run(decs)
+            if k + 1 < passes:
+                glyphs = learned
+        if fig_cands:
+            # Piece figurines printed as private codes: learn which piece
+            # each code stands for (over more passes while some code is
+            # still unknown), give the letters in the text and read the
+            # book again from the start.
+            figmap, learnt = figurines.book_map(fig_cands, figurines.code_counts(dec.accepted))
+            if len(learnt) < len(fig_cands) and k + 1 < passes:
+                k += 1
+                continue
+            fig_cands = None
+            if figmap:
+                pt.set_figurine_map(doc, figmap)
+                fonts = pt.book_fonts(doc)
+                structure = pt.book_structure(doc)
+                chapters = book_chapters(structure, doc.page_count)
+                selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
+                say(f"read {len(figmap)} figurine codes as piece letters; reading again")
+                glyphs = GlyphModel()
+                k = 0
+                continue
+        k += 1
     book = _book_dict(pdf_path, doc, chapters, diagrams, selection, builder, glyphs, structure)
+    book["figurines"] = [{"font": f, "code": f"U+{ord(ch):04X}", "piece": p,
+                          "learnt": (f, ch) in learnt}
+                         for (f, ch), p in sorted(figmap.items())]
     book["stats"]["seconds"] = round(time.perf_counter() - t0, 1)
     book["stats"]["pass_seconds"] = timings
     if write:
