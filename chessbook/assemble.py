@@ -154,6 +154,8 @@ _REAL_WORD_RE = re.compile(r"^[^\W\d_]{2,}")
 _BARE_NUMBER_RE = re.compile(r"^[0-9lIO]{1,3}$")
 _NUMBER_LINE_RE = re.compile(r"^[0-9lIOS]{1,3}(?: [0-9lIOS])?(?: ?[.…•·]+)*$")
 _DOTS_RE = re.compile(r"^[.…•·]+$")
+# A move number at the end of a stretch of the notes ("... Perhaps I S ... ").
+_NOTE_NUMBER_END_RE = re.compile(r"(?:^|\s)[0-9lIOS]{1,3}(?: [0-9lIOS])?\s*(?:[.…•·]\s*){1,3}$")
 _RESULT_NORM = {"1-0": "1-0", "l-0": "1-0", "1:0": "1-0", "1-o": "1-0", "l-o": "1-0",
                 "0-1": "0-1", "0-l": "0-1", "0:1": "0-1", "o-1": "0-1", "o-l": "0-1"}
 
@@ -167,14 +169,14 @@ def _ply(tok):
 
 
 def _renumbered(run, ply):
-    """The run read with the first move number that ply implies, when the
-    number as printed can be read that way (OCR's "s" stands for 5 as well
-    as 8; "l" for 1 as well as 7), else None."""
+    """The run read with the first move number and side that ply implies, when
+    the number as printed can be read that way (OCR's "s" stands for 5 as well
+    as 8; a number without dots names no side), else None."""
     first = run.tokens[0]
     if first.kind != "number" or first.number is None or ply is None:
         return None
     n, black = ply // 2 + 1, bool(ply % 2)
-    if n == first.number or n not in _number_values(first):
+    if (n, black) == (first.number, bool(first.black)) or n not in _number_values(first):
         return None
     if first.side_known and bool(first.black) != black:
         return None
@@ -721,6 +723,22 @@ class _Builder:
                 before = next((out[j] for j in range(i - 1, -1, -1) if out[j]), None)
                 after = next((out[j] for j in range(i + 1, len(out)) if out[j]), None)
                 out[i] = before or after or line_c
+        # OCR sets a stretch of a line of moves in the body font now and then
+        # ("6 tiJgf3 .i.e7 7 o-o o-o"): moves and numbers between main-font
+        # words on both sides belong to the main line
+        i = 0
+        while i < len(out):
+            if out[i] != "n" or i == 0 or out[i - 1] != "m":
+                i += 1
+                continue
+            j = i
+            while j < len(out) and out[j] == "n":
+                j += 1
+            if j < len(out) and all(_shape(w) or _BARE_NUMBER_RE.match(w) or _DOTS_RE.match(w)
+                                    for w in words[i:j]) \
+                    and all(any(ch.isalnum() for ch in w) for w in (words[i - 1], words[j])):
+                out[i:j] = ["m"] * (j - i)
+            i = j
         return out
 
     def column_edges(self, page, col):
@@ -786,6 +804,13 @@ class _Builder:
                     st.event("diagram", did)
                 role = ln["role"]
                 if role == "label" and self.move_number_label(lines, k):
+                    role = "text"
+                if (role == "game_header" and prev is not None and prev["role"] == "text"
+                        and ln["text"].rstrip().endswith(".")
+                        and not self.para_start(p, ln, prev)
+                        and not re.search(r"[.!?:;)\]]\s*$", prev["text"])):
+                    # a sentence that names a game runs on to this line ("... in
+                    # L.Gomez" / "Cabrero-R.Sheldon, World Junior Championships, 1998.")
                     role = "text"
                 if role in ("head", "coord", "blank", "label"):
                     continue
@@ -938,7 +963,10 @@ class _Builder:
                 for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font,
                                         dotless=self.dotless):
                     toks = [replace(t, start=t.start + a, end=t.end + a) for t in s.tokens]
-                    for part in _split_at_diagrams(toks, diagrams):
+                    parts = _split_at_diagrams(toks, diagrams)
+                    if kind == "main" and self.moves_font:
+                        parts = [q for part in parts for q in self.split_inline(st, part)]
+                    for part in parts:
                         moves = [t for t in part if t.kind == "move"]
                         if not moves:
                             continue
@@ -947,6 +975,60 @@ class _Builder:
                         out.append(_Run(kind, part, moves, part[0].start, part[-1].end, s.depth,
                                         _ply(moves[0]), res))
         out.sort(key=lambda r: (r.start, r.kind))
+        return out
+
+    def main_prose_before(self, off):
+        """True when words of prose in the move font stand before off on its
+        printed line ("pawn to take; for instance, 11 Qh4 ...")."""
+        i = self.line_index(self.st, off)
+        if i < 0:
+            return False
+        seg = self.st.main_text[self.st.lines[i].start:off]
+        return any(re.fullmatch(r"(?=[a-z]*[aeiouy])[a-z]{3,}", w) and not _shape(w)
+                   for w in re.split(r"[\s,;:.()]+", seg))
+
+    def prose_line(self, off):
+        """True when the printed line holding off has words of prose in it,
+        whatever their font, or continues a sentence from the line before."""
+        i = self.line_index(self.st, off)
+        if i < 0:
+            return False
+
+        def prose(k):
+            words = self.st.lines[k].line["text"].split(" ")
+            return sum(1 for w in words if len(w) >= 3 and w.isalpha() and not _shape(w)) >= 2
+
+        if prose(i):
+            return True
+        # or the sentence of the line before runs on to this line
+        return (i > 0 and self.st.lines[i].start == off and prose(i - 1)
+                and not re.search(r"[.!?:;]\s*$", self.st.lines[i - 1].line["text"]))
+
+    @staticmethod
+    def line_index(st, off):
+        return bisect.bisect_right(st.starts, off) - 1
+
+    def split_inline(self, st, toks):
+        """Split off a move set in the move font inside a sentence of the notes
+        whose move number stands in the notes' font ("Perhaps I S ... .tf8 was
+        still the best"): in the main-font text it follows the main line's
+        last move directly, and find_sequences would take it for the next
+        move. It starts a run of its own (a note, see inline_run) that ends
+        where a move number begins a new line."""
+        out, cur, inline = [], [], False
+        for t in toks:
+            line = self.line_index(st, t.start)
+            new_line = bool(cur) and self.line_index(st, cur[-1].start) != line
+            if new_line and t.kind == "move" and self.inline_at(st, t.start) \
+                    and _NOTE_NUMBER_END_RE.search(st.note_text[max(0, t.start - 40):t.start]):
+                out.append(cur)
+                cur, inline = [], True
+            elif new_line and inline and t.kind == "number":
+                out.append(cur)
+                cur, inline = [], False
+            cur.append(t)
+        if cur:
+            out.append(cur)
         return out
 
     # -------------------------------------------------------- chapter
@@ -1244,14 +1326,19 @@ class _Builder:
         """True for main-font moves inside a sentence of body text ("should White
         play 1.g6+, the reply would be ..."): set in the move font, but
         mentioned in the notes rather than played."""
-        st = self.st
-        i = bisect.bisect_right(st.starts, run.start) - 1
+        return self.inline_at(self.st, run.start)
+
+    @staticmethod
+    def inline_at(st, off):
+        """True when the main-font text at off stands inside a sentence of body
+        text (see inline_run)."""
+        i = bisect.bisect_right(st.starts, off) - 1
         if i < 0:
             return False
         tl = st.lines[i]
         if tl.line["role"] != "text":
             return False
-        if any(ch.isalpha() for ch in st.note_text[tl.start:run.start].replace(NOTE_BREAK, " ")):
+        if any(ch.isalpha() for ch in st.note_text[tl.start:off].replace(NOTE_BREAK, " ")):
             return True
         # a printed line that the PDF splits at a wide gap: body words before
         # the run on the same row
@@ -1410,12 +1497,21 @@ class _Builder:
         if L is not None and run.ply != L.next_ply:
             run = _renumbered(run, L.next_ply) or self.misnumbered(L, run) or run
         P = run.ply
+        first = run.tokens[0]
+        if self.main_prose_before(run.start) or (
+                first.kind == "number" and first.number is None and self.prose_line(run.start)):
+            # "WARNING: ... 10 ... gxf5 is always very risky; for instance,
+            # 11 Qh4", "playing ... d5 in one go": moves named in a box of
+            # advice that the book sets in the move font, not moves of the game
+            self.on_note(run)
+            return
         if P is None and L is not None and run.moves[0].black:
             # "... Kd8": Black's move with no number. When the line expects
             # White's move, White's move is missing from the text.
             P = L.next_ply if L.next_ply % 2 == 1 else L.next_ply + 1
         solution = self.exercise is not None and L is None
-        if (L is None or P != L.next_ply) and not solution and self.inline_run(run):
+        if (L is None or P != L.next_ply or run.tokens[0].kind != "number") and not solution \
+                and self.inline_run(run):
             self.on_note(run)                   # moves mentioned in a sentence
             return
         if P == 0:

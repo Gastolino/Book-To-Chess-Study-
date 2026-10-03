@@ -1388,7 +1388,8 @@ def _dotless_number(text, pieces, digit_spans, j, st, rest=None):
         # an "S" or "s" alone before a clear move ("Answer: S lbd2!")
         exp = st.expect() if st is not None and st.in_seq and st.prev == "move" else (None, None)
         a, b = rest or pieces[j]
-        alone = digits in ("S", "s") and _shape(text[a:b]) == "strong"
+        alone = ((digits in ("S", "s") or (len(digits) >= 2 and digits[0].isdigit()))
+                 and _shape(text[a:b]) == "strong")
         if not alone and (exp[0] is None or (exp[0] + 1 if exp[1] else exp[0]) not in vals):
             return None
     a, b = rest or pieces[j]
@@ -1577,11 +1578,14 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             if exp_b and exp_n in vals:
                 # the number repeated before Black's reply, as in books that set
                 # the moves as a table ("12 ltJd5" / "12 ttJxd5")
-                tok.number, tok.black = exp_n, True
+                tok.number, tok.black, tok.side_known = exp_n, True, False
                 return True
             if _ocr_digit_slip(tok.raw, want) and shp:
                 tok.number = want          # "16 ... hs 11 tl)1h2": 17 with its 7 read as 1
                 return True
+        # out of the run's numbering, a number without dots names no side: it
+        # stands before Black's reply too in books that set moves as a table
+        tok.side_known = False
         if shp == "strong":
             return True
         if shp != "weak":
@@ -1877,8 +1881,10 @@ def find_sequences(text: str, lenient: bool = False, dotless: bool = False) -> l
                         cur["tokens"], cur["next"] = trial, (n2, b2)
                         n, b = n2, b2
                 if fits(t, n, b):
+                    # (a number without dots keeps naming no side, so that a run
+                    # split from this one later can still be read either way)
                     cur["tokens"].append(replace(t, number=n if t.number is not None else n,
-                                                 black=b, side_known=True))
+                                                 black=b, side_known=t.side_known or not t.dotless))
                     if t.side_known and t.number is not None and cur["flexible"]:
                         cur["flexible"] = False         # a later number settles the side
                         cur["tokens"][0] = replace(cur["tokens"][0], side_known=True)
