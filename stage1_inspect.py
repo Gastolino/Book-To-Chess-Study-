@@ -4,8 +4,9 @@ Usage:  python stage1_inspect.py BOOK.pdf
 
 Writes output/<book>/stage1/inspect.html, 300 dpi renders of sample pages with
 every board picture outlined, and two JSON files for Stage 2: diagrams.json
-(one record per embedded board picture) and numbers.json (every diagram
-number found in the text).
+(one record per embedded board picture; a picture that holds several boards
+stacked one above another lists them under "boards", each with its rect and
+label) and numbers.json (every diagram number found in the text).
 
 Chess books reach us as PDFs of three kinds, and a single book can mix them:
   scan      each page is one photograph, usually with an invisible OCR layer;
@@ -24,14 +25,17 @@ import re
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pymupdf
 
 DPI = 300
 MAX_SAMPLES = 12
 
-# OCR reads 1 as l or I, and 8 as S or B, inside numbers.
+# OCR reads 1 as l or I, and 8 as S or B, inside numbers. The stand-ins are
+# matched case-sensitively: a lone "b" under a board is a file letter.
 DIGIT_FIX = str.maketrans({"l": "1", "I": "1", "S": "8", "B": "8"})
-NUM = r"[0-9lISB]{1,3}(?:[.\-][0-9lISB]{1,3})?[a-d]?"
+_D = r"(?-i:[0-9lISB])"
+NUM = rf"(?=[^\s]*\d|[lI]$){_D}{{1,3}}(?:[.\-]{_D}{{1,3}})?[a-d]?"
 # A diagram label standing on its own line: a bare number ("14", "14a",
 # "3.12") or a number after a caption word, in several languages and with
 # common OCR misspellings ("Dlagram", "Diagrarn").
@@ -55,27 +59,69 @@ def text_lines(page):
                 yield "".join(s["text"] for s in line["spans"]).strip(), pymupdf.Rect(line["bbox"])
 
 
-def page_pictures(page):
-    """Return (page_scan_cover, board_pictures) for one page.
-
-    A picture covering most of the page is a photograph of the whole page;
-    smaller pictures are candidate boards, sorted into reading order.
-    """
+def _page_pictures(page):
+    """(page_scan_cover, [(Rect, px_w, px_h, xref), ...]) in reading order."""
     area = abs(page.rect)
     cover, boards = 0.0, []
-    for img in page.get_images(full=True):
+    # An image placed twice on a page is listed once per placement, and each
+    # listing returns every placement's rectangle: take each image once.
+    for img in {img[0]: img for img in page.get_images(full=True)}.values():
         for r in page.get_image_rects(img[0]):
             r = r & page.rect
             share = abs(r) / area
             if share >= FULL_PAGE:
                 cover = max(cover, share)
             elif r.width > 20 and r.height > 20:
-                boards.append((r, img[2], img[3]))
+                boards.append((r, img[2], img[3], img[0]))
     # Left column top to bottom, then right column. Stage 2 reorders boards
     # that sit side by side in one row.
     mid = page.rect.width / 2
     boards.sort(key=lambda t: ((t[0].x0 + t[0].x1) / 2 > mid, t[0].y0))
     return cover, boards
+
+
+def page_pictures(page):
+    """Return (page_scan_cover, board_pictures) for one page.
+
+    A picture covering most of the page is a photograph of the whole page;
+    smaller pictures are candidate boards, sorted into reading order.
+    """
+    cover, boards = _page_pictures(page)
+    return cover, [(r, w, h) for r, w, h, _ in boards]
+
+
+def stacked_boards(doc, xref, rect):
+    """Rectangles of the boards in a picture that holds several of them
+    stacked with text between (ClearScan keeps such a stretch of the page as
+    one picture), or [] for a picture holding one board.
+
+    Boards are the bands of rows with ink in them; the white rows between are
+    where the text was. A band counts as a board when it is at least a third
+    as tall as the picture is wide, and the bands must be of about one height.
+    """
+    try:
+        pix = pymupdf.Pixmap(doc, xref)
+        if pix.n - pix.alpha != 1:
+            pix = pymupdf.Pixmap(pymupdf.csGRAY, pix)
+        a = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, -1)[:, :, 0]
+    except (RuntimeError, ValueError):
+        return []
+    inked = (a < 128).mean(axis=1) > 0.03
+    bands, start = [], None
+    for y, v in enumerate(list(inked) + [False]):
+        if v and start is None:
+            start = y
+        elif not v and start is not None:
+            if y - start >= pix.w / 3:
+                bands.append((start, y))
+            start = None
+    if len(bands) < 2:
+        return []
+    hs = [b - a for a, b in bands]
+    if min(hs) < 0.8 * max(hs):
+        return []
+    k = rect.height / pix.h
+    return [pymupdf.Rect(rect.x0, rect.y0 + a * k, rect.x1, rect.y0 + b * k) for a, b in bands]
 
 
 def page_kind(chars, cover, boards, invisible):
@@ -94,6 +140,42 @@ def between_boards(r, pic):
     return (pic.height > 1.3 * pic.width
             and pic.x0 + 0.3 * pic.width < cx < pic.x1 - 0.3 * pic.width
             and pic.y0 + 0.2 * pic.height < r.y0)
+
+
+MOVE_DOTS = ".•…·"
+
+
+def continues_as_move(r, others):
+    """True when a bare number at r is a move number whose dot and move OCR
+    split off into a text line of their own on the same row ("17" and
+    "• .ixf6t ..."): such a number is not a diagram label."""
+    h = r.y1 - r.y0
+    for t, o in others:
+        if o is r or not t or t.lstrip(" ")[:1] not in MOVE_DOTS:
+            continue
+        overlap = min(r.y1, o.y1) - max(r.y0, o.y0)
+        if (o.x0 > (r.x0 + r.x1) / 2 and o.x0 - r.x1 <= 15
+                and overlap >= 0.5 * min(h, o.y1 - o.y0)):
+            return True
+    return False
+
+
+def board_coords(pic, lines):
+    """(files, ranks): how many distinct file letters are printed under a
+    picture and rank digits beside it. A whole board shows eight of each; a
+    corner of a board fewer."""
+    files, ranks = set(), set()
+    for t, r in lines:
+        t = t.strip()
+        if len(t) != 1:
+            continue
+        cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+        if t in "abcdefgh" and pic.x0 - 5 <= cx <= pic.x1 + 5 and pic.y1 - 4 <= r.y0 <= pic.y1 + 16:
+            files.add(t)
+        elif t in "12345678" and pic.y0 - 2 <= cy <= pic.y1 + 2 and (
+                pic.x0 - 16 <= r.x1 <= pic.x0 + 4 or pic.x1 - 4 <= r.x0 <= pic.x1 + 16):
+            ranks.add(t)
+    return len(files), len(ranks)
 
 
 def label_for(pic, labels, used):
@@ -204,7 +286,8 @@ def main():
     for i, page in enumerate(doc):
         lines = list(text_lines(page))
         chars = sum(len(t) for t, _ in lines)
-        cover, pics = page_pictures(page)
+        cover, xpics = _page_pictures(page)
+        pics = [(r, w, h) for r, w, h, _ in xpics]
         invisible = any(t.get("type") == 3 for t in page.get_texttrace())
         head = page.rect.height * 0.06  # running head with the page number
         # OCR sometimes splits a number with a space ("1 15" for 115). Lines that
@@ -214,18 +297,33 @@ def main():
             m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
             if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head
                     and not any(r.intersects(p + (-12, -4, 12, 4)) and not between_boards(r, p)
-                                for p, _, _ in pics)):
+                                for p, _, _ in pics)
+                    and not continues_as_move(r, lines)):
                 labels.append((m.group(1), r))
         for raw, r in labels:
             numbers.append({"page": i + 1, "label": raw.translate(DIGIT_FIX),
                             "repaired": raw != raw.translate(DIGIT_FIX),
                             "rect": [round(v, 1) for v in r]})
         used = set()
-        for pic, w, h in pics:
+        for pic, w, h, xref in xpics:
             k = label_for(pic, labels, used)
             raw = labels[k][0] if k is not None else None
             if k is not None:
                 used.add(k)
+            stack = stacked_boards(doc, xref, pic) if pic.height > 1.3 * pic.width else []
+            sub = []
+            for j, br in enumerate(stack):
+                if j == 0:
+                    lab = raw
+                else:
+                    kk = label_for(br, labels, used)
+                    lab = labels[kk][0] if kk is not None else None
+                    if kk is not None:
+                        used.add(kk)
+                sub.append({"rect": [round(v, 1) for v in br],
+                            "label": lab.translate(DIGIT_FIX) if lab else None,
+                            "partial": abs(br.width / br.height - 1) > 0.12,
+                            "coords": list(board_coords(br, lines))})
             circled = raw is None and any(
                 CIRCLE_RE.match(t) and abs(r.y0 - pic.y0) < 25
                 and ((r.x0 < pic.x0 - 5 and r.x1 < pic.x0 + 25)
@@ -240,7 +338,10 @@ def main():
                 "circled": circled,
                 "partial": abs(pic.width / pic.height - 1) > 0.12,
                 "tall": pic.height > 1.3 * pic.width,
+                "coords": list(board_coords(pic, lines)),
             })
+            if sub:
+                diagrams[-1]["boards"] = sub
         for m in REF_RE.finditer(page.get_text()):
             refs[m.group(1).translate(DIGIT_FIX)] += 1
         pages.append({"page": i + 1, "chars": chars, "pictures": len(pics),
@@ -253,6 +354,8 @@ def main():
     main_keys = {(x["page"], x["label"]) for x in numbers if x["series"] == "main"}
     for d in diagrams:
         d["series"] = "main" if (d["page"], d["label"]) in main_keys else "other"
+        for b in d.get("boards", []):
+            b["series"] = "main" if (d["page"], b["label"]) in main_keys else "other"
     (out_dir / "diagrams.json").write_text(json.dumps(diagrams, indent=1))
     (out_dir / "numbers.json").write_text(json.dumps(numbers, indent=1))
     (out_dir / "pages.json").write_text(json.dumps(pages, indent=1))
@@ -279,6 +382,7 @@ def main():
     others = [x for x in numbers if x["series"] == "other"]
     labelled = [d for d in diagrams if d["label"]]
     tall = [d for d in diagrams if d["tall"]]
+    stacked = [d for d in diagrams if d.get("boards")]
     circled = [d for d in diagrams if d["circled"]]
     unlabelled = [d for d in diagrams if not d["label"] and not d["circled"]]
     partial = [d for d in diagrams if d["partial"]]
@@ -338,9 +442,11 @@ def main():
             f"or a strip of files{' (first on PDF pages ' + where(partial) + ')' if partial else ''}."
             "</li>"
             f"<li>{plural(len(tall), 'picture')} are much taller than wide. Some hold two or "
-            "three boards stacked in one image and others a narrow strip of a board; Stage 2 "
-            f"cuts them into single boards{' (first on PDF pages ' + where(tall) + ')' if tall else ''}."
-            "</li>"
+            "three boards stacked in one image and others a narrow strip of a board"
+            f"{' (first on PDF pages ' + where(tall) + ')' if tall else ''}. I found "
+            f"{plural(len(stacked), 'picture')} holding stacked boards and listed each of their "
+            "boards with its own number, so that later stages treat each board on its "
+            f"own{' (first on PDF pages ' + where(stacked) + ')' if stacked else ''}.</li>"
             f"<li>{plural(len(circled), 'picture')} carry a circled number beside the board. "
             "OCR usually reads a circle as a symbol such as &ldquo;@&rdquo; or "
             "&ldquo;&reg;&rdquo;, so these numbers will come from their order on the page"
@@ -415,7 +521,8 @@ def main():
 
     print(f"{n} pages: " + ", ".join(f"{k} {v}" for k, v in kinds.most_common()))
     print(f"{len(diagrams)} board pictures: {len(labelled)} numbered, {len(circled)} circled, "
-          f"{len(unlabelled)} unnumbered, {len(partial)} partial, {len(tall)} tall")
+          f"{len(unlabelled)} unnumbered, {len(partial)} partial, {len(tall)} tall, "
+          f"{len(stacked)} holding stacked boards")
     if main_labels:
         print(f"Main series {main_labels[0]}-{main_labels[-1]}: {len(main_labels)} labels, "
               f"missing {main_gaps}")
