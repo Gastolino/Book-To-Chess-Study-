@@ -525,3 +525,209 @@ def test_glyph_ending_in_digit_and_dot_stays_whole():
                     ("move", "'!1.c7!"), ("move", "%Yxc7")]
     # a real glued number still splits
     assert [t.raw for t in tokenize("9.\x18xd4t10.®c3")] == ["9.", "\x18xd4t", "10.", "®c3"]
+
+
+# ------------------------------------------------------------------ fixes after the audit
+
+def test_rook_junk_is_not_white_space():
+    """"\x1d" (OCR's rook) counts as white space for str.strip(); it must stay
+    a piece glyph, so "\x1dg3!" is a rook move, not the pawn move g3."""
+    from chessbook.movetext import parse_move_text
+    assert {p["prefix"] for p in parse_move_text("\x1dg3!")} == {"\x1d"}
+
+
+def test_glyph_that_includes_the_capture_mark():
+    """Junk such as "h" printed for "Bx": once the book shows it on captures
+    without an "x", a capture costs nothing and a quiet move costs more."""
+    from chessbook.movetext import GlyphModel, decode, find_sequences
+    g = GlyphModel()
+    g.learn([("h", "B")] * 6)
+    g.capture_counts["h"][True] += 6
+    assert g.implies_capture("h")
+    board = chess.Board("rn1qkbnr/ppp2p1p/3p2p1/4N3/2B1P1b1/2N5/PPPP1PPP/R1BQK2R b KQkq - 0 5")      # Legal's mate after 5.Nxe5
+    (d,) = decode(board, find_sequences("5...hdl")[0].tokens, glyphs=g)
+    assert d.san == "Bxd1"
+
+
+def test_weak_glyph_does_not_move_the_printed_square():
+    """Junk learnt once as a king ("l3") must not turn the printed h3 into h8."""
+    from chessbook.movetext import GlyphModel, decode, find_sequences
+    g = GlyphModel()
+    g.learn([("l3", "K")] + [("\x18", "N")] * 20)
+    board = chess.Board("6k1/5ppp/pb2p3/1p2P3/1P2bPnP/P1r5/1B4QP/R4R1K b - - 1 25")
+    (d,) = decode(board, find_sequences("25...l3h3!")[0].tokens, glyphs=g)
+    assert d.san == "Rh3" and d.status != "ok"
+
+
+def test_no_move_is_invented_and_a_numbered_skip_keeps_the_side():
+    from chessbook.movetext import decode, find_sequences
+    toks = find_sequences("1.e4 e5 2.Nf3 3.Bb5 a6")[0].tokens
+    decs = decode(chess.Board(), toks, insert=False)
+    assert all(d.missing_before is None for d in decs)
+
+
+def test_tokenizer_fixes():
+    from chessbook.movetext import tokenize
+    kinds = lambda t, lenient=False: [(x.kind, x.raw) for x in tokenize(t, lenient)]  # noqa: E731
+    # a rank digit split from its move, and a move number whose dot was lost
+    assert ("move", "i.xd 1") in kinds("7 ... i.xd 1 8.i.b5t c6")
+    assert ("number", "5") in kinds("4.Bc4 \x18f6 5 \x1bb3 Bxf3")
+    # "IJ" printed for "1." before a rook glyph
+    assert kinds("IJ\x1dd2! Kf3")[:2] == [("number", "I"), ("move", "J\x1dd2!")]
+    # junk where the numbering expects a move, in text set in the move font
+    assert ("move", "gam") in kinds("16.b3 gam 17.i.b2 e5", lenient=True)
+    assert ("move", "gam") not in kinds("16.b3 gam 17.i.b2 e5")
+    assert ("other", ",") in kinds("1.\x14xc3t, 2.Wfxf5t", lenient=True)
+    # a number after "Position" is not a move number
+    assert ("number", "68.") not in kinds("as in Position 68. 1he stalemate")
+    # a glyph split from its square
+    assert ("move", "ttl d4") in kinds("9.i.xf3 ttl d4 10.cxd4")
+
+
+def test_readable_comment_moves():
+    from chessbook.assemble import readable_move
+    from chessbook.movetext import GlyphModel
+    g = GlyphModel()
+    g.learn([("tLl", "N")] * 5 + [("Wf", "Q")] * 5)
+    assert readable_move("tLlxf6t", g) == "Nxf6+"
+    assert readable_move("Wfxd5t", g) == "Qxd5+"
+    assert readable_move("cx:d4", g) == "cxd4"
+    assert readable_move("c!L!f3t", g) is None        # junk the model does not know stays
+
+
+def test_repeated_waiting_moves_merge_by_printed_square():
+    from chessbook.assemble import _same_printed_move as same
+    assert same("\x18xf6t", "tLlxf6t") and same("e4", "e4!")
+    assert not same("gxf6", "\x1bxf6!!") and not same("exd5", "cxd5")
+
+
+def test_stage1_split_move_number_is_not_a_label():
+    import stage1_inspect as s1
+    r = pymupdf.Rect(34, 315, 48, 328)
+    assert s1.continues_as_move(r, [("17", r), ("• .ixf6t \x1bxf6", pymupdf.Rect(45, 315, 223, 328))])
+    assert not s1.continues_as_move(r, [("17", r)])
+    assert s1.LABEL_RE.match("b") is None and s1.LABEL_RE.match("14a")
+
+
+def test_stacked_boards_get_their_own_ids():
+    from chessbook import selection as sl
+    pic = {"page": 79, "rect": [42, 84, 201, 520], "pixels": [1320, 3640], "label": "118",
+           "partial": True, "tall": True,
+           "boards": [{"rect": [42, 84, 201, 231], "label": "118", "partial": False},
+                      {"rect": [42, 373, 201, 520], "label": "119", "partial": False}]}
+    other = {"page": 79, "rect": [242, 84, 401, 231], "pixels": [1320, 1232], "label": "120",
+             "partial": False, "tall": False}
+    recs = sl.expand_boards([pic, other])
+    assert sl.diagram_ids(recs) == ["p79-1a", "p79-1b", "p79-2"]
+    assert [r["label"] for r in recs] == ["118", "119", "120"]
+    s = sl.Selection({"diagrams": {"exclude": ["p79-1"]}})
+    assert not s.diagram_selected("p79-1b") and s.diagram_selected("p79-2")
+
+
+def test_small_square_corner_is_partial():
+    from chessbook import selection as sl
+    full = [{"page": 20 + i, "rect": [0, 0, 148, 148], "partial": False, "coords": [8, 8]}
+            for i in range(5)]
+    corner = {"page": 44, "rect": [0, 0, 75, 74], "partial": False, "coords": [4, 4]}
+    small_whole = {"page": 45, "rect": [0, 0, 75, 74], "partial": False, "coords": [8, 0]}
+    kinds = sl.picture_kinds(full + [corner, small_whole], 1)
+    assert kinds["p44-1"] == "partial" and kinds["p45-1"] == "board"
+
+
+@primer
+def test_primer_audit_regressions(pbook):
+    lines, nodes = pbook["lines"], pbook["nodes"]
+    by = lambda start: next(x for x in lines if x["title"].startswith(start))  # noqa: E731
+    # Rotlewi - Rubinstein ends with 25...Rh3 as printed
+    rot = by("Rotlewi - Rubinstein")
+    assert nodes[main_line(pbook, rot)[-1]]["san"] == "Rh3"
+    # no move is ever supplied by the program; Capablanca - Kevitz stops at a gap
+    assert pbook["stats"]["moves"]["inserted"] == 0
+    cap = by("Capablanca - Kevitz")
+    last = nodes[main_line(pbook, cap)[-1]]
+    assert last["status"] == "failed" and last["san"] is None and "lacks" in last["reason"]
+    # the Evans Gambit on page 359 reads as printed
+    ev = next(x for x in lines if x["page"] == 359 and x["start_fen"] == chess.STARTING_FEN)
+    assert sans(pbook, main_line(pbook, ev))[:8] == ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5",
+                                                     "b4", "Bxb4"]
+    # endings and problems do not read from the initial position
+    assert not [x for x in lines if x["page"] in (127, 156, 165, 299)
+                and x["start_fen"] == chess.STARTING_FEN]
+    # "hdl" is Bxd1 in Short Games 6 and in Legal's mate
+    for page in (31, 80):
+        assert any(n["page"] == page and n["raw"].startswith("hdl") and n["san"] == "Bxd1"
+                   for n in nodes.values())
+    # Furman - Spassky reaches its last move
+    fs = by("Furman - Spassky")
+    assert nodes[main_line(pbook, fs)[-1]]["san"] == "Ne1" and fs["result"] == "0-1"
+    # a game header without a place starts a game from the first move
+    yud = by("Mikhail Yudovich - N.N.")
+    assert yud["kind"] == "game" and yud["start_fen"] == chess.STARTING_FEN
+    # every decoded move is labelled with the number and side of its position
+    for n in nodes.values():
+        if n["san"] and n["parent"] and nodes[n["parent"]]["fen"]:
+            b = chess.Board(nodes[n["parent"]]["fen"])
+            assert (n["number"], n["black"]) == (b.fullmove_number, b.turn == chess.BLACK)
+
+
+@primer
+def test_primer_diagrams_and_solutions(pbook):
+    diag = {d["id"]: d for p in pbook["pages"] for d in p["diagrams"]}
+    # move numbers split from their moves are not diagram labels
+    assert diag["p253-2"]["label"] is None and diag["p253-3"]["label"] is None
+    # stacked boards are diagrams of their own
+    assert diag["p79-1a"]["label"] == "118" and diag["p79-1b"]["label"] == "119"
+    assert diag["p290-1b"]["lines"]
+    # small corners of a board are left out by default
+    assert diag["p44-1"]["kind"] == "partial" and not diag["p44-1"]["selected"]
+    # solutions that start with Black's move are solutions of their own
+    titles = {x["title"] for x in pbook["lines"] if x["page"] == 211}
+    assert {"Answers and Solutions 20", "Answers and Solutions 26",
+            "Answers and Solutions 32"} <= titles
+    two = {}
+    for x in pbook["lines"]:                 # the two-movers come first on the page
+        if x["page"] == 397:
+            two.setdefault(x["title"], x["diagram"])
+    assert two["Solutions to Problems 2"] == "p379-2" and two["Solutions to Problems 3"] == "p379-3"
+    # Position 79: 1.Kf7 is the main line and the try 1.g6+ a variation
+    d79 = next(x for x in pbook["lines"] if x["diagram"] == "p48-1")
+    first = pbook["nodes"][pbook["nodes"][d79["root"]]["children"][0]]
+    assert first["raw"].endswith("f7") and len(pbook["nodes"][d79["root"]]["children"]) == 2
+    assert any(x["diagram"] == "p48-2" for x in pbook["lines"])
+
+
+@primer
+def test_primer_structure_fixes(pbook):
+    secs = {c["index"]: [s["title"] for s in c["sections"]] for c in pbook["chapters"]}
+    assert "1. CHECKMATE" in secs[2] and "PIN" in secs[3]
+    assert any("(OR EIGHTH) RANK" in s and "CONQUE" in s for s in secs[3])
+    assert len(secs[11]) == len(set(secs[11]))
+    assert pbook["folio_offset"] == 1 and pbook["pages"][197]["folio"] == 197
+    flohr = next(x for x in pbook["lines"] if x["title"].startswith("Flohr - Horowitz"))
+    assert flohr["header"]["year"] == "1945"
+    reasons = {u["reason"] for u in pbook["unattached"]}
+    assert any("threat" in r for r in reasons)
+    assert not any("no game or diagram before it" in r for r in reasons)
+
+
+@primer
+def test_primer_pgn_keeps_notes_out_of_the_score(pbook, tmp_path):
+    rep = pgnout.write_pgn(pbook, tmp_path)
+    assert all(r["problems"] == [] for r in rep.values())
+    text = (tmp_path / "ch05.pgn").read_text(encoding="utf-8")
+    games = []
+    stream = io.StringIO(text)
+    while True:
+        g = chess.pgn.read_game(stream)
+        if g is None:
+            break
+        games.append(g)
+    fr = next(g for g in games if g.headers["White"] == "Fischer")
+    board = fr.board()
+    for mv in fr.mainline_moves():
+        last = board.san(mv)
+        board.push(mv)
+    assert last == "Ne6"             # 11...Kxe6 12.Qd5+ is a note, not the game
+    cap = next(g for g in games if g.headers["White"] == "Capablanca")
+    assert cap.headers["Result"] == "*" and "lacks" in cap.end().comment
+    assert all(g.headers["BookPage"] != g.headers["PDFPage"] for g in games)

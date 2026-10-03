@@ -205,3 +205,38 @@ def test_primer_reader_sizes():
     assert files
     for f in files:
         assert f.stat().st_size < reader.MAX_BYTES, f.name
+
+
+def test_reader_after_the_audit(little):
+    """The selection is kept in the browser and shared by both kinds of page,
+    the contents page previews each diagram, and the wording names what the
+    text recognition read instead of claiming what the book prints."""
+    out, book, _ = little
+    index = (out / "index.html").read_text(encoding="utf-8")
+    chapter = (out / "ch01.html").read_text(encoding="utf-8")
+    for text in (index, chapter):
+        assert "localStorage" in text and "chessbook-selection:" in text
+    crops = script_json(index, "crops")
+    assert set(crops) == {d["id"] for p in book["pages"] for d in p["diagrams"]}
+    assert 'id="lightbox"' in index and "Use this diagram" in index
+    for needle in ('id="usepage"', "usediag", "hashchange", "The text recognition read",
+                   "The program guesses that this diagram shows", 'id="mini"', "sideStep"):
+        assert needle in chapter, needle
+    assert "The book prints" not in chapter
+    data = script_json(chapter, "data")
+    assert data["selBase"] == script_json(index, "data")["selBase"]
+    # no internal diagram ids or picture-kind codes in the visible text
+    seen = visible_text(index) + visible_text(chapter)
+    assert not re.search(r"\bp\d+-\d+\b", seen) and "board_plus" not in seen
+    # the chapter heading has no colon between book, chapter and title
+    assert "<h1>Chapter 1, First Steps</h1>" in chapter
+
+
+def test_chapter_heading_and_plurals():
+    ch = {"label": "Chapter 7", "subtitle": "How to Begin a Game", "title": "Chapter 7: How to Begin a Game"}
+    assert reader.chapter_heading(ch) == "Chapter 7, How to Begin a Game"
+    counts = {"lines": 1, "games": 1, "fragments": 0, "variations": 2, "unattached": 1, "waiting": 1,
+              "moves": {"ok": 1, "guessed": 0, "ambiguous": 0, "failed": 0, "waiting": 1}}
+    t = reader._counts_table(counts)
+    assert "<b>1</b><span>line</span>" in t and "<b>2</b><span>variations placed</span>" in t
+    assert "<b>1</b><span>move sequence not placed</span>" in t

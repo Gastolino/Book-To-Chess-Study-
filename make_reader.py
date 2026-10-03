@@ -2,7 +2,7 @@
 
 Usage:
     python3 make_reader.py BOOK.pdf [--chapters 5,7] [--selection FILE]
-                           [--letters English] [--passes 2] [--reuse]
+                           [--letters English] [--passes 3] [--reuse]
 
 Writes, under output/<book>/:
     book.json           every line, move, variation and comment the program assembled

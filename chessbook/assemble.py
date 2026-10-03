@@ -5,21 +5,28 @@ finds every run of numbered moves, decodes the runs into legal moves and
 joins them into lines (games and fragments) with variations and comments.
 It writes output/<stem>/book.json and returns the same dict:
 
-    {"title", "pdf", "page_count", "glyphs",
-     "pages": [{"page", "width", "height", "chapter", "selected",
+    {"title", "pdf", "page_count", "folio_offset", "glyphs",
+     "pages": [{"page", "folio", "width", "height", "chapter", "selected",
                 "diagrams": [{"id", "rect", "label", "kind", "selected", "fen",
-                              "status", "after_node"}],
-                "marks": [{"bbox", "node", "status", "raw", "line"}]}],
+                              "status", "after_node", "lines"}],
+                "marks": [{"bbox", "node", "status", "raw", "line", "reason"?}]}],
      "chapters": [{..book_structure chapter.., "index", "file", "counts"}],
      "lines": [{"id", "title", "kind", "chapter", "page", "end_page", "start_fen",
                 "root", "status", "diagram", "section", "header", "result",
-                "moves"}],
+                "moves", "variations"}],
      "nodes": {id: {"san", "fen", "parent", "children", "number", "black",
                     "page", "bbox", "status", "raw", "comment", "main",
-                    "assumed", "line"}},
+                    "assumed", "uci", "line", "alternatives"?, "reason"?}},
      "unattached": [{"page", "chapter", "text", "reason"}],
      "waiting": [{"page", "chapter", "text", "reason", "line", "diagram"}],
      "stats": {...}}
+
+"folio" is the page number printed in the book (PDF page minus the
+"folio_offset" learnt from the running heads; None where the book prints
+none); line titles and reasons name printed pages. Diagram ids are those of
+selection.py: a picture that holds stacked boards gives one diagram per board
+("p79-1a", "p79-1b"). A decoded node's number and side come from the
+position it is played in, so the labels always match the board.
 
 How the text is read
 --------------------
@@ -31,37 +38,52 @@ text, the main-font words only and the note words only, the other words
 blanked out. find_sequences runs on the two filtered buffers, so a main line
 continues across the notes between its moves, while a note never merges
 with the main line. Token offsets are the same in all buffers and map back
-to the word boxes on the page.
+to the word boxes on the page. Moves in the move font inside a sentence of
+body text ("should White play 1.g6+, ...") count as notes.
 
 How lines are formed
 --------------------
 A game starts at a game header, or at a main-font run that begins at move 1
-with White. Following main-font runs that continue its numbering continue it,
-across columns and pages, until a heading, the next game header, a result or
-the end of the chapter. A run that starts later than move 1 without an
-earlier line to continue starts from the diagram printed before it; the
+with White and reads as play from the initial position: cleanly over two
+moves each at least, with no printed piece glyph or capture mark dropped to
+make it fit, and with no diagram named ("Diagram 430") or position set up in
+its sentence. Following main-font runs that continue its numbering continue
+it, across columns, pages and diagrams, until a heading, the next game
+header, a solution number, a result or the end of the chapter. Where the
+numbering skips moves that the text lacks, the program does not invent them:
+the decoded part of the line ends with a "gap" node (status failed, no move,
+with a reason) and the rest of the printed score follows unread. A run that
+starts later than move 1 without an earlier line to continue starts from the
+diagram the sentence names, or else the diagram printed before it; the
 diagram's position is read by Stage 3, so until then the line has status
 "waiting" and keeps its raw move text. A numbered solution ("5. S. Loyd,
-1878: 1.Qa1!!") is matched to the diagram with the same number among the
-exercises before it.
+1878: 1.Qa1!!", "20. 2...Rh3+!") is matched to the diagram with the same
+number among the exercises before it.
 
 Note runs become variations. A note run whose first move has the number of a
 move in the line becomes an alternative to that move; a run that continues a
-variation of the same note continues it; a run inside parentheses branches
-off the variation that encloses it. Each placement is decoded from the
-position it implies and kept only when the moves read cleanly from there.
-Runs that cannot be placed go to "unattached" with the reason.
+variation of the same note continues it ("..., followed by 15...Nxb4" can
+only continue it); a run inside parentheses branches off the variation that
+encloses it. Each placement is decoded from the position it implies and kept
+only when the moves read cleanly from there, and no printed capture mark is
+read as a quiet move. Runs the text gives as a threat or a plan
+("threatening 13.Rh3"), runs whose sentence names another diagram (those
+start a line of their own) and runs without a move number that no word such
+as "instead" or "better" ties to a move are not placed. Runs that cannot be
+placed go to "unattached" with the reason in plain words.
 
 A diagram's "after_node" names the move whose position the text ties to
-the diagram: the last main-line move before a diagram printed inside a
-decoded line, or the last move of an opening sequence from the initial
-position that the text gives just after the diagram ("This position arises
-after the opening moves 1.e4 e5 ..."). Stage 3 can check its board reading
-against it.
+the diagram: the last main-line move before a diagram printed inside or
+right after a decoded line, or the last move of an opening sequence from the
+initial position that the text gives just after the diagram ("This position
+arises after the opening moves 1.e4 e5 ..."). It is a guess for Stage 3 to
+check against its board reading.
 
-Decoding uses movetext's two-pass glyph learning over the whole book: the
-book is assembled once with no glyph knowledge, a GlyphModel learns from the
-runs that read cleanly, and the book is assembled again with that model.
+Decoding uses movetext's glyph learning over the whole book: the book is
+assembled once with no glyph knowledge, a GlyphModel learns from the runs
+that read cleanly, and the book is assembled again with that model; a third
+pass learns the book's square habits (such as "6" printed for f3) from the
+second pass, whose runs read cleanly enough to teach them.
 """
 from __future__ import annotations
 
@@ -892,11 +914,15 @@ class _Builder:
             elif kind == "diagram":
                 self.diagram_events.append((off, x))
                 self.diagram_section.append(self.section_index)
-                if (a is not None and not a.waiting and not a.broken and a.main_tok
-                        and len(self.st.orig_text[a.last_token_end:off].strip()) < 120):
+                if a is not None and not a.waiting and a.main_tok:
                     # a diagram printed right after decoded moves shows the
-                    # position they reach (a guess for Stage 3 to check)
-                    self.after_node.setdefault(x, a.main_nodes[-1])
+                    # position they reach (a guess for Stage 3 to check); the
+                    # run may already go on past the diagram
+                    ends = [e for _, e, _ in a.main_tok]
+                    k = bisect.bisect_right(ends, off) - 1
+                    if k >= 0 and len(self.st.orig_text[ends[k]:off].strip()) < 120 and \
+                            self.nodes[a.main_tok[k][2]]["fen"]:
+                        self.after_node.setdefault(x, a.main_tok[k][2])
                 if a is not None and a.kind == "fragment" and a.main_tok:
                     self.request_close(off)
                 self.structural = max(self.structural, off)
@@ -939,7 +965,7 @@ class _Builder:
                 L.notes.append((run, False))
                 continue
             if run.ply is None:
-                self.unplaced(run, "its first move has no number to place it by")
+                self.unplaced(run, "its first move carries no move number")
                 continue
             saved = self.exercise
             self.exercise = run.context
@@ -1588,11 +1614,16 @@ class _Builder:
         if follows:
             return ("the text gives it as the continuation of the variation before it, "
                     "and it does not read as legal play from there")
+        if placed is None and run.ply is None:
+            return (f"its first move carries no move number, and no move of the line "
+                    f"\"{L.title}\" fits it")
         if placed is None:
             return (f"the line \"{L.title}\" does not reach {_ply_words(run.ply)}, where it "
                     "would branch off")
         if isinstance(placed, tuple) and placed[1]:
             return placed[1]
+        if run.ply is None:
+            return f"its moves are not legal at any place in the line \"{L.title}\""
         return (f"its moves are not legal where the numbering puts them in the line "
                 f"\"{L.title}\", at {_ply_words(run.ply)}")
 
@@ -1705,8 +1736,9 @@ class _Builder:
             return None
         bad = next((d for d in decs if d.status == "failed"), None)
         if bad is not None and not _plain_move(bad.raw):
-            return (f"the program could not read its move \"{_shown(bad.raw)}\" at "
-                    f"{_ply_words(run.ply)} of the line \"{L.title}\"")
+            where = f" at {_ply_words(run.ply)}" if run.ply is not None else ""
+            return (f"the program could not read its move \"{_shown(bad.raw)}\"{where} of the "
+                    f"line \"{L.title}\"")
         return None
 
     def insert_waiting(self, L, parent, run):
@@ -1800,7 +1832,7 @@ class _Builder:
             for doff, did in self.diagram_events:
                 if L.first_offset < doff < L.last_token_end:
                     k = bisect.bisect_right(ends, doff) - 1
-                    if k >= 0:
+                    if k >= 0 and self.nodes[L.main_tok[k][2]]["fen"]:
                         self.after_node.setdefault(did, L.main_tok[k][2])
         if L.waiting:
             status = "waiting"
