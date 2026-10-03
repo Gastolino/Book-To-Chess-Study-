@@ -25,7 +25,18 @@ their method page by page:
   ClearScan) and each diagram is a separate embedded picture.
 - **text**: typeset pages whose diagrams are drawn from shapes or a chess font.
 
-## Running it
+## Using the app
+
+Open the published site, drop a chess book PDF on the page, and read it beside
+a live board. The book is processed in your own browser (Python runs there
+through Pyodide) and is never uploaded. The first visit downloads about 30 MB;
+later visits start at once. The Primer (402 pages) takes about three minutes
+on a desktop browser; each chapter then opens in about two seconds.
+
+The workflow in `.github/workflows/pages.yml` rebuilds and publishes the site
+whenever `main` changes. `python3 tools/build_web.py --help` builds it by hand.
+
+## Running it from the command line
 
 ```
 pip install --use-pep517 -r requirements.txt

@@ -1,0 +1,57 @@
+# Builds the browser app and publishes it with GitHub Pages.
+# A reader opens the site, drops a chess book PDF on it, and reads the book
+# beside a live board. Books are processed in the reader's browser and are
+# never uploaded or stored here.
+name: Publish the app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Fetch the browser builds of PyMuPDF and python-chess
+        run: |
+          mkdir -p wheels
+          python -m pip wheel --no-deps chess==1.11.2 -w wheels
+          python - <<'PY'
+          import json, urllib.request
+          data = json.load(urllib.request.urlopen("https://pypi.org/pypi/pymupdf/1.28.2/json"))
+          url = next(f["url"] for f in data["urls"] if "pyemscripten_2025_0" in f["filename"])
+          urllib.request.urlretrieve(url, "wheels/" + url.rsplit("/", 1)[1])
+          PY
+          ls -l wheels
+      - name: Build the site
+        run: |
+          python tools/build_web.py --out site \
+            --pymupdf wheels/pymupdf-1.28.2-cp313-abi3-pyemscripten_2025_0_wasm32.whl \
+            --chess wheels/chess-1.11.2-py3-none-any.whl
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
