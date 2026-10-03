@@ -49,7 +49,15 @@ moves each at least, with no printed piece glyph or capture mark dropped to
 make it fit, and with no diagram named ("Diagram 430") or position set up in
 its sentence. Following main-font runs that continue its numbering continue
 it, across columns, pages and diagrams, until a heading, the next game
-header, a solution number, a result or the end of the chapter. Where the
+header, a solution number, a result or the end of the chapter. A heading
+only ends a decoded line when no main run continues it afterwards: one that
+continues its numbering and reads as legal play from its last position
+resumes it (a chess-font diagram set as text lines, a running title). Main-
+font moves named inside the notes ("Perhaps 15 ... Bf8"), in a box of advice
+that the book sets in the move font ("WARNING: ... for instance, 11 Qh4") or
+in a caption are notes, not moves of the line. A misread move number of a
+run that continues the line ("1 ... fxe4" for 7...fxe4, "s" for 5) is read
+as the number the line expects. Where the
 numbering skips moves that the text lacks, the program does not invent them:
 the decoded part of the line ends with a "gap" node (status failed, no move,
 with a reason) and the rest of the printed score follows unread. A run that
@@ -63,8 +71,10 @@ number among the exercises before it.
 Note runs become variations. A note run whose first move has the number of a
 move in the line becomes an alternative to that move; a run that continues a
 variation of the same note continues it ("..., followed by 15...Nxb4" can
-only continue it); a run inside parentheses branches off the variation that
-encloses it. Each placement is decoded from the position it implies and kept
+only continue it; "5.e5 in view of 5...Qa5+" continues 5.e5; "9 0-0 (or 9
+Bg5 ...) 9 ... d5 10 Bb3 and then: a) 10 ... b5" continues the variation
+that the parenthesis interrupted); a run inside parentheses or brackets
+branches off the variation that encloses it. Each placement is decoded from the position it implies and kept
 only when the moves read cleanly from there, and no printed capture mark is
 read as a quiet move. Runs the text gives as a threat or a plan
 ("threatening 13.Rh3"), runs whose sentence names another diagram (those
@@ -78,6 +88,12 @@ right after a decoded line, or the last move of an opening sequence from the
 initial position that the text gives just after the diagram ("This position
 arises after the opening moves 1.e4 e5 ..."). It is a guess for Stage 3 to
 check against its board reading.
+
+Move numbers: the book's habit is learnt from its text (book_numbering).
+In a book that prints numbers without a dot ("1 e4 c5 2 Nc3"), the
+tokenizer reads such numbers too (see movetext.tokenize); a number without
+dots names no side, so the narrow-table layout that repeats the number
+before Black's reply ("12" / "ttJxd5") reads as Black's move.
 
 Decoding uses movetext's glyph learning over the whole book: the book is
 assembled once with no glyph knowledge, a GlyphModel learns from the runs

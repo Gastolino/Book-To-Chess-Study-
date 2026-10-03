@@ -13,6 +13,13 @@ Three steps, each usable on its own:
     find_sequences(text)      -> [Sequence]  runs of numbered moves, with depth
     decode(board, tokens)     -> [Decoded]   legal moves for one run of tokens
 
+Some books print move numbers without a dot ("1 e4 c5 2 Nc3", "3 ... e6").
+uses_dotless_numbers() tells from a book's text whether it does, and
+tokenize(text, dotless=True) then reads a bare number as a move number when
+the run expects it, or when the word after it clearly looks like a move;
+numbers in prose ("2 pawns", "Diagram 1", years, page numbers) stay prose.
+Whether the move after it is legal is for decode() to tell.
+
 Decoding works against the legal moves of the position, never against a
 grammar alone: every legal move is scored by how well it explains the raw
 token (piece glyph, disambiguation, capture mark, destination square,
