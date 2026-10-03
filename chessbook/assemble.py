@@ -1374,7 +1374,10 @@ class _Builder:
         lost = any(d.glyph_lost or (d.capture_mark and d.san and "x" not in d.san) for d in decs)
         lead = self.lead_text(run.start, 240)
         if self.pending_header is not None:
-            accept = rank <= 1 or (n >= 6 and failed <= 0.2 * n and decs[0].status != "failed")
+            # a game from its first move, unless a diagram printed under the
+            # header shows the position the moves start from ("1.Rb3!")
+            accept = (rank <= 1 or (n >= 6 and failed <= 0.2 * n and decs[0].status != "failed")) \
+                and (did is None or (n >= 6 and not lost))
         elif lost or self.referenced_diagram(run) or _SETUP_RE.search(lead):
             accept = False
         elif rank == 0:

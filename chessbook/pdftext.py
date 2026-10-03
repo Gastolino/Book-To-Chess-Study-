@@ -1276,8 +1276,10 @@ def book_structure(doc):
     front_end = chapters[0]["start"] - 1 if chapters else 0
     front = []
     for p in range(1, front_end + 1):
-        for s in _sections(pages, p, p, set(), bs, min_size=1.25 * bs, caps_ok=True):
-            front.append(s)
+        found = _sections(pages, p, p, set(), bs, min_size=1.25 * bs, caps_ok=True)
+        # chapter titles before the first chapter are entries of a table of
+        # contents, not sections of the front matter
+        front.extend(s for s in found if not parse_chapter_heading(s["title"]))
     result = {"chapters": chapters, "front_matter_end": front_end, "front_matter": front}
     cache["structure"] = result
     return copy.deepcopy(result)
