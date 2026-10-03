@@ -575,7 +575,7 @@ class _Parsed:
     parses: list
 
 
-_RESULT_RE = re.compile(r"^(?:1-0|0-1|l-0|0-l|1/2-1/2|½-½|Y2-Y2|1/2-l/2|1:0|0:1)$")
+_RESULT_RE = re.compile(r"^(?:1-0|0-1|l-0|0-l|1-o|o-1|l-o|o-l|1/2-1/2|½-½|Y2-Y2|1/2-l/2|1:0|0:1)$")
 _CASTLE_RE = re.compile(r"^[0Oo°](?:[-–—_.]?[0Oo°]){1,2}$")
 _PAREN_ANN = re.compile(r"\((?:[!?]{1,2})\)$")
 
@@ -1199,6 +1199,31 @@ def _glued_moves(w: str) -> Optional[int]:
 _OCR_NUMBER_WORDS = {"g": 9, "s": 5, "S": 5, "l": 1, "I": 1}
 
 
+# Digits that OCR takes for one another.
+_DIGIT_SLIPS = {("1", "7"), ("7", "1"), ("3", "8"), ("8", "3"), ("5", "6"), ("6", "5"),
+                ("5", "8"), ("8", "5"), ("6", "8"), ("8", "6"), ("0", "8"), ("8", "0")}
+
+
+def _ocr_digit_slip(printed: str, want: int) -> bool:
+    """True when a printed number differs from want in one digit that OCR
+    commonly misreads ("11" for 17)."""
+    p = re.sub(r"\D", "", printed)
+    w = str(want)
+    if len(p) != len(w):
+        return False
+    diff = [(a, b) for a, b in zip(p, w) if a != b]
+    return len(diff) == 1 and diff[0] in _DIGIT_SLIPS
+
+
+def _prose_word(w: str) -> bool:
+    """A word of prose ("Answer:", "Black,", "Both", "White's", "GM's"), which
+    is never an unreadable move nor a glyph split from its square."""
+    if re.fullmatch(r"[A-Za-z]{2,}['’]s[:.,;]*", w):
+        return True
+    return bool(re.fullmatch(r"[A-Z]?(?=[a-z]*[aeiouy])[a-z]{3,}[:.,;]*|[A-Z][A-Z]{3,}[:.,;]*", w)) \
+        and not _shape(w) and not _PIECE_WORD_RE.match(w)
+
+
 def _square_word(w: str) -> bool:
     """A short word that reads as a square ("es" for e5, "as" for a5)."""
     core = _strip_suffix(w)[0]
@@ -1359,9 +1384,12 @@ def _dotless_number(text, pieces, digit_spans, j, st, rest=None):
         return None
     if not re.fullmatch(r"[0-9]+(?: [0-9]+)*", digits):
         # "I" and "s" are words in prose: an OCR letter read as a digit ("s Bbs"
-        # for 5 Bb5) counts only where the run expects that very number
+        # for 5 Bb5) counts only where the run expects that very number, or for
+        # an "S" or "s" alone before a clear move ("Answer: S lbd2!")
         exp = st.expect() if st is not None and st.in_seq and st.prev == "move" else (None, None)
-        if exp[0] is None or (exp[0] + 1 if exp[1] else exp[0]) not in vals:
+        a, b = rest or pieces[j]
+        alone = digits in ("S", "s") and _shape(text[a:b]) == "strong"
+        if not alone and (exp[0] is None or (exp[0] + 1 if exp[1] else exp[0]) not in vals):
             return None
     a, b = rest or pieces[j]
     w2 = text[a:b]
@@ -1454,6 +1482,9 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
         w = text[a:b]
         if _RESULT_RE.match(w) or w in ")]};,([" or _DOTS_ONLY_RE.match(w):
             return True
+        if dotless and w in _OCR_NUMBER_WORDS and j + 1 < len(pieces) \
+                and _shape(text[pieces[j + 1][0]:pieces[j + 1][1]]) == "strong":
+            return True                  # "cs s .i.g2": 5 printed as "s"
         return _scan_number(text, pieces, j, None, dotless) is not None
 
     def next_is_strong(j):
@@ -1466,19 +1497,23 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             toks.append(Token("result", w, s, e))
             st.in_seq, st.prev = False, "result"
             return j
+        if (w in ("A", "I") and j < len(pieces) and _prose_word(text[pieces[j][0]:pieces[j][1]])) \
+                or re.fullmatch(r"[A-Za-z]{2,}['’]s[:.,;]*", w):
+            other(s, e)                          # "1. A pawn ...", "4. White's": a numbered list
+            return j
         if _shape(w) or (_parse_raw(w).parses and not w[:1].isupper()
                          and (next_is_boundary(j) or next_is_strong(j))):
             move(s, e)
             return j
         if j < len(pieces) and len(w) <= 5 and not any(ch.isdigit() for ch in w) \
-                and pieces[j][0] - e == 1:
+                and pieces[j][0] - e == 1 and not _prose_word(w):
             a, b = pieces[j]                     # a glyph split from its square: "V d8#"
             w2 = text[a:b]
             if _plain_square_start(w2) and _shape(w2) == "strong":
                 move(s, b)
                 return j + 1
         if (not w.isalpha() and len(w) <= 10 and not _ANNOT_RE.match(w) and w not in "([{)]}"
-                and any(ch.isalnum() or ord(ch) < 32 for ch in w)):
+                and any(ch.isalnum() or ord(ch) < 32 for ch in w) and not _prose_word(w)):
             move(s, e)                           # unreadable, kept so that the run goes on
             return j
         other(s, e)
@@ -1544,6 +1579,9 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
                 # the moves as a table ("12 ltJd5" / "12 ttJxd5")
                 tok.number, tok.black = exp_n, True
                 return True
+            if _ocr_digit_slip(tok.raw, want) and shp:
+                tok.number = want          # "16 ... hs 11 tl)1h2": 17 with its 7 read as 1
+                return True
         if shp == "strong":
             return True
         if shp != "weak":
@@ -1559,7 +1597,8 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
 
     def lenient_move(i, w):
         if not lenient or len(w) > 10 or _ANNOT_RE.match(w) or _RESULT_RE.match(w) \
-                or not any(ch.isalpha() for ch in w):
+                or not any(ch.isalpha() for ch in w) \
+                or (_prose_word(w) and (not w.isalpha() or len(w) >= 5 or w[0].isupper())):
             return False
         if re.fullmatch(r"[^ ]{2,8}[!?]{1,3}", w) and re.search(r"[a-h£]", w[:-1]):
             return True                  # "ttlge???": a move with its rank lost

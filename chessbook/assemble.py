@@ -105,6 +105,7 @@ from . import selection as sel
 from .movetext import GlyphModel, clean_run, decode, find_sequences, numbering_counts
 from .movetext import DOTLESS_MIN, DOTLESS_SHARE
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
+from .movetext import _ocr_digit_slip
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -126,7 +127,7 @@ _MOVE_ONE_RE = re.compile(r"^(?:[0-9lI]{1,3} ?[.…•·]|[0-9lI]{1,2}$|[1lI]J[^
 # than moves played or recommended: such runs are not variations.
 _THREAT_RE = re.compile(
     r"\b(?:threat\w*|prepar(?:es|ing|ed) to|wants? to|wanting to|plans?|planning|"
-    r"intend\w*|resulting from|with the idea|aim\w* (?:at|to))\b", re.I)
+    r"intend\w*(?! to (?:play|continue|answer|meet))|resulting from|with the idea|aim\w* (?:at|to))\b", re.I)
 # Words that may stand between such a cue and the moves it introduces.
 _CONNECT_WORDS = {"and", "then", "followed", "by", "or", "with", "of", "the", "a", "an",
                   "to", "carry", "out", "play", "playing", "double", "move", "moves", "after",
@@ -153,8 +154,8 @@ _REAL_WORD_RE = re.compile(r"^[^\W\d_]{2,}")
 _BARE_NUMBER_RE = re.compile(r"^[0-9lIO]{1,3}$")
 _NUMBER_LINE_RE = re.compile(r"^[0-9lIOS]{1,3}(?: [0-9lIOS])?(?: ?[.…•·]+)*$")
 _DOTS_RE = re.compile(r"^[.…•·]+$")
-_RESULT_NORM = {"1-0": "1-0", "l-0": "1-0", "1:0": "1-0", "0-1": "0-1", "0-l": "0-1",
-                "0:1": "0-1"}
+_RESULT_NORM = {"1-0": "1-0", "l-0": "1-0", "1:0": "1-0", "1-o": "1-0", "l-o": "1-0",
+                "0-1": "0-1", "0-l": "0-1", "0:1": "0-1", "o-1": "0-1", "o-l": "0-1"}
 
 
 # ---------------------------------------------------------------- helpers
@@ -182,6 +183,18 @@ def _renumbered(run, ply):
     moves = [t for t in toks if t.kind == "move"]
     return _Run(run.kind, toks, moves, run.start, run.end, run.depth, _ply(moves[0]), run.result,
                 run.home, run.context)
+
+
+def _first_moves(tokens, n):
+    """The tokens of a run up to its n-th move."""
+    out, k = [], 0
+    for t in tokens:
+        if t.kind == "move":
+            if k == n:
+                break
+            k += 1
+        out.append(t)
+    return out
 
 
 def _ply_label(ply):
@@ -749,6 +762,7 @@ class _Builder:
     def build_stream(self, ch):
         st = _Stream()
         excluded_run = False
+        list_next = None        # the next item number of a numbered list in the prose
         for p in range(ch["start"], ch["end"] + 1):
             if not self.selection.page_selected(p):
                 if not excluded_run:
@@ -762,8 +776,7 @@ class _Builder:
             for did, k in dpos.items():
                 # a margin icon or a drawing that the selection leaves out is no
                 # position for a line to start from
-                if self.kinds.get(did) in ("icon", "illustration") and \
-                        not self.selection.diagram_selected(did):
+                if self.not_a_board(did):
                     continue
                 by_line[k].append(did)
             st.event("page", p)
@@ -779,14 +792,25 @@ class _Builder:
                 if role in ("heading", "game_header", "caption"):
                     st.event(role, ln)
                     prev = None
+                    if role != "caption":
+                        list_next = None
                     continue
                 classes = self.word_classes(ln)
                 if prev is not None and prev_classes:
                     self.number_line_move(prev, prev_classes, ln, classes)
+                para = self.para_start(p, ln, prev)
+                if (not self.moves_font and not para and prev is not None
+                        and prev["role"] == "text" and all(c == "m" for c in classes)
+                        and not re.search(r"[.!?:;)\]]\s*$", prev["text"])
+                        and any(w.isalpha() and w.islower() and not _shape(w)
+                                for w in ln["text"].split(" "))):
+                    # a sentence of the notes that runs on to a line of moves
+                    # ("... Black's pieces are also well placed after 22.Ne2" /
+                    # "Qe5 23.f4 Qf6 or 23...Qc5.")
+                    classes = ["n"] * len(classes)
                 prev_classes = classes
                 text = ln["text"]
                 mask = 0
-                para = self.para_start(p, ln, prev)
                 if para:
                     st.event("para")
                 m = _EXERCISE_RE.match(text + (" " if re.fullmatch(r"\d{1,3}[a-d]?\.", text) else ""))
@@ -802,6 +826,16 @@ class _Builder:
                     if worded and not para and prev is not None \
                             and not re.search(r"[.!?:;)]$", prev["text"]):
                         worded = False       # a sentence that runs on over a line break
+                    if worded and (
+                            (m.group(1) == "1" and prev is not None
+                             and prev["text"].rstrip().endswith(":"))
+                            or (list_next is not None and m.group(1) == str(list_next))):
+                        # a numbered list in the prose ("Black gains in two ways:"
+                        # / "1. Black may play ...g6" / "2. ..."), not solutions
+                        list_next = int(m.group(1)) + 1
+                        worded = False
+                        m = None
+                if m:
                     if not rest.strip() or _MOVE_ONE_RE.match(rest) or worded:
                         mask = m.end()
                         st.event("exercise", m.group(1))
@@ -819,6 +853,19 @@ class _Builder:
                 st.event("diagram", did)
         st.finish()
         return st
+
+    def not_a_board(self, did):
+        """True for a picture the selection leaves out that is no board at all:
+        a margin icon, a drawing, or a strip far wider than high (a shaded box
+        behind a question, a rule)."""
+        if self.selection.diagram_selected(did):
+            return False
+        kind = self.kinds.get(did)
+        if kind in ("icon", "illustration"):
+            return True
+        r = self.diag_info[did]["rect"]
+        w, h = r[2] - r[0], r[3] - r[1]
+        return kind == "partial" and (w > 2.5 * h or h > 2.5 * w)
 
     def move_number_label(self, lines, k):
         """True when a number taken for a diagram's label is a move number set
@@ -929,6 +976,7 @@ class _Builder:
         self.section_raw = ""
         self.prev_heading = None
         self.last_closed = None
+        self.suspended = None           # (line, offset): a line a heading interrupted
         prev_kind = None
         self.now = 0
         for off, _, _, kind, x in items:
@@ -936,11 +984,13 @@ class _Builder:
             a = self.active
             if a is not None and a.close_at is not None and off >= a.busy_until:
                 self.close(max(a.close_at, a.busy_until))
+            if kind in ("game_header", "break", "diagram", "exercise"):
+                self.close_suspended()          # the heading did end the line
             if kind in ("heading", "game_header", "break", "diagram", "exercise"):
                 self.flush_pre_notes()
             a = self.active
             if kind == "heading":
-                self.close(off)
+                self.suspend(off)
                 raw = x["text"]
                 ph = self.prev_heading
                 joined = (prev_kind == "heading" and ph is not None and ph["page"] == x["page"]
@@ -1350,6 +1400,12 @@ class _Builder:
 
     # -------------------------------------------------------- main runs
     def on_main(self, run):
+        if self.suspended is not None:
+            L = self.suspended[0]
+            if run.ply != L.next_ply:
+                run = _renumbered(run, L.next_ply) or self.misnumbered(L, run) or run
+            if not self.resume(run):
+                self.close_suspended()
         L = self.active
         if L is not None and run.ply != L.next_ply:
             run = _renumbered(run, L.next_ply) or self.misnumbered(L, run) or run
@@ -1425,7 +1481,7 @@ class _Builder:
 
     def misnumbered(self, L, run):
         """The run renumbered to continue L when its printed number differs from
-        the expected one in a single digit ("1 ... fxe4" printed for 7...fxe4)
+        the expected one in a digit that OCR misreads ("1 ... fxe4" for 7...fxe4)
         and its moves read cleanly as the continuation of L, else None."""
         first = run.tokens[0]
         if (L.waiting or L.broken or not L.last_fen or first.kind != "number"
@@ -1434,9 +1490,7 @@ class _Builder:
         n, black = L.next_ply // 2 + 1, bool(L.next_ply % 2)
         if first.side_known and bool(first.black) != black:
             return None
-        printed = re.sub(r"\D", "", first.raw)
-        want = str(n)
-        if len(printed) != len(want) or sum(a != b for a, b in zip(printed, want)) != 1:
+        if not _ocr_digit_slip(first.raw, n):
             return None
         toks = list(run.tokens)
         _relabel(toks, n, black)
@@ -1906,7 +1960,46 @@ class _Builder:
                     L.replace.append((t.start, t.end, text))
 
     # -------------------------------------------------------- closing
+    def suspend(self, off):
+        """A heading interrupts the active line. The line is held open instead
+        of closed when its decoded moves could go on: when the next main run
+        continues its numbering and reads as legal play from its last
+        position, the heading was a line inside the game (a chess-font
+        diagram, a running title) and the game goes on (see resume)."""
+        L = self.active
+        if L is None:
+            return                  # a suspended line stays so over several headings
+        if L.waiting or L.broken or not L.main_tok or not L.last_fen:
+            self.close(off)
+            return
+        self.close_suspended()
+        self.suspended = (L, off)
+        self.active = None
+
+    def resume(self, run):
+        """Reopen the suspended line for a main run that continues it; True when
+        it did."""
+        L, off = self.suspended
+        if run.ply != L.next_ply or self.pending_header is not None:
+            return False
+        if _fit(self.dec.run(L.last_fen, _first_moves(run.tokens, 4)))[0] != 0:
+            return False
+        self.suspended = None
+        self.active = L
+        self.adopt_pre_notes(L)
+        return True
+
+    def close_suspended(self):
+        if self.suspended is None:
+            return
+        L, off = self.suspended
+        self.suspended = None
+        active, self.active = self.active, L
+        self.close(off)
+        self.active = active
+
     def close(self, off):
+        self.close_suspended()
         L = self.active
         self.active = None
         if L is None:
