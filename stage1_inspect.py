@@ -28,6 +28,8 @@ from pathlib import Path
 import numpy as np
 import pymupdf
 
+from chessbook import style
+
 DPI = 300
 MAX_SAMPLES = 12
 
@@ -50,6 +52,7 @@ CIRCLE_RE = re.compile(r"^(?:[①-⑳⓵-⓾]|\(\d{1,3}\)|\(?(?:@|®|©|G\)|CD))
 RESULTS = {"1-0", "0-1", "l-0", "0-l"}  # game results, which look like "3-12" labels
 MAX_GAP = 90       # points between a label and the edge of its picture
 FULL_PAGE = 0.85   # a picture covering this share of the page is a page scan
+ACCENT = (0x2f / 255, 0x55 / 255, 0xc8 / 255)  # --accent of DESIGN.md, for the sample outlines
 
 
 def text_lines(page):
@@ -241,8 +244,8 @@ def main_series(numbers):
 
 def series_name(d):
     if d["label"]:
-        return "main" if d["series"] == "main" else "other"
-    return "circled" if d["circled"] else "none"
+        return "Main" if d["series"] == "main" else "Other"
+    return "Circled" if d["circled"] else "None"
 
 
 def pick_samples(n, pages, diagrams):
@@ -266,7 +269,48 @@ def pick_samples(n, pages, diagrams):
 
 
 def plural(k, one, many=None):
-    return f"<b>{k}</b> {one if k == 1 else many or one + 's'}"
+    return f"<span class=\"num\">{k}</span> {one if k == 1 else many or one + 's'}"
+
+
+def num(text):
+    """A figure or a list of figures in running text, in tabular numerals."""
+    return f"<span class=\"num\">{html.escape(str(text))}</span>"
+
+
+REPORT_CSS = r"""
+.wrap{max-width:1040px;margin:0 auto;padding:48px 32px 64px}
+header{max-width:64ch}
+.lede{margin-top:8px}
+section{border-top:1px solid var(--line);margin-top:32px;padding-top:24px}
+section h2{margin-bottom:16px}
+section p{max-width:64ch;margin:0 0 8px}
+section ul{max-width:64ch;margin:0 0 8px;padding-left:20px}
+section li{margin:4px 0}
+table{border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;width:auto;max-width:100%}
+th{font-weight:400;color:var(--muted);text-align:left;padding:6px 24px 6px 0;
+border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:6px 24px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
+th:last-child,td:last-child{padding-right:0}
+td.desc{max-width:60ch}
+th.r,td.r{text-align:right;white-space:nowrap}
+td:has(.dot){white-space:nowrap}
+thead th{position:sticky;top:0;background:var(--bg)}
+.scroll{overflow:auto;margin:8px 0 16px}
+.scroll.tall{max-height:480px}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:8px;vertical-align:1px}
+.dot.ok{background:var(--ok)}.dot.doubt{background:var(--doubt)}.dot.fail{background:var(--fail)}
+.samples{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:24px 16px;
+margin-top:16px}
+figure{margin:0}
+figure img{display:block;width:100%;height:auto;outline:1px solid var(--line)}
+figcaption{font-size:13px;color:var(--muted);margin-top:8px}
+.nums{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));column-gap:16px;
+font-size:13px;line-height:1.5;max-width:none;font-variant-numeric:tabular-nums;margin-bottom:16px}
+.lab{white-space:nowrap}
+@media (max-width:700px){.wrap{padding:32px 16px 48px}th,td{padding-right:16px}
+.pictures th:nth-child(4),.pictures td:nth-child(4){display:none}
+.pictures td:has(.dot){white-space:normal}}
+"""
 
 
 def main():
@@ -360,16 +404,16 @@ def main():
     (out_dir / "numbers.json").write_text(json.dumps(numbers, indent=1))
     (out_dir / "pages.json").write_text(json.dumps(pages, indent=1))
 
-    # Sample renders, each picture outlined in red with its label underneath.
+    # Sample renders, each picture outlined in the accent blue of the design guide with its label underneath.
     samples = pick_samples(n, pages, diagrams)
     thumbs = {}
     for p in samples:
         page = doc[p - 1]
         for d in (x for x in diagrams if x["page"] == p):
             r = pymupdf.Rect(d["rect"])
-            page.draw_rect(r, color=(1, 0, 0), width=1.2)
+            page.draw_rect(r, color=ACCENT, width=1.2)
             page.insert_text((r.x0, r.y1 + 9), f"[{d['label'] or '?'}]", fontsize=8,
-                             color=(1, 0, 0))
+                             color=ACCENT)
         page.get_pixmap(dpi=DPI).save(out_dir / f"page_{p:04d}.png")
         # A smaller JPEG copy goes inside the HTML so that the report opens on its own.
         thumbs[p] = base64.b64encode(
@@ -391,132 +435,149 @@ def main():
         return ", ".join(str(p) for p in sorted({d["page"] for d in rows})[:3])
 
     e = html.escape
+    blank_pages = ((": PDF page " if len(blank) == 1 else ": PDF pages ")
+                   + e(", ".join(map(str, blank[:12]))) if blank else "")
     out = [
-        "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
-        "<title>Stage 1 Inspection</title><style>"
-        ":root{--bg:#fff;--fg:#222;--line:#bbb;--warn:#fff1c2;--bad:#fdd}"
-        "@media (prefers-color-scheme:dark){:root{--bg:#1b1b1b;--fg:#ddd;"
-        "--line:#555;--warn:#4a3d10;--bad:#4a1c1c}}"
-        "body{font:16px/1.55 Georgia,serif;max-width:1100px;margin:auto;padding:16px;"
-        "background:var(--bg);color:var(--fg)}table{border-collapse:collapse;font-size:14px}"
-        "td,th{border:1px solid var(--line);padding:2px 8px}.warn{background:var(--warn)}"
-        ".bad{background:var(--bad)}img{max-width:100%;border:1px solid var(--line)}"
-        "figure{display:inline-block;width:250px;margin:6px;vertical-align:top}"
-        ".scroll{max-height:480px;overflow:auto}.nums{font-size:14px}</style>",
-        f"<h1>Stage 1: {e(pdf.name)}</h1>",
-        "<h2>What the pages are</h2>",
-        f"<p>The PDF has <b>{n}</b> pages. I sorted them into four kinds.</p><table>"
-        "<tr><th>Kind</th><th>Pages</th><th>What it means for the next stages</th></tr>"
-        f"<tr><td>scan</td><td>{kinds['scan']}</td><td>The page is one photograph. Stage 2 "
-        "searches the photograph for boards, and the moves come from the OCR layer, or from "
-        "Tesseract where the scan has none.</td></tr>"
-        f"<tr><td>pictures</td><td>{kinds['pictures']}</td><td>The text is real type and each "
-        "diagram is a separate picture. Stage 2 cuts the boards straight out of the "
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        f"<title>Stage 1 Inspection</title>\n<style>{style.page_css()}{REPORT_CSS}</style>\n"
+        "</head>\n<body>\n<main class=\"wrap\">",
+        f"<header><h1>Stage 1, {e(pdf.name)}</h1><p class=\"lede\">This report shows what the "
+        "program found in the PDF before it reads any moves: the kinds of page, the board "
+        "pictures and the diagram numbers.</p></header>",
+        "<section><h2>What the pages are</h2>",
+        f"<p>The PDF has {plural(n, 'page')}, and the program sorts them into four kinds.</p>"
+        "<div class=\"scroll\"><table><thead><tr><th>Kind</th><th class=\"r\">Pages</th>"
+        "<th>What it means for the next stages</th></tr></thead><tbody>"
+        f"<tr><td>Scan</td><td class=\"r\">{kinds['scan']}</td><td class=\"desc\">The page is one photograph. "
+        "Stage 2 searches the photograph for boards, and the moves come from the OCR layer, or "
+        "from Tesseract where the scan has none.</td></tr>"
+        f"<tr><td>Pictures</td><td class=\"r\">{kinds['pictures']}</td><td class=\"desc\">The text is real type "
+        "and each diagram is a separate picture. Stage 2 cuts the boards straight out of the "
         "pictures.</td></tr>"
-        f"<tr><td>text</td><td>{kinds['text']}</td><td>The page has type and no pictures. Any "
-        "diagram on it is drawn from shapes or a chess font, and Stage 2 searches the rendered "
-        "page for it.</td></tr>"
-        f"<tr><td>blank</td><td>{kinds['blank']}</td><td>The page has neither type nor "
-        f"pictures{': PDF pages ' + e(', '.join(map(str, blank[:12]))) if blank else ''}."
-        "</td></tr></table>",
+        f"<tr><td>Text</td><td class=\"r\">{kinds['text']}</td><td class=\"desc\">The page has type and no "
+        "pictures. Any diagram on it is drawn from shapes or a chess font, and Stage 2 searches "
+        "the rendered page for it.</td></tr>"
+        f"<tr><td>Blank</td><td class=\"r\">{kinds['blank']}</td><td class=\"desc\">The page has neither type "
+        f"nor pictures{blank_pages}."
+        "</td></tr></tbody></table></div>",
     ]
     if "clearscan" in producer.lower():
-        out.append("<p>The PDF records that Adobe Acrobat's ClearScan made it. ClearScan "
-                   "recognised the letters of a scan and redrew them as type, so the text you "
-                   "see on screen is itself the OCR result, errors included.</p>")
+        out.append("<p>The PDF records that Adobe Acrobat’s ClearScan made it. ClearScan "
+                   "recognised the letters of a scan and redrew them as type, so the text on "
+                   "screen is itself the OCR result, errors included.</p>")
     elif producer:
         out.append(f"<p>The PDF records its producer as <i>{e(producer)}</i>.</p>")
     scan_ocr = sum(p["kind"] == "scan" and p["chars"] > 0 for p in pages)
     if kinds["scan"]:
-        out.append(f"<p>Of the {plural(kinds['scan'], 'scanned page')}, {scan_ocr} carry an "
-                   "OCR text layer.</p>")
+        out.append(f"<p>Of the {plural(kinds['scan'], 'scanned page')}, "
+                   f"{num(scan_ocr)} {'carries' if scan_ocr == 1 else 'carry'} an OCR text layer.</p>")
+    out.append("</section>")
 
-    out.append("<h2>Board pictures</h2>")
+    out.append("<section><h2>Board pictures</h2>")
     if diagrams:
         out.append(
-            f"<p>I found {plural(len(diagrams), 'embedded picture')} smaller than a page. "
-            "Nearly all are boards; a cover or a publisher's logo also lands here and Stage 2 "
-            f"discards it. I matched {plural(len(labelled), 'picture')} to a diagram number "
-            "printed above or just below it.</p><ul>"
-            f"<li>{plural(len(partial), 'picture')} show part of a board only, such as a corner "
+            f"<p>The program found {plural(len(diagrams), 'embedded picture')} smaller than a "
+            "page. A cover or a publisher’s logo also counts as such a picture, and Stage 2 "
+            f"discards it. The program matched {plural(len(labelled), 'picture')} to a "
+            "diagram number printed above or just below it.</p><ul>"
+            f"<li>{plural(len(partial), 'picture')} {'shows' if len(partial) == 1 else 'show'} part of a board only, such as a corner "
             f"or a strip of files{' (first on PDF pages ' + where(partial) + ')' if partial else ''}."
             "</li>"
-            f"<li>{plural(len(tall), 'picture')} are much taller than wide. Some hold two or "
-            "three boards stacked in one image and others a narrow strip of a board"
-            f"{' (first on PDF pages ' + where(tall) + ')' if tall else ''}. I found "
-            f"{plural(len(stacked), 'picture')} holding stacked boards and listed each of their "
-            "boards with its own number, so that later stages treat each board on its "
+            f"<li>{plural(len(tall), 'picture')} {'is' if len(tall) == 1 else 'are'} much taller "
+            f"than wide{' (first on PDF pages ' + where(tall) + ')' if tall else ''}. Of these, "
+            f"{plural(len(stacked), 'picture holds', 'pictures hold')} boards stacked one above "
+            "another, and the program lists each of their boards with its own number, so that "
+            "later stages treat each board on its "
             f"own{' (first on PDF pages ' + where(stacked) + ')' if stacked else ''}.</li>"
-            f"<li>{plural(len(circled), 'picture')} carry a circled number beside the board. "
-            "OCR usually reads a circle as a symbol such as &ldquo;@&rdquo; or "
-            "&ldquo;&reg;&rdquo;, so these numbers will come from their order on the page"
+            f"<li>{plural(len(circled), 'picture')} {'carries' if len(circled) == 1 else 'carry'} a circled number beside the board. "
+            "OCR reads a circle as a symbol such as &ldquo;@&rdquo; or "
+            "&ldquo;&reg;&rdquo;, so these numbers come from their order on the page"
             f"{' (first on PDF pages ' + where(circled) + ')' if circled else ''}.</li>"
-            f"<li>{plural(len(unlabelled), 'picture')} have no number at all. Books commonly "
-            "print a position reached during a game without a number"
+            f"<li>{plural(len(unlabelled), 'picture')} {'has' if len(unlabelled) == 1 else 'have'} "
+            "no number at all"
             f"{' (first on PDF pages ' + where(unlabelled) + ')' if unlabelled else ''}.</li>"
             "</ul>")
     else:
         out.append("<p>The PDF holds no board pictures, so Stage 2 will search the rendered "
                    "pages for boards.</p>")
+    out.append("</section>")
 
-    out.append("<h2>How the book numbers its diagrams</h2>")
+    out.append("<section><h2>How the book numbers its diagrams</h2>")
     if main_labels:
         out.append(
-            f"<p>The longest series of diagram numbers runs from {e(main_labels[0])} to "
-            f"{e(main_labels[-1])} and has {plural(len(main_labels), 'entry', 'entries')}, "
+            f"<p>The longest series of diagram numbers runs from {num(main_labels[0])} to "
+            f"{num(main_labels[-1])} and has {plural(len(main_labels), 'entry', 'entries')}, "
             "counting lettered ones such as 14a separately. "
-            + (f"These numbers are missing from it: <b>{e(', '.join(map(str, main_gaps)))}</b>. "
+            + (f"These numbers are missing from it: {num(', '.join(map(str, main_gaps)))}. "
                "A missing number means that the book skips it, that OCR misread it, or that it "
                "is printed inside a picture; the table below lets you check."
                if main_gaps else "No number in its range is missing.") + "</p>")
     else:
-        out.append("<p>I found no numbered series of diagrams in the text.</p>")
+        out.append("<p>The program found no numbered series of diagrams in the text.</p>")
     out.append(
-        f"<p>{plural(len(others), 'further number')} stand on lines of their own outside that "
-        "series. In most books they belong to shorter series that start again at 1, such as "
-        "chapter exercises, model games and solutions; a few are stray numbers from the text. "
+        f"<p>{plural(len(others), 'further number')} {'stands' if len(others) == 1 else 'stand'} on lines of their own outside that "
+        "series. They belong to shorter series that start again at 1, such as chapter "
+        "exercises, model games and solutions, or they are stray numbers from the text. "
         "Because numbers repeat, from Stage 2 onward each board is named by its page as well "
         "as its number.</p>"
         f"<p>The running text refers to {plural(len(refs), 'diagram')} by name, as in "
-        "&ldquo;Diagram 14&rdquo;.</p>")
+        "&ldquo;Diagram 14&rdquo;.</p></section>")
 
-    out.append("<h2>Sample pages at 300 dpi</h2><p>I chose these pages to show each kind of "
-               "picture counted above. Each board picture is outlined in red, with the number I "
-               "matched to it underneath; <b>[?]</b> means no number. Clicking a page opens the "
-               "full 300 dpi image when this report sits beside its output folder.</p>")
+    out.append("<section><h2>Sample pages at 300 dpi</h2><p>The program chose these pages to "
+               "show each kind of picture counted above. Each board picture is outlined in blue, "
+               "with the number the program matched to it underneath; [?] means no number. A "
+               "click on a page opens the full 300 dpi image when this report sits beside its "
+               "output folder.</p><div class=\"samples\">")
     for p in samples:
         f = f"page_{p:04d}.png"
-        out.append(f"<figure><a href='{f}'><img src='data:image/jpeg;base64,{thumbs[p]}'></a>"
-                   f"<figcaption>PDF page {p} ({pages[p - 1]['kind']})</figcaption></figure>")
+        out.append(f"<figure><a href='{f}'><img class='scan' alt='PDF page {p}' "
+                   f"src='data:image/jpeg;base64,{thumbs[p]}'></a>"
+                   f"<figcaption>PDF page <span class=\"num\">{p}</span>, "
+                   f"{e(pages[p - 1]['kind'])}</figcaption></figure>")
+    out.append("</div></section>")
 
     if diagrams:
-        out.append("<h2>Every board picture</h2><p>Yellow rows show part of a board only; red "
-                   "rows have no number. A star marks a number repaired from an OCR "
-                   "misreading.</p><div class=scroll><table><tr><th>PDF page</th>"
-                   "<th>Number</th><th>Series</th><th>Pixels</th><th>Whole board?</th></tr>")
+        out.append("<section><h2>Every board picture</h2><p>Each row names what the program "
+                   "found: a whole board with a number, part of a board only, or a picture "
+                   "with no number. A star marks a number repaired from an OCR misreading.</p>"
+                   "<div class=\"scroll tall\"><table class=\"pictures\"><thead><tr><th class=\"r\">PDF page</th>"
+                   "<th class=\"r\">Number</th><th>Series</th><th class=\"r\">Pixels</th>"
+                   "<th>Status</th></tr></thead><tbody>")
         for d in diagrams:
-            cls = "bad" if not d["label"] and not d["circled"] else "warn" if d["partial"] else ""
+            no_number = not d["label"] and not d["circled"]
+            if no_number and d["partial"]:
+                cls, words = "fail", "Part of a board, with no number"
+            elif no_number:
+                cls, words = "fail", "No number"
+            elif d["partial"]:
+                cls, words = "doubt", "Part of a board only"
+            else:
+                cls, words = "ok", ("Whole board, circled number" if d["circled"] and not d["label"]
+                                    else "Whole board")
             out.append(
-                f"<tr class='{cls}'><td>{d['page']}</td><td>{e(d['label'] or '')}"
+                f"<tr><td class=\"r\">{d['page']}</td><td class=\"r\">{e(d['label'] or '')}"
                 f"{'*' if d['label_repaired'] else ''}</td><td>{series_name(d)}</td>"
-                f"<td>{d['pixels'][0]}&times;{d['pixels'][1]}</td>"
-                f"<td>{'no' if d['partial'] else 'yes'}</td></tr>")
-        out.append("</table></div>")
+                f"<td class=\"r\">{d['pixels'][0]}&thinsp;&times;&thinsp;{d['pixels'][1]}</td>"
+                f"<td><i class=\"dot {cls}\"></i>{words}</td></tr>")
+        out.append("</tbody></table></div></section>")
 
-    out.append("<h2>Every diagram number in the text</h2><p>The main series, each number "
-               "followed by the PDF page on which it is printed. A star marks a number "
-               "repaired from an OCR misreading.</p><p class=nums>")
-    out.append(" &middot; ".join(
-        f"<b>{e(x['label'])}</b>{'*' if x['repaired'] else ''}&nbsp;p{x['page']}"
+    out.append("<section><h2>Every diagram number in the text</h2><p>This list gives each "
+               "number of the main series with the PDF page on which it is printed. A star marks "
+               "a number repaired from an OCR misreading.</p><div class=\"nums\">")
+    out.append(" ".join(
+        f"<span class=\"lab\">{e(x['label'])}{'*' if x['repaired'] else ''} "
+        f"<span class=\"muted\">p{x['page']}</span></span>"
         for x in numbers if x["series"] == "main"))
-    out.append("</p><p>The other numbers, grouped by PDF page.</p><div class=scroll><table>"
-               "<tr><th>PDF page</th><th>Numbers</th></tr>")
+    out.append("</div><p>The table groups the other numbers by PDF page.</p>"
+               "<div class=\"scroll tall\"><table>"
+               "<thead><tr><th class=\"r\">PDF page</th><th>Numbers</th></tr></thead><tbody>")
     by_page = {}
     for x in others:
         by_page.setdefault(x["page"], []).append(x["label"])
     for p, labs in by_page.items():
-        out.append(f"<tr><td>{p}</td><td>{e(', '.join(labs))}</td></tr>")
-    out.append("</table></div>")
+        out.append(f"<tr><td class=\"r\">{p}</td><td class=\"num\">{e(', '.join(labs))}</td></tr>")
+    out.append("</tbody></table></div></section></main>\n</body>\n</html>")
     (out_dir / "inspect.html").write_text("\n".join(out), encoding="utf-8")
 
     print(f"{n} pages: " + ", ".join(f"{k} {v}" for k, v in kinds.most_common()))

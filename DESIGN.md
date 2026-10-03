@@ -12,9 +12,11 @@ chess notation.
   comments, headings, explanations). Use the variable font at weights 400 and
   500 only. Headings differ from body text by size and weight 500, never by
   bold 700.
-- **DM Mono** sets all chess notation: moves, move numbers, FENs, square
-  names in running text. Main-line moves use DM Mono 500; variation moves use
-  DM Mono 400 in the secondary text colour.
+- **Geist Mono** sets all chess notation: moves, move numbers, FENs, square
+  names in running text. Main-line moves use Geist Mono 500; variation moves
+  use Geist Mono 400 in the secondary text colour. (DM Mono was the first
+  choice, but its lowercase f descends below the line, so "Nf3" reads as
+  "Nƒ3".)
 - The fonts live in `chessbook/assets/fonts/` with their SIL Open Font
   Licence files and are embedded in each page as base64 `@font-face` rules,
   so pages work offline. Declare system fallbacks after them.
@@ -55,12 +57,16 @@ Give `body` an explicit background.
 | `--ok` | `#3d8a5a` | `#6fbf8c` | decoded |
 | `--doubt` | `#b8860b` | `#d9ab3c` | chosen between readings |
 | `--fail` | `#b4413a` | `#e0756d` | failed |
-| `--board-light` | `#ecebe6` | `#5d5c58` | light squares |
-| `--board-dark` | `#bdbab2` | `#3e3d3a` | dark squares |
+| `--board-light` | `#ecebe6` | `#b9b8b2` | light squares |
+| `--board-dark` | `#bdbab2` | `#8f8d87` | dark squares |
+
+In dark mode, pictures of the book (page images, thumbnails, diagram crops)
+are dimmed slightly and never inverted.
 
 ## The board
 
-Flat squares in the two board colours, a 1px outline in the line colour,
+Flat squares in the two board colours (kept light enough in dark mode that
+black pieces stay visible), a 1px outline in the line colour,
 coordinates in DM Sans at 10px in the secondary colour, and the piece
 drawings from python-chess. No shadows or textures.
 

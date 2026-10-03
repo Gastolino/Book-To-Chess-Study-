@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from chessbook import reader  # noqa: E402
+from chessbook import reader, style  # noqa: E402
 from chessbook.assemble import build_book  # noqa: E402
 from chessbook.selection import Selection, parse_selection_text  # noqa: E402
 from test_assemble import make_book  # noqa: E402
@@ -70,8 +70,16 @@ def test_self_contained_and_themed(little, name):
     assert set(urls) <= {"http://www.w3.org/2000/svg", "http://www.w3.org/1999/xlink"}, urls
     assert "<link" not in text and "@import" not in text
     assert re.search(r":root\{[^}]*--bg:", text)
-    assert "@media (prefers-color-scheme:dark){:root{" in text
+    assert '@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){' in text
+    assert ':root[data-theme="dark"]{' in text
     assert re.search(r"body\{[^}]*background:var\(--bg\)", text)
+    # every colour of the design guide, light and dark
+    for k, (light, dark) in style.TOKENS.items():
+        assert f"--{k}:{light}" in text and f"--{k}:{dark}" in text, k
+    # DM Sans (variable, upright and italic) and Geist Mono 400 and 500, embedded
+    assert text.count("src:url(data:font/woff2;base64,") == 4
+    assert 'font-family:"DM Sans";' in text and 'font-family:"Geist Mono";' in text
+    assert "font-weight:100 1000" in text
     assert 'name="viewport"' in text
     assert re.search(r"<title>[^<]{3,60}</title>", text)
 
@@ -91,8 +99,14 @@ def test_chapter_page(little):
     assert game["root"] in data["nodes"]
     assert "[White \"Smith\"]" in data["pgn"] and data["pgnName"] == "ch01.pgn"
     for needle in ("window.readerState", "Download PGN", "Chess board", "id=\"bflip\"",
-                   "ArrowRight", "Board reading (Stage 3) has not run yet", "href=\"index.html\""):
+                   "ArrowRight", "Board reading (Stage 3) has not run yet", "href=\"index.html\"",
+                   'id="showread"', ">Show reading<", ">On this page<", ">Contents<",
+                   'id="chips"', 'id="dpanel"'):
         assert needle in text, needle
+    # the dropdown and the pill chips are gone
+    assert 'id="linesel"' not in text and 'class="chip' not in text
+    # the move controls are line icons drawn as strokes
+    assert text.count("<svg viewBox='0 0 20 20' aria-hidden='true'>") >= 7
     # python-chess's own piece drawings
     assert 'id="white-knight"' in text and 'id="black-queen"' in text
 
@@ -102,10 +116,12 @@ def test_index_page(little):
     text = (out / "index.html").read_text(encoding="utf-8")
     assert text.count('class="pcb"') == book["page_count"]
     n_diag = sum(len(p["diagrams"]) for p in book["pages"])
-    assert text.count('class="dcb"') == n_diag
+    assert text.count('<button class="d"') == n_diag
     assert text.count('class="ccb"') == sum(1 for c in book["chapters"] if c["end"] >= c["start"])
-    for needle in ("Copy selection", "Download selection.json", "paste the copied text into the chat",
-                   'href="ch01.html"', "pages 3 to 9"):
+    assert text.count("<details>") == text.count('class="ccb"')
+    for needle in ("Copy selection", "Download selection.json", "Undo changes",
+                   "paste it into the chat", 'href="ch01.html"', '>Open</a>',
+                   reader.page_range(reader._folios(book), 3, 9)):
         assert needle in text, needle
     data = script_json(text, "data")
     assert data["pageCount"] == book["page_count"]
@@ -190,7 +206,9 @@ def test_primer_reader_in_chromium():
     assert {"readerState.fen equals the move's FEN", "ArrowRight advances to the next move",
             "clicking a diagram opens the diagram panel", "no sideways scroll at 390 px",
             "no console errors"} <= names
-    for shot in ("reader_1280.png", "reader_390.png", "index_1280.png", "index_390.png"):
+    assert len(res["checks"]) >= 50
+    for shot in ("reader_1280.png", "reader_390.png", "index_1280.png", "index_390.png",
+                 "index_chapter_1280.png"):
         assert (screens / shot).stat().st_size > 10000, shot
     # the selection the index page builds reads back with selection.py
     sel = Selection(parse_selection_text(res["selection"]))
@@ -216,11 +234,12 @@ def test_reader_after_the_audit(little):
     chapter = (out / "ch01.html").read_text(encoding="utf-8")
     for text in (index, chapter):
         assert "localStorage" in text and "chessbook-selection:" in text
-    crops = script_json(index, "crops")
-    assert set(crops) == {d["id"] for p in book["pages"] for d in p["diagrams"]}
-    assert 'id="lightbox"' in index and "Use this diagram" in index
+    # the contents page holds no diagram previews; its outlines switch a diagram on and off
+    assert 'id="crops"' not in index and 'id="lightbox"' not in index
+    assert "is now left out" in index and "is left out." in index
+    assert "Use this diagram" in chapter
     for needle in ('id="usepage"', "usediag", "hashchange", "The text recognition read",
-                   "The program guesses that this diagram shows", 'id="mini"', "sideStep"):
+                   "The program places this diagram after", 'id="mini"', "sideStep"):
         assert needle in chapter, needle
     assert "The book prints" not in chapter
     data = script_json(chapter, "data")
@@ -237,6 +256,85 @@ def test_chapter_heading_and_plurals():
     assert reader.chapter_heading(ch) == "Chapter 7, How to Begin a Game"
     counts = {"lines": 1, "games": 1, "fragments": 0, "variations": 2, "unattached": 1, "waiting": 1,
               "moves": {"ok": 1, "guessed": 0, "ambiguous": 0, "failed": 0, "waiting": 1}}
-    t = reader._counts_table(counts)
-    assert "<b>1</b><span>line</span>" in t and "<b>2</b><span>variations placed</span>" in t
-    assert "<b>1</b><span>move sequence not placed</span>" in t
+    t = reader._counts_line(counts)
+    assert '<span class="num">1</span> line ·' in t and '<span class="num">1</span> move read' in t
+    assert '<span class="num">1</span> waiting for board reading' in t
+    counts["lines"] = 2400
+    assert '<span class="num">2,400</span> lines' in reader._counts_line(counts)
+    # figures of 0 are left out of the line, and the columns hold all five
+    assert "chosen" not in t and "not read" not in t
+    assert reader._count_cells(counts).count('class="cn small num"') == 5
+    # pages without a printed number are named by their PDF page
+    assert reader.page_range([None, 1, 2, 3], 1, 4) == "PDF page 1, pages 1 to 3"
+    assert reader.page_range([None, None], 1, 2) == "pages 1 to 2"
+    assert reader.page_range([5, 6, None], 1, 3) == "pages 5 to 6, PDF page 3"
+    assert reader.page_label([None, 7], 2) == "7"
+    assert reader.page_label([None, 7], 1) == "PDF 1"
+
+
+def _css_of(text):
+    return "".join(re.findall(r"<style>(.*?)</style>", text, flags=re.S))
+
+
+def test_design_guide(little):
+    """The rules of DESIGN.md that a style sheet can break: no all-caps or
+    letter-spaced text, no shadows, gradients or rounded shapes, weights 400
+    and 500 only, and every page on the shared fonts and colour tokens."""
+    import stage1_inspect
+    out, _, _ = little
+    sheets = {name: _css_of((out / name).read_text(encoding="utf-8"))
+              for name in ("index.html", "ch01.html")}
+    sheets["stage1"] = style.page_css() + stage1_inspect.REPORT_CSS
+    for name, css in sheets.items():
+        css = re.sub(r"@font-face\{[^}]*\}", "", css)
+        # the tint of selected text is the browser's, not a fill of an element
+        low = re.sub(r"::selection\{[^}]*\}", "", css).lower()
+        assert "uppercase" not in low and "small-caps" not in low, name
+        assert "box-shadow" not in low and "text-shadow" not in low, name
+        assert "gradient(" not in low, name
+        # check boxes are drawn in hairlines, not as the browser's filled control
+        assert "accent-color" not in low and "appearance:none" in low, name
+        # buttons and outlines carry no fill: no background other than none, transparent or
+        # the page colour
+        for v in re.findall(r"background(?:-color)?:([^;}]+)", low):
+            assert v.strip() in ("none", "transparent", "var(--bg)") or v.strip().startswith("var(--ok)") \
+                or v.strip() in ("var(--doubt)", "var(--fail)", "var(--muted)"), (name, v)
+        # prose sets 1.5 and the move list 1.7
+        for v in re.findall(r"line-height:([^;}]+)", low):
+            assert v.strip() in ("1.5", "1.7", "1.35", "1.3", "1.25", "0"), (name, v)
+        for v in re.findall(r"letter-spacing:([^;}]+)", low):
+            assert v.strip() in ("0", "-0.01em"), (name, v)
+        for v in re.findall(r"border-radius:([^;}]+)", low):
+            assert v.strip() in ("0", "1px", "2px", "50%"), (name, v)
+        for v in re.findall(r"font-weight:([^;}]+)", low):
+            assert v.strip() in ("400", "500"), (name, v)
+        assert "bold" not in low, name
+        assert style.base_css() in css and style.tokens_css() in css, name
+
+
+STAGE1_REPORT = ROOT / "output" / "primer" / "stage1" / "inspect.html"
+
+
+@pytest.mark.skipif(not STAGE1_REPORT.exists(), reason="the Stage 1 report has not been written")
+def test_stage1_report_follows_the_guide():
+    """The Stage 1 report uses the shared fonts and colours, marks each row's
+    status with a dot and words instead of a coloured row, and keeps to the
+    writing rules."""
+    text = STAGE1_REPORT.read_text(encoding="utf-8")
+    assert style.page_css() in text
+    assert "<tr class=" not in text
+    rows = re.findall(r'<i class="dot (ok|doubt|fail)"></i>([A-Z][^<]+)</td>', text)
+    assert rows and {k for k, _ in rows} <= {"ok", "doubt", "fail"}
+    assert all(words.strip() for _, words in rows)
+    # figures in the prose are not bold, and the series names are in sentence case
+    assert not re.search(r"<b[ >]", text.split("</style>", 1)[1])
+    assert not re.search(r"<td>(main|other|none|circled)</td>", text)
+    # no paragraph without a verb, no figure the program did not count, no claim about books
+    for s in ("The main series, each number", "The other numbers, grouped",
+              "two or three boards", "A book prints many positions"):
+        assert s not in text, s
+    seen = visible_text(text)
+    assert "—" not in seen
+    for w in HEDGES + ("usually", "commonly", "nearly"):
+        assert not re.search(r"\b" + w + r"\b", seen.lower()), w
+    assert not re.search(r"\bI\b", seen)
