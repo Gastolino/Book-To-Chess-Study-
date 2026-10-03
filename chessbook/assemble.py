@@ -1906,6 +1906,11 @@ class _Builder:
                     add(v["last"], "branch-end")
             if cont and cont[-1]["next"] == ply:
                 add(cont[-1]["last"], "continue")
+            # an earlier variation of the note that ends where the run begins
+            # ("9 0-0 (or 9 Bg5 ...) 9 ... d5 10 Bb3 and then: a) 10 ... b5")
+            for v in reversed(vars_):
+                if v["next"] == ply and v["depth"] <= run.depth:
+                    add(v["last"], "resume")
             for v in reversed(vars_):
                 if ply in v["plies"]:
                     add(self.nodes[v["plies"][ply]]["parent"], "branch")
@@ -1943,8 +1948,8 @@ class _Builder:
             best, tried = None, None
             for parent, how in cands:
                 fen = self.nodes[parent]["fen"]
-                if fen is None:
-                    continue
+                if fen is None or (how == "resume" and best is not None):
+                    continue            # an older variation only when nothing nearer reads
                 decs = self.dec.run(fen, run.tokens)
                 f = _fit(decs)
                 if any(d.capture_mark and d.san and "x" not in d.san for d in decs):

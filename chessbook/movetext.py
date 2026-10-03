@@ -1498,6 +1498,9 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             toks.append(Token("result", w, s, e))
             st.in_seq, st.prev = False, "result"
             return j
+        if (w.isdigit() and j > 0 and pieces[j - 1] == (s, e) and j < len(pieces)
+                and _shape(text[pieces[j][0]:pieces[j][1]])):
+            return j - 1                         # "6 ••• 7 g4": the move is missing, 7 is a number
         if (w in ("A", "I") and j < len(pieces) and _prose_word(text[pieces[j][0]:pieces[j][1]])) \
                 or re.fullmatch(r"[A-Za-z]{2,}['’]s[:.,;]*", w):
             other(s, e)                          # "1. A pawn ...", "4. White's": a numbered list
@@ -1514,7 +1517,8 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
                 move(s, b)
                 return j + 1
         if (not w.isalpha() and len(w) <= 10 and not _ANNOT_RE.match(w) and w not in "([{)]}"
-                and any(ch.isalnum() or ord(ch) < 32 for ch in w) and not _prose_word(w)):
+                and any(ch.isalnum() or ord(ch) < 32 for ch in w) and not _prose_word(w)
+                and not w.isdigit()):
             move(s, e)                           # unreadable, kept so that the run goes on
             return j
         other(s, e)
@@ -1719,7 +1723,12 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
                 number(Token("number", w, s, e, exp_n, False, True, dotless=True))
                 i = after_number(pieces[i + 1][0], pieces[i + 1][1], i + 2)
                 continue
-        if st.in_seq and st.prev == "move":
+        if st.in_seq and st.prev == "move" and not (
+                w.isdigit() and i + 1 < len(pieces)
+                and text[pieces[i + 1][0]:pieces[i + 1][1]].isdigit()
+                and not (i + 2 < len(pieces)
+                         and _DOTS_ONLY_RE.match(text[pieces[i + 2][0]:pieces[i + 2][1]]))):
+            # (digits spaced out like a folio, "1 6 5", are no move)
             shp = _shape(w)
             if shp == "strong" or (shp == "weak" and (
                     next_is_boundary(i + 1) or next_is_strong(i + 1) or _move_like(w)
