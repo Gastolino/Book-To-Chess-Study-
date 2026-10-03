@@ -35,13 +35,20 @@ def process(path, say, selection_json=None):
     return (out / "index.html").read_text(encoding="utf-8")
 
 
-def chapter(name, say):
-    """The HTML of chapter file name (such as "ch07.html"), built on first use."""
+def chapter(name, say, small=False):
+    """The HTML of chapter file name (such as "ch07.html"), built on first use.
+    small draws the pages at a lower resolution, for phones."""
     out = STATE["out"]
     if name not in STATE["built"]:
         k = int(name[2:-5])
-        reader.build_reader(STATE["book"], STATE["pdf"], out, chapters={k},
-                            progress=say, with_index=False)
+        dpi, quality = reader.PAGE_DPI, reader.PAGE_QUALITY
+        if small:
+            reader.PAGE_DPI, reader.PAGE_QUALITY = 90, 55
+        try:
+            reader.build_reader(STATE["book"], STATE["pdf"], out, chapters={k},
+                                progress=say, with_index=False)
+        finally:
+            reader.PAGE_DPI, reader.PAGE_QUALITY = dpi, quality
         STATE["built"].add(name)
     return (out / name).read_text(encoding="utf-8")
 

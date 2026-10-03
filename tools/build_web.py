@@ -51,9 +51,16 @@ body{margin:0;display:flex;flex-direction:column}
 #bar.on i{display:block}
 @keyframes run{from{left:-30%}to{left:100%}}
 #view{flex:1;border:0;width:100%;display:none}
-#top{display:none;align-items:center;gap:20px;padding:10px 16px;border-bottom:1px solid var(--line);
-  font-size:13px;color:var(--muted)}
-#top b{font-weight:500;color:var(--fg)}
+#top{display:none;flex-wrap:wrap;align-items:baseline;gap:4px 20px;padding:10px 16px;
+  border-bottom:1px solid var(--line);font-size:13px;color:var(--muted);position:relative}
+#top b{font-weight:500;color:var(--fg);min-width:0;overflow-wrap:anywhere}
+#note{flex-basis:100%}
+#note:empty{display:none}
+#note.error{color:var(--fail)}
+#topbar{position:absolute;left:0;right:0;bottom:-1px;height:1px;overflow:hidden}
+#topbar i{position:absolute;top:0;bottom:0;width:30%;background:var(--accent);
+  animation:run 1.4s linear infinite;display:none}
+#topbar.on i{display:block}
 #top button{font:inherit;color:var(--fg);background:none;border:0;padding:0;cursor:pointer}
 #top button:hover{text-decoration:underline}
 #top .gap{flex:1}
@@ -61,7 +68,8 @@ body{margin:0;display:flex;flex-direction:column}
 <body>
 <div id="top"><b id="bookname"></b><span id="took"></span><span class="gap"></span>
 <button id="again" type="button">Read again</button>
-<button id="another" type="button">Open another book</button></div>
+<button id="another" type="button">Open another book</button>
+<span id="note" role="status"></span><div id="topbar"><i></i></div></div>
 <main id="start">
 <h1>Chess Book Reader</h1>
 <p>This page turns a chess book in PDF form into a reader: the book's pages beside a
@@ -83,13 +91,23 @@ const worker = new Worker("worker.js");
 let ready = false, busy = false, current = null, lastFile = null;
 
 // Links inside the reader pages ask this page to open another page.
-const NAV = `<script>document.addEventListener("click",function(e){var a=e.target.closest("a[href]");
+// String.raw keeps the backslashes of the pattern below; an ordinary template
+// literal would turn \\d into d, and no chapter link would match.
+const NAV = String.raw`<script>window.CHESSBOOK_APP=true;
+document.addEventListener("click",function(e){var a=e.target.closest("a[href]");
 if(!a)return;var h=a.getAttribute("href"),m=h.match(/^(index\\.html|ch\\d+\\.html)(#.*)?$/);
-if(m){e.preventDefault();parent.postMessage({open:m[1],hash:m[2]||""},"*");}},true);<\\/script>`;
+if(m){e.preventDefault();parent.postMessage({open:m[1],hash:m[2]||""},"*");}},true);<${"/"}script>`;
 
+// Messages go to the start screen while it shows, and to the top bar after.
 function status(text, error) {
-  $("status").textContent = text;
-  $("status").classList.toggle("error", !!error);
+  const inReader = $("top").style.display === "flex";
+  const el = inReader ? $("note") : $("status");
+  el.textContent = text;
+  el.classList.toggle("error", !!error);
+}
+function working(on) {
+  $("bar").classList.toggle("on", on);
+  $("topbar").classList.toggle("on", on);
 }
 function show(name, hash, htmlText) {
   const blob = new Blob([htmlText.replace("</body>", NAV + "</body>")], { type: "text/html" });
@@ -113,20 +131,33 @@ worker.onmessage = (e) => {
     $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
     show("index.html", "", m.html);
   } else if (m.type === "page") {
-    $("bar").classList.remove("on");
+    working(false);
+    $("note").textContent = "";
     show(m.name, m.hash, m.html);
   } else if (m.type === "error") {
     busy = false;
-    $("bar").classList.remove("on");
-    status("The book could not be read: " + m.text, true);
+    working(false);
+    status("Something went wrong: " + m.text, true);
   }
+};
+// A worker that dies (for instance when a phone runs out of memory) sends no
+// message, so its error event is reported here.
+worker.onerror = (e) => {
+  busy = false;
+  working(false);
+  status("The reader stopped: " + (e.message || "the browser ran out of memory") +
+    ". Closing other tabs or using a computer can help.", true);
 };
 window.addEventListener("message", (e) => {
   if (!e.data || !e.data.open) return;
-  status("Opening " + e.data.open);
+  working(true);
+  status(e.data.open === "index.html" ? "Opening the contents." :
+    "Opening chapter " + parseInt(e.data.open.slice(2), 10) +
+    ". The first opening of a chapter takes a few seconds.");
   worker.postMessage(e.data.open === "index.html"
     ? { type: "index", hash: e.data.hash }
-    : { type: "chapter", name: e.data.open, hash: e.data.hash });
+    : { type: "chapter", name: e.data.open, hash: e.data.hash,
+        small: window.matchMedia("(max-width: 700px)").matches });
 });
 async function take(file) {
   if (!file || busy) return;

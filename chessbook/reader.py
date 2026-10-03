@@ -230,10 +230,9 @@ makeSelection.canon = function(S0){
 
 CHAPTER_CSS = r"""
 .bar{display:flex;align-items:center;gap:8px 28px;padding:14px 24px;border-bottom:1px solid var(--line)}
-.where{flex:1 1 auto;min-width:0;display:flex;align-items:baseline;gap:16px;white-space:nowrap;
-overflow:hidden}
-.where .book{color:var(--muted);flex:none}
-.where h1{font-size:17px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.where{flex:1 1 auto;min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 16px}
+.where .book{color:var(--muted);min-width:0;overflow-wrap:anywhere}
+.where h1{font-size:17px;line-height:1.35;min-width:0;overflow-wrap:anywhere}
 .tools{display:flex;align-items:center;gap:24px;flex:none}
 #showread{min-width:6.6em;text-align:left}
 .pnav{display:flex;align-items:center}
@@ -531,13 +530,23 @@ function typedPage(){
   if (p === null) { say("The book has no page " + v + "."); $("pagenum").value = label(S.page); return; }
   if (p !== S.page) goPage(p);
 }
+// Inside the browser app the page has no address of its own, so it asks the
+// app to open another file; on its own it follows the link.
+function openFile(href){
+  if (window.CHESSBOOK_APP) {
+    const m = /^([^#]+)(#.*)?$/.exec(href);
+    parent.postMessage({open: m[1], hash: m[2] || ""}, "*");
+  } else {
+    location.href = href;
+  }
+}
 function goPage(p, keepHash){
   p = parseInt(p, 10);
   if (isNaN(p) || p < 1 || p > D.pageCount) { $("pagenum").value = label(S.page); return; }
   say("");
   if (!(p in D.pages)) {
     const c = chapterFor(p);
-    if (c && c.file && !c.empty) { location.href = c.file + "#page=" + p; }
+    if (c && c.file && !c.empty) { openFile(c.file + "#page=" + p); }
     return;
   }
   showPage(p);
