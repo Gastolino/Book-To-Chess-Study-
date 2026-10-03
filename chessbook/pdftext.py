@@ -765,7 +765,7 @@ def _ctx(fonts):
 # ---------------------------------------------------------------- page lines
 
 _NAME = r"[^\W\d_](?:[^\W\d_]|['’.])*"
-_NAMES = rf"{_NAME}(?:\s+{_NAME}){{0,3}}"
+_NAMES = rf"{_NAME}(?:\s+{_NAME}){{0,6}}"
 GAME_HEADER_RE = re.compile(
     rf"^(?P<white>{_NAMES})\s*(?:[-–—]|\s(?:vs?\.?|versus)\s)\s*(?P<black>{_NAMES})"
     rf"\s*(?:[,;]\s*(?P<event>.*?))?\s*(?P<year>(?:1[5-9]|20)\d\d)?\s*[.)]?$")

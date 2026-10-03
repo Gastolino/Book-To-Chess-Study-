@@ -29,8 +29,10 @@ their method page by page:
 
 ```
 pip install --use-pep517 -r requirements.txt
-python stage1_inspect.py path/to/book.pdf
+python3 make_reader.py path/to/book.pdf
 ```
 
-Results go to `output/<book name>/stage1/inspect.html`. Book PDFs and the
-output folder are kept out of git.
+One command inspects the book, decodes its moves and writes the reader to
+`output/<book name>/reader/index.html`, with one reader per chapter beside
+it. The Primer (402 pages) takes about 100 seconds; a short typeset book
+takes a few seconds. Book PDFs and the output folder are kept out of git.
