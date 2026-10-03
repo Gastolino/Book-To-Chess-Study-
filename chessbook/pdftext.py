@@ -54,10 +54,10 @@ import copy
 import re
 import statistics
 import sys
+from itertools import accumulate
 from collections import Counter, defaultdict
 from pathlib import Path
 
-import numpy as np
 import pymupdf
 
 try:
@@ -448,23 +448,23 @@ def _raw_dom_size(ln):
 def _gutter_for(lines_by_page, W):
     """The x of the gap between two columns, or None for one-column pages."""
     w = int(W) + 2
-    cov = np.zeros(w + 1)
+    delta = [0] * (w + 1)
     for lines in lines_by_page:
         for x0, x1 in lines:
             a, b = max(int(x0), 0), min(int(x1) + 1, w)
-            cov[a] += 1
-            cov[b] -= 1
-    cov = np.cumsum(cov)[:w]
+            delta[a] += 1
+            delta[b] -= 1
+    cov = list(accumulate(delta))[:w]
     lo, hi = int(0.3 * W), int(0.7 * W)
-    left = cov[int(0.08 * W):int(0.5 * W)].max(initial=0)
-    right = cov[int(0.5 * W):int(0.92 * W)].max(initial=0)
+    left = max(cov[int(0.08 * W):int(0.5 * W)], default=0)
+    right = max(cov[int(0.5 * W):int(0.92 * W)], default=0)
     if min(left, right) < 10 or min(left, right) < 0.25 * max(left, right):
         return None
     seg = cov[lo:hi]
-    m = seg.min()
+    m = min(seg)
     if m > 0.08 * min(left, right):
         return None
-    ok = seg <= m + 0.02 * min(left, right)
+    ok = [v <= m + 0.02 * min(left, right) for v in seg]
     best, run_start = None, None
     for x in range(len(ok) + 1):
         if x < len(ok) and ok[x]:

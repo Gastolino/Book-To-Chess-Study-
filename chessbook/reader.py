@@ -1673,7 +1673,7 @@ def _count_cells(c):
                    for k, w in _counts(c))
 
 
-def index_html(book, thumbs, sizes):
+def index_html(book, thumbs, sizes, app=False):
     e = html.escape
     sel = book["selection"]
     total = book["stats"]
@@ -1698,7 +1698,7 @@ def index_html(book, thumbs, sizes):
             continue
         size = sizes.get(ch["index"])
         heading = chapter_heading(ch)
-        link = (f'<a class="read nav" href="{e(ch["file"])}">Open</a>' if size else
+        link = (f'<a class="read nav" href="{e(ch["file"])}">Open</a>' if size or app else
                 '<span class="noread small muted">No reader yet</span>')
         cards = []
         for p in range(ch["start"], ch["end"] + 1):
@@ -1750,9 +1750,12 @@ def index_html(book, thumbs, sizes):
         "__H1__": e(book["title"]),
         "__LEDE__": ("This page lists the chapters, pages and diagrams of the book and shows "
                      "which of them the program reads."),
-        "__HOW__": ("A tick includes a chapter or a page, and a click on an outlined diagram "
-                    "includes it or leaves it out. When you have finished, you copy the "
-                    "selection and paste it into the chat. The program uses it on its next run."),
+        "__HOW__": (("A tick includes a chapter or a page, and a click on an outlined diagram "
+                     "includes it or leaves it out. Your choices take effect when you press "
+                     "Read again at the top of the page.") if app else
+                    ("A tick includes a chapter or a page, and a click on an outlined diagram "
+                     "includes it or leaves it out. When you have finished, you copy the "
+                     "selection and paste it into the chat. The program uses it on its next run.")),
         "__SUMMARY__": summary,
         "__COLS__": ('<div class="cols small muted" aria-hidden="true"><span></span><span></span>'
                      + "".join(f"<span>{w}</span>" for w in COUNT_COLUMNS) + "</div>"),
@@ -1775,7 +1778,8 @@ def _chevron():
 
 # ---------------------------------------------------------------- build
 
-def build_reader(book, pdf_path, out_dir, chapters=None, progress=None):
+def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_index=True,
+                 app=False):
     """Write index.html and chNN.html into out_dir. chapters limits the chapter
     readers to those indices (the contents page always covers the whole book).
     Returns {"files": {name: bytes}, "pgn": pgnout report, "sizes": {index: bytes}}."""
@@ -1814,9 +1818,11 @@ def build_reader(book, pdf_path, out_dir, chapters=None, progress=None):
         sizes[ch["index"]] = len(data)
         files[ch["file"]] = len(data)
         say(f"{ch['file']}: {len(data) / 1048576:.1f} MB (JPEG quality {quality}, {dpi} dpi)")
+    if not with_index:
+        return {"files": files, "pgn": pgn_report, "sizes": sizes}
     thumbs = {p: _b64(page_jpeg(doc, p, THUMB_DPI, THUMB_QUALITY))
               for p in range(1, doc.page_count + 1)}
-    text = index_html(book, thumbs, sizes)
+    text = index_html(book, thumbs, sizes, app=app)
     data = text.encode("utf-8")
     (out_dir / "index.html").write_bytes(data)
     files["index.html"] = len(data)

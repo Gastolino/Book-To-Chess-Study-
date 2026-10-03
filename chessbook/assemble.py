@@ -90,7 +90,6 @@ from __future__ import annotations
 import bisect
 import json
 import re
-import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
@@ -351,11 +350,11 @@ def load_stage1(pdf_path, output_dir=None, page_count=None):
         if same:
             src = shared
         else:
-            tmp = Path(tempfile.mkdtemp(prefix="stage1_"))
-            subprocess.run([sys.executable, str(PROJECT_ROOT / "stage1_inspect.py"),
-                            str(pdf_path)], cwd=str(tmp), check=True,
-                           stdout=subprocess.DEVNULL)
-            src = tmp / "output" / pdf_path.stem / "stage1"
+            if str(PROJECT_ROOT) not in sys.path:
+                sys.path.insert(0, str(PROJECT_ROOT))
+            import stage1_inspect
+            src = Path(tempfile.mkdtemp(prefix="stage1_"))
+            stage1_inspect.analyse(pdf_path, src)
         dest.mkdir(parents=True, exist_ok=True)
         for name in ("diagrams.json", "numbers.json", "pages.json"):
             if (src / name).exists() and (src / name).resolve() != (dest / name).resolve():

@@ -25,7 +25,6 @@ import re
 from collections import Counter
 from pathlib import Path
 
-import numpy as np
 import pymupdf
 
 from chessbook import style
@@ -106,10 +105,13 @@ def stacked_boards(doc, xref, rect):
         pix = pymupdf.Pixmap(doc, xref)
         if pix.n - pix.alpha != 1:
             pix = pymupdf.Pixmap(pymupdf.csGRAY, pix)
-        a = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, -1)[:, :, 0]
+        data, row, step = pix.samples, pix.stride, pix.n
     except (RuntimeError, ValueError):
         return []
-    inked = (a < 128).mean(axis=1) > 0.03
+    # A row is inked when more than 3% of its pixels are darker than mid-grey.
+    dark = bytes(1 if v < 128 else 0 for v in range(256))
+    inked = [sum(data[y * row:y * row + pix.w * step:step].translate(dark)) > 0.03 * pix.w
+             for y in range(pix.h)]
     bands, start = [], None
     for y, v in enumerate(list(inked) + [False]):
         if v and start is None:
@@ -313,14 +315,11 @@ font-size:13px;line-height:1.5;max-width:none;font-variant-numeric:tabular-nums;
 """
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Inspect a chess book PDF (Stage 1).")
-    ap.add_argument("pdf", type=Path)
-    args = ap.parse_args()
-    pdf = args.pdf
-    if not pdf.exists():
-        raise SystemExit(f"Cannot find {pdf}.")
-    out_dir = Path("output") / pdf.stem / "stage1"
+def analyse(pdf, out_dir):
+    """Find the board pictures, their labels and every diagram number of a
+    book, and write diagrams.json, numbers.json and pages.json to out_dir.
+    Returns what the report needs. The browser app calls this alone."""
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = pymupdf.open(pdf)
     n = doc.page_count
@@ -403,6 +402,20 @@ def main():
     (out_dir / "diagrams.json").write_text(json.dumps(diagrams, indent=1))
     (out_dir / "numbers.json").write_text(json.dumps(numbers, indent=1))
     (out_dir / "pages.json").write_text(json.dumps(pages, indent=1))
+
+    return doc, n, producer, pages, diagrams, numbers, refs
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Inspect a chess book PDF (Stage 1).")
+    ap.add_argument("pdf", type=Path)
+    args = ap.parse_args()
+    pdf = args.pdf
+    if not pdf.exists():
+        raise SystemExit(f"Cannot find {pdf}.")
+    out_dir = Path("output") / pdf.stem / "stage1"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    doc, n, producer, pages, diagrams, numbers, refs = analyse(pdf, out_dir)
 
     # Sample renders, each picture outlined in the accent blue of the design guide with its label underneath.
     samples = pick_samples(n, pages, diagrams)
