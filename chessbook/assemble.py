@@ -8,12 +8,12 @@ It writes output/<stem>/book.json and returns the same dict:
     {"title", "pdf", "page_count", "folio_offset", "glyphs",
      "pages": [{"page", "folio", "width", "height", "chapter", "selected",
                 "diagrams": [{"id", "rect", "label", "kind", "selected", "fen",
-                              "status", "reading"?, "after_node", "lines"}],
+                              "status", "reading"?, "after_node", "checked", "lines"}],
                 "marks": [{"bbox", "node", "status", "raw", "line", "reason"?}]}],
      "chapters": [{..book_structure chapter.., "index", "file", "counts"}],
      "lines": [{"id", "title", "kind", "chapter", "page", "end_page", "start_fen",
                 "root", "status", "diagram", "section", "header", "result",
-                "moves", "variations"}],
+                "moves", "variations", "start_note"}],
      "nodes": {id: {"san", "fen", "parent", "children", "number", "black",
                     "page", "bbox", "status", "raw", "comment", "main",
                     "assumed", "uci", "line", "alternatives"?, "reason"?}},
@@ -52,7 +52,8 @@ How lines are formed
 --------------------
 A game starts at a game header, or at a main-font run that begins at move 1
 with White and reads as play from the initial position: cleanly over two
-moves each at least, with no printed piece glyph or capture mark dropped to
+moves each at least (a shorter run counts the runs that continue its
+numbering after a diagram, "1 e4 e6 2 d3" / "2...d5 3 Nd2"), with no printed piece glyph or capture mark dropped to
 make it fit, and with no diagram named ("Diagram 430") or position set up in
 its sentence. Following main-font runs that continue its numbering continue
 it, across columns, pages and diagrams, until a heading, the next game
@@ -69,7 +70,8 @@ numbering skips moves that the text lacks, the program does not invent them:
 the decoded part of the line ends with a "gap" node (status failed, no move,
 with a reason) and the rest of the printed score follows unread. A run that
 starts later than move 1 without an earlier line to continue starts from the
-diagram the sentence names, or else the diagram printed before it; the
+diagram the sentence names, or else the diagram printed before it (but see
+"How a line's starting position is chosen" below); the
 diagram's position is read by Stage 3, so until then the line has status
 "waiting" and keeps its raw move text. A numbered solution ("5. S. Loyd,
 1878: 1.Qa1!!", "20. 2...Rh3+!") is matched to the diagram with the same
@@ -89,12 +91,39 @@ start a line of their own) and runs without a move number that no word such
 as "instead" or "better" ties to a move are not placed. Runs that cannot be
 placed go to "unattached" with the reason in plain words.
 
+How a line's starting position is chosen
+---------------------------------------
+The diagram a run starts from is only the first candidate (choose_start).
+Books often print a diagram after the moves it belongs to, or two boards
+side by side of which only the first shows where the next moves begin. The
+other candidates are the diagrams printed before the run since the last
+heading and the last moves of another line, and the position the line
+closed just before it reaches at the run's first move number. Each is tried
+with the run and the runs that continue its numbering; the side to move
+always comes from the move numbers. Another candidate replaces the first
+only when the moves read further and with fewer failures from it, or when
+they reach the position of a diagram printed around them and read no worse.
+A doubtful square of the board reading (Stage 3) is changed, to empty or to
+another piece, only when exactly one such change makes every move read
+cleanly. When the first move is not legal from any candidate but the moves
+after the run read cleanly from the diagram, the diagram shows the position
+the run reaches: the run stays unread and the next run starts from it. A
+diagram that a decoded line already reached with the other side to move
+(or at another move of the game) is never a start, since the moves between
+are missing. The line's "start_note" says in words when the start was not
+the first candidate. A fragment does not end at a diagram printed after its
+moves when the next main run continues its numbering and reads as legal
+play from its last position (_Builder.hold); a line from the notes is held
+only when the diagram shows the position it has reached.
+
 A diagram's "after_node" names the move whose position the text ties to
 the diagram: the last main-line move before a diagram printed inside or
 right after a decoded line, or the last move of an opening sequence from the
 initial position that the text gives just after the diagram ("This position
 arises after the opening moves 1.e4 e5 ..."). It is a guess for Stage 3 to
-check against its board reading.
+check against its board reading. When a decoded main line reaches the very
+position a diagram printed around it shows, after_node is that move and
+"checked" is true: the diagram is a checkpoint inside the line.
 
 Move numbers: the book's habit is learnt from its text (book_numbering).
 In a book that prints numbers without a dot ("1 e4 c5 2 Nc3"), the
@@ -653,6 +682,12 @@ class _Decoder:
         return hit
 
 
+def _vanished(d):
+    """True when a piece move was read from a token that prints no piece glyph
+    at all ("g4" read as Qg4): the reading of last resort."""
+    return bool(d.san and d.san[0] in "KQRBN" and not d.glyph)
+
+
 def _fit(decs):
     """(rank, failed, mean cost): rank 0 = reads cleanly, 1 = reads with a few
     failures, 2 = does not read from this position."""
@@ -1165,7 +1200,7 @@ class _Builder:
                             self.nodes[a.main_tok[k][2]]["fen"]:
                         self.after_node.setdefault(x, a.main_tok[k][2])
                 if a is not None and a.kind == "fragment" and a.main_tok:
-                    self.hold(off)
+                    self.hold(off, x)
                 self.structural = max(self.structural, off)
             elif kind == "caption":
                 self.structural = max(self.structural, off)
@@ -1471,8 +1506,9 @@ class _Builder:
         if pick is not None and pick.get("skip"):
             # the position before these moves is unknown; the moves after them
             # start from the diagram (on_main reaches it with the next run)
-            self.unplaced(run, f"{self.diagram_name(did)} shows the position these moves "
-                               "reach, and the position they start from is unknown")
+            self.unplaced(run, pick.get("reason") or (
+                f"{self.diagram_name(did)} shows the position these moves reach, and the "
+                "position they start from is unknown"))
             return None
         if pick is not None and pick.get("line") is not None:
             # the run goes on from a position of the line before it
@@ -1567,6 +1603,23 @@ class _Builder:
                 out.setdefault(self.diagram_fens[did].split(" ")[0], did)
         return out
 
+    def checked_ply(self, did):
+        """The ply about to be played in the position a decoded line reached
+        at this diagram (a checkpoint), or None."""
+        nid = self.checked.get(did)
+        fen = self.nodes[nid]["fen"] if nid else None
+        return _board_ply(fen) if fen else None
+
+    def ply_conflict(self, did, ply):
+        """True when a line already reached this diagram with the other side to
+        move, or at another move of the game: a run at ply cannot start
+        there. Analysis that the book numbers afresh from move 1 may start
+        from it when the side to move agrees."""
+        q = self.checked_ply(did)
+        if q is None:
+            return False
+        return q % 2 != ply % 2 or (q != ply and ply > 1)
+
     def checkpoint_hits(self, decs, placements, own):
         return sum(1 for d in decs if d.fen and placements.get(d.fen.split(" ")[0]) not in
                    (None, own))
@@ -1594,10 +1647,20 @@ class _Builder:
         cands = []                  # (order, did, line, fen)
         if default is not None and self.diagram_selected(default):
             fen = self.diagram_fen(default, run)
+            if fen and self.ply_conflict(default, run.ply):
+                # a line already reached this diagram at another move: the
+                # moves between are missing from the text, and no move is
+                # invented to bridge them
+                n = self.nodes[self.checked[default]]
+                return {"skip": True, "reason": (
+                    f"{self.diagram_name(default)} shows the position after "
+                    f"{n['number']}{'...' if n['black'] else '.'}{n['san']}, and the text lacks "
+                    f"the moves between it and {_ply_words(run.ply)}")}
             if fen:
                 cands.append((0, default, None, fen))
         for k, did in enumerate(self.diagram_window(run) if default is not None else []):
-            if did == default or not self.diagram_selected(did):
+            if did == default or not self.diagram_selected(did) \
+                    or self.ply_conflict(did, run.ply):
                 continue
             fen = self.diagram_fen(did, run)
             if fen:
@@ -1629,13 +1692,17 @@ class _Builder:
 
         def better(c, b):
             (cp, cf, cc) = c["score"]
-            clean = cf == 0 and cc <= 1.0 and all(d.cost <= 1.5 for d in c["decs"])
+            clean = cf == 0 and cc <= 1.0 and all(d.cost <= 1.5 and not _vanished(d)
+                                                  for d in c["decs"])
             if b is None:
                 # no usable default: the line before goes on when its next
                 # moves read cleanly (as after a heading, see resume), and a
                 # diagram serves only when the moves read cleanly throughout
                 if c["line"] is not None:
-                    return _fit(c["decs"][:4])[0] == 0
+                    head = c["decs"][:4]
+                    return len(head) >= 2 and (all(d.status != "failed" and d.cost <= 2.5 and not _vanished(d)
+                                for d in head)
+                            and sum(d.cost for d in head) <= 1.2 * len(head))
                 return clean and n >= 2
             (bp, bf, bc) = b["score"]
             if c["hits"] and not b["hits"] and cp >= bp and cp >= 1 and cf <= bf:
@@ -1962,6 +2029,12 @@ class _Builder:
             accept = False
         elif rank == 0:
             accept = n >= 4 or (n >= 2 and bool(_OPENING_RE.search(lead)))
+            if not accept and n >= 2:
+                # a short run that the next runs continue ("1 e4 e6 2 d3",
+                # a diagram, "2...d5 3 Nd2"): read them together
+                more = self.lookahead(run, 8)
+                m = sum(1 for t in more if t.kind == "move")
+                accept = m >= 5 and _fit(self.dec.run(chess.STARTING_FEN, more))[0] == 0
         elif rank == 1:
             accept = n >= 10 and failed <= 0.1 * n
         else:
@@ -2412,16 +2485,19 @@ class _Builder:
         self.close(off)
         self.active = active
 
-    def hold(self, off):
+    def hold(self, off, did=None):
         """A diagram after the moves of a fragment usually ends it, but the next
         main run may go on with its numbering and read as legal play from its
         last position (the diagram only showed the position reached). The line
         is held open at off: on_main continues it in that case, and anything
-        else closes it at off (see close)."""
+        else closes it at off (see close). A line that began in the notes is
+        held only when the diagram shows the position it has reached."""
         a = self.active
         if a is None:
             return
-        if a.waiting or a.broken or not a.last_fen:
+        shown = (self.diagram_fens.get(did) or "").split(" ")[0]
+        if a.waiting or a.broken or not a.last_fen or (
+                a.born != "main" and shown != a.last_fen.split(" ")[0]):
             self.request_close(off)
         elif a.hold is None:
             a.hold = max(off, a.busy_until)     # a run may go on across the diagram
@@ -2455,8 +2531,18 @@ class _Builder:
         L.end_offset = off
         self.finish_line(L)
         self.last_closed = L
+        prev = None
         for run, _ in late:
+            # as if no line had been open: a diagram between two notes ends
+            # the line the first one starts (see flush_pre_notes)
+            cut = [doff for doff, _ in self.diagram_events
+                   if prev is not None and prev < doff < run.start]
+            if cut and self.pre_notes:
+                self.flush_pre_notes()
+                if self.active is not None:
+                    self.close(cut[0])
             self.on_note(run)
+            prev = run.start
 
     def finish_line(self, L):
         self.attach_notes(L)

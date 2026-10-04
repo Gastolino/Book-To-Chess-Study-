@@ -261,7 +261,9 @@ def gpa(tmp_path_factory):
 
 def test_gpa_lines_start_from_the_right_diagram(gpa):
     st = gpa["stats"]
-    assert st["line_status"]["ok"] >= 27 and st["line_status"]["failed"] <= 22
+    # (lines that the baseline split at diagrams are now whole, so there
+    # are fewer lines; the moves tell the gain)
+    assert st["line_status"]["ok"] >= 24 and st["line_status"]["failed"] <= 22
     assert st["moves"]["ok"] >= 7700 and st["moves"]["failed"] <= 320
     # the book prints two boards side by side: the line starts from the one
     # before its moves, not from the one its moves reach (baseline: 11 lines)

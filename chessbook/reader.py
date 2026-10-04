@@ -923,6 +923,7 @@ function lineMeta(L){
   if (parts.length) s += (parts.length > 1 ? ", " + parts[0] + " and " + parts[1] : " and " + parts[0]);
   s += ".";
   if (L.event && L.title.indexOf(L.event) < 0) s = "The book names the event as " + esc(L.event) + ". " + s;
+  if (L.start_note) s += " " + esc(L.start_note);
   return s;
 }
 function renderTree(){
@@ -1102,7 +1103,9 @@ function showDiagram(id){
   }
   if (!d.selected) lines.push("The program left this diagram out when it read the book.");
   if (d.after_node && D.nodes[d.after_node])
-    lines.push("The program places this diagram after <a href='#node=" + esc(d.after_node) + "' data-goto='" +
+    lines.push((d.checked ? "The line reaches the position of this diagram after "
+                          : "The program places this diagram after ") +
+      "<a href='#node=" + esc(d.after_node) + "' data-goto='" +
       esc(d.after_node) + "' class=n>" + moveHtml(d.after_node, true) + "</a>.");
   lines.push("<span id=dpageoff></span>");
   h += "<div class='small muted'>" + lines.map(x => "<p>" + x + "</p>").join("") + "</div>";
@@ -1415,6 +1418,7 @@ def chapter_data(book, ch, pgn_text):
                                                 "start_fen", "root", "status", "diagram",
                                                 "section", "result", "moves")}
             lines[L["id"]]["event"] = (L.get("header") or {}).get("event")
+            lines[L["id"]]["start_note"] = L.get("start_note") or ""
             order.append(L["id"])
     nodes = {}
     for nid, n in book["nodes"].items():
