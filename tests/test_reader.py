@@ -99,7 +99,7 @@ def test_chapter_page(little):
     assert game["root"] in data["nodes"]
     assert "[White \"Smith\"]" in data["pgn"] and data["pgnName"] == "ch01.pgn"
     for needle in ("window.readerState", "Download PGN", "Chess board", "id=\"bflip\"",
-                   "ArrowRight", "Board reading (Stage 3) has not run yet", "href=\"index.html\"",
+                   "ArrowRight", "Board reading (Stage 3) could not read that diagram", "href=\"index.html\"",
                    'id="showread"', ">Show reading<", ">On this page<", ">Contents<",
                    'id="chips"', 'id="dpanel"'):
         assert needle in text, needle
@@ -177,14 +177,15 @@ def _ensure_primer_reader():
     """The Primer's reader for the chapter holding page 250 and the index."""
     book_path = ROOT / "output" / "primer" / "book.json"
     if not book_path.exists():
-        subprocess.run([sys.executable, str(ROOT / "make_reader.py"), str(PDF), "--chapters", "7"],
+        subprocess.run([sys.executable, str(ROOT / "make_reader.py"), str(PDF), "--chapters", "0,7"],
                        cwd=str(ROOT), check=True)
         return
     book = json.loads(book_path.read_text(encoding="utf-8"))
     ch = next(c for c in book["chapters"] if c["start"] <= 250 <= c["end"])
-    if not (PRIMER_READER / "index.html").exists() or not (PRIMER_READER / ch["file"]).exists():
+    # the browser test also opens the front matter (chapter 0)
+    if not all((PRIMER_READER / f).exists() for f in ("index.html", ch["file"], "ch00.html")):
         subprocess.run([sys.executable, str(ROOT / "make_reader.py"), str(PDF), "--reuse",
-                        "--chapters", str(ch["index"])], cwd=str(ROOT), check=True)
+                        "--chapters", f"0,{ch['index']}"], cwd=str(ROOT), check=True)
 
 
 @pytest.mark.skipif(not PDF.exists(), reason="primer.pdf is not in the project folder")

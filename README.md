@@ -10,7 +10,7 @@ Each stage writes an HTML report for checking before the next stage runs.
 |---|---|---|
 | 1 | `stage1_inspect.py` | Finds out what kind of PDF the book is, finds the board pictures and lists every diagram number in the text. |
 | 2 | to come | Cuts out every board. |
-| 3 | to come | Reads each board into a FEN. |
+| 3 | `chessbook/boards.py` | Reads each board picture into a FEN, with a confidence for every square. |
 | 4 | to come | Decodes the moves in the text into legal moves. |
 | 5 | to come | Assembles one PGN chapter per diagram or game. |
 | 6 | to come | Uploads the chapters to Lichess. |
@@ -24,6 +24,25 @@ their method page by page:
 - **pictures**: the text is type (typeset, or redrawn from a scan by Acrobat
   ClearScan) and each diagram is a separate embedded picture.
 - **text**: typeset pages whose diagrams are drawn from shapes or a chess font.
+
+## Reading the boards
+
+Stage 3 reads every board picture without any labelling by hand. It finds the
+8 by 8 grid in the picture (and reports a picture that shows only part of a
+board), separates the pieces from the squares, hatched or plain, and groups
+the piece drawings of the whole book, since a book draws each piece the same
+way every time. It then names the groups from where their pieces stand
+(kings on g1, rooks on a1, no pawns on the first rank), from the outline of
+reference pieces, from the rule of one king a side, and from positions the
+book already gives (a printed initial position, or a position that a decoded
+line reaches at a diagram). Squares it is unsure of are listed as doubtful,
+and the reader marks them with a dashed outline. Printed coordinates show
+when a board is drawn from Black's side, and a caption such as "(B)" or
+"Black to move" gives the side to move.
+
+`tools/make_piece_refs.py` draws the reference pieces into
+`chessbook/assets/pieces.npz`; `tests/data/board_truth.json` holds 76
+positions checked by eye against the pictures of five books.
 
 ## Using the app
 

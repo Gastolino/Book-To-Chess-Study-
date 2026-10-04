@@ -13,6 +13,12 @@ async function init(cfg) {
   say("Starting Python in the browser");
   py = await loadPyodide({ indexURL: cfg.indexURL });
   say("Loading the PDF and chess libraries");
+  // numpy and OpenCV (for reading the board pictures) come from Pyodide itself
+  // (without them the book is read as before, and its diagrams stay unread)
+  if (cfg.packages && cfg.packages.length) {
+    try { await py.loadPackage(cfg.packages); }
+    catch (err) { say("Board reading is not available: " + String(err && err.message ? err.message : err)); }
+  }
   await py.loadPackage(cfg.wheels);
   const zip = await (await fetch(cfg.appZip)).arrayBuffer();
   py.unpackArchive(zip, "zip", { extractDir: "/app" });
