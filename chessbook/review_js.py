@@ -141,7 +141,7 @@ svg.board .hit{fill:transparent;cursor:pointer}
 .lineacts{display:grid;gap:6px;border-top:1px solid var(--line);padding-top:8px}
 .lineacts p{margin:0}
 #diagpick[hidden]{display:none}
-@media (max-width:900px){
+@media (max-width:700px){
 .pencil .legend{display:flex}
 .tools{flex-wrap:wrap;row-gap:4px}
 #fix:not([hidden]){position:fixed;left:0;right:0;z-index:9;max-height:62vh;overflow:auto;background:var(--bg);

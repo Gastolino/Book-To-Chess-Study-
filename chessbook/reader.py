@@ -249,7 +249,7 @@ CHAPTER_CSS = r"""
 #pagenum{width:3.6em}
 .notes{padding:8px 24px;border-bottom:1px solid var(--line)}
 .notes p:empty,.notes:not(:has(p:not(:empty))){display:none}
-.reader{display:grid;grid-template-columns:minmax(0,1fr) clamp(400px,33vw,520px);align-items:start}
+.reader{display:grid;grid-template-columns:minmax(0,1fr) 50vw;align-items:start}
 .pagecol{min-width:0;padding:24px 32px 40px 24px}
 .offpage{margin:0 0 16px;padding-left:12px;border-left:1px solid var(--doubt)}
 .offpage:empty,.diagnote:empty{display:none}
@@ -313,7 +313,7 @@ padding:16px 24px;min-width:0;display:flex;flex-direction:column}
 .sec:last-child{padding-bottom:0}
 .sec[hidden]{display:none}
 .boardwrap svg{display:block;width:100%;height:auto}
-.boardwrap,.dpanel canvas.pic{margin:0;max-width:min(100%,max(240px,calc(100vh - 400px)))}
+.boardwrap,.dpanel canvas.pic{margin:0 auto;max-width:min(100%,calc(100vh - 140px))}
 svg.board .sl{fill:var(--board-light)}
 svg.board .sd{fill:var(--board-dark)}
 svg.board .lm{fill:none;stroke:var(--accent);stroke-width:1.5px;vector-effect:non-scaling-stroke}
@@ -364,7 +364,7 @@ background:var(--muted)}
 .mbar,.mini,.touch{display:none}
 @media (hover:none) and (pointer:coarse){.touch{display:block}.mouse{display:none}
 .mark{border-bottom:1px solid color-mix(in srgb,var(--accent) 45%,transparent)}}
-@media (max-width:900px){
+@media (max-width:700px){
 .bar{flex-wrap:wrap;padding:12px 16px}
 .where{flex-basis:100%;white-space:normal;flex-wrap:wrap;gap:0 12px}
 .where h1{white-space:normal}
@@ -407,7 +407,7 @@ window.READER = D;
 const $ = (id) => document.getElementById(id);
 const S = {page: null, node: null, line: null, flip: false, diagram: null, mini: null, panelSeen: false};
 const imgCache = {};
-const SMALL = window.matchMedia("(max-width:900px)");
+const SMALL = window.matchMedia("(max-width:700px)");
 const ROW = 25.5;  // the height of one row of the move list: 15px type at line height 1.7
 window.readerState = {fen: null, nodeId: null, page: null};
 const kinds = {};
@@ -690,6 +690,9 @@ function highlightMark(scroll){
 // sideways. The page moves only when the move leaves the middle of that
 // space, so stepping through a line does not make it jump.
 function revealMark(el){
+  // On a phone, while the big board below the page is in view, stepping
+  // through the moves keeps the reader at the board.
+  if (SMALL.matches && S.panelSeen) return;
   const bar = $("mbar");
   const barH = bar && getComputedStyle(bar).display !== "none" ? bar.offsetHeight : 0;
   if (!barH) { el.scrollIntoView({block: "nearest", inline: "nearest"}); return; }
@@ -1320,6 +1323,29 @@ function init(){
       const seen = es[es.length - 1].isIntersecting;
       if (seen !== S.panelSeen) { S.panelSeen = seen; renderMini(); }
     }, {rootMargin: "0px 0px -64px 0px"}).observe($("panel"));
+  // A horizontal swipe on the page turns it. An enlarged page that can still
+  // scroll that way scrolls first, and turns only at its edge.
+  (function(){
+    const box = $("pagescroll");
+    let t0 = null;
+    box.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) { t0 = null; return; }
+      const t = e.touches[0];
+      t0 = {x: t.clientX, y: t.clientY, at: Date.now(), left: box.scrollLeft};
+    }, {passive: true});
+    box.addEventListener("touchend", (e) => {
+      if (!t0 || e.changedTouches.length !== 1) { t0 = null; return; }
+      const t = e.changedTouches[0], dx = t.clientX - t0.x, dy = t.clientY - t0.y;
+      const start = t0; t0 = null;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy) || Date.now() - start.at > 700) return;
+      const room = box.scrollWidth - box.clientWidth;
+      if (room > 1) {
+        const atLeft = start.left <= 1, atRight = start.left >= room - 1;
+        if ((dx < 0 && !atRight) || (dx > 0 && !atLeft)) return;
+      }
+      goPage(S.page + (dx < 0 ? 1 : -1));
+    }, {passive: true});
+  })();
   $("prevpage").addEventListener("click", () => goPage(S.page - 1));
   $("nextpage").addEventListener("click", () => goPage(S.page + 1));
   $("pagenum").addEventListener("keydown", (e) => { if (e.key === "Enter") { typedPage(); e.preventDefault(); } });
