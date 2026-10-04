@@ -181,6 +181,11 @@ def _ensure_primer_reader():
                        cwd=str(ROOT), check=True)
         return
     book = json.loads(book_path.read_text(encoding="utf-8"))
+    if "symbols" not in book or "corrections" not in book:
+        # written before the reader could review and correct: assemble again
+        subprocess.run([sys.executable, str(ROOT / "make_reader.py"), str(PDF), "--chapters", "0,7"],
+                       cwd=str(ROOT), check=True)
+        return
     ch = next(c for c in book["chapters"] if c["start"] <= 250 <= c["end"])
     # the browser test also opens the front matter (chapter 0)
     if not all((PRIMER_READER / f).exists() for f in ("index.html", ch["file"], "ch00.html")):
@@ -190,7 +195,7 @@ def _ensure_primer_reader():
 
 @pytest.mark.skipif(not PDF.exists(), reason="primer.pdf is not in the project folder")
 @pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
-def test_primer_reader_in_chromium():
+def test_primer_reader_in_chromium(tmp_path, monkeypatch):
     _ensure_primer_reader()
     screens = PRIMER_READER / "screens"
     env = dict(os.environ, NODE_PATH=NODE_PATH)
@@ -215,7 +220,46 @@ def test_primer_reader_in_chromium():
     sel = Selection(parse_selection_text(res["selection"]))
     assert not sel.page_selected(250) and sel.page_selected(251)
     assert not sel.page_selected(5)
-    print(json.dumps({k: res[k] for k in ("chapter", "clicked", "advanced", "diagram")}))
+    for shot in ("review_move_1280_light.png", "review_move_390_dark.png", "review_diagram_390_light.png",
+                 "review_diagram_1280_dark.png", "review_symbol_390_light.png"):
+        assert (screens / shot).stat().st_size > 10000, shot
+    print(json.dumps({k: res[k] for k in ("chapter", "clicked", "advanced", "diagram", "symbol")}))
+    _read_again_from_the_command_line(res, tmp_path, monkeypatch)
+
+
+def _read_again_from_the_command_line(res, tmp_path, monkeypatch):
+    """The corrections the browser test made, pasted into make_reader
+    --corrections (the command line's Read again): every kind is applied."""
+    import make_reader
+    from chessbook import assemble, corrections
+    from chessbook import selection as selmod
+    fix = corrections.parse_corrections_text(res["corrections"])
+    assert all(fix[k] for k in ("diagrams", "moves", "unattached", "glyphs")), fix
+    pasted = tmp_path / "pasted.txt"
+    pasted.write_text("Here are my corrections:\n```json\n" + res["corrections"] + "\n```\n", encoding="utf-8")
+    monkeypatch.setattr(selmod, "BOOKS_DIR", tmp_path / "books")
+    monkeypatch.setattr(corrections, "BOOKS_DIR", tmp_path / "books")
+    monkeypatch.setattr(assemble, "OUTPUT_DIR", tmp_path / "output")
+    make_reader.main([str(PDF), "--corrections", str(pasted), "--chapters", "7"])
+    book = json.loads((tmp_path / "output" / "primer" / "book.json").read_text(encoding="utf-8"))
+    assert book["corrections"] == fix
+    (key, v), = fix["moves"].items()
+    node = next(n for n in book["nodes"].values() if n.get("key") == key)
+    assert node["corrected"] == "move" and node["san"] == v["san"]
+    (did, d), = fix["diagrams"].items()
+    dg = next(x for p in book["pages"] for x in p["diagrams"] if x["id"] == did)
+    assert dg["status"] == "corrected" and dg["fen"] == d["fen"]
+    for key, v in fix["unattached"].items():
+        placed = [u for u in book["attached"] + book["dismissed"] if u["key"] == key]
+        left = [u for u in book["unattached"] if u["key"] == key]
+        # a sequence goes where the reader tied it when its moves are legal there, and says
+        # why not otherwise
+        assert placed or (left and "you tied it to" in left[0]["reason"]), (key, v)
+        if v["attach_to"] == "dismiss":
+            assert placed and placed[0] in book["dismissed"]
+    assert book["stats"]["corrected"]["symbols"] == 1 and book["stats"]["corrected"]["symbol_moves"] > 0
+    index = (tmp_path / "output" / "primer" / "reader" / "index.html").read_text(encoding="utf-8")
+    assert "The run used your corrections of" in index
 
 
 @pytest.mark.skipif(not PRIMER_READER.exists(), reason="the Primer's reader has not been built")

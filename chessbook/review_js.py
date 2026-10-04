@@ -1,0 +1,802 @@
+"""The Review view of the chapter reader and the reader's corrections.
+
+CORRECTIONS_JS is the store of corrections shared by the contents page and
+the chapter readers (browser storage, one entry per book). REVIEW_JS runs
+inside the chapter reader's script and uses its functions: it lists the
+chapter's uncertainties, and its editors correct a diagram, a move, a
+sequence that found no place, or a piece symbol that the text recognition
+could not name. REVIEW_CSS styles both, following DESIGN.md.
+"""
+
+CORRECTIONS_JS = r"""
+function makeCorrections(applied, opts){
+  // applied: the corrections the build used ({diagrams, moves, unattached, glyphs}).
+  const key = "chessbook-corrections:" + opts.pdf + ":" + opts.pageCount;
+  const PARTS = ["diagrams", "moves", "unattached", "glyphs"];
+  function canon(src){
+    const o = {version: 1};
+    for (const p of PARTS) {
+      const part = (src && src[p]) || {}, keys = Object.keys(part).sort(), out = {};
+      for (const k of keys) out[k] = part[k];
+      o[p] = out;
+    }
+    return o;
+  }
+  const same = (a, b) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
+  let st = canon(applied), stored = false;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) { const v = JSON.parse(raw); if (v && v.corrections) { st = canon(v.corrections); stored = true; } }
+  } catch (e) { stored = false; }
+  const api = {
+    get(part, k){ return st[part][k]; },
+    set(part, k, v){
+      if (v == null) delete st[part][k]; else st[part][k] = v;
+      st = canon(st); api.save();
+    },
+    all(part){ return st[part]; },
+    object(){ return Object.assign(canon(st), {note: "Corrections made in the book reader of " + opts.title + "."}); },
+    text(){ return JSON.stringify(api.object(), null, 1); },
+    count(){ let n = 0; for (const p of PARTS) n += Object.keys(st[p]).length; return n; },
+    // a correction stored in this browser that the build did not use yet
+    pending(part, k){ return !same((applied && applied[part] || {})[k], st[part][k]); },
+    anyPending(){ return JSON.stringify(canon(st)) !== JSON.stringify(canon(applied)); },
+    save(){
+      try { localStorage.setItem(key, JSON.stringify({corrections: canon(st)})); stored = true; }
+      catch (e) { /* the browser keeps no storage: the corrections live in this page only */ }
+    },
+    reset(){ st = canon(applied); try { localStorage.removeItem(key); } catch (e) { /* no storage */ } stored = false; },
+    stored(){ return stored; }
+  };
+  return api;
+}
+"""
+
+REVIEW_CSS = r"""
+#reviewbtn[aria-pressed="true"]{color:var(--accent)}
+.eye{position:absolute;z-index:5;padding:0;margin:0;border:0;background:none;cursor:pointer;width:16px;height:12px;
+line-height:0;color:var(--doubt);display:none;transform:translate(-2px,-100%)}
+.eye svg{width:16px;height:12px;fill:none;stroke:currentColor;stroke-width:1.25;stroke-linecap:round;stroke-linejoin:round}
+.eye.fixed{color:var(--ok)}
+.eye:hover{color:var(--accent)}
+.eye::before{content:"";position:absolute;left:50%;top:50%;width:32px;height:28px;transform:translate(-50%,-50%)}
+.reading .eye{display:block}
+.reading .mark.fixed,.k.fixed{outline:1px solid var(--ok)}
+.k.fixed{border-color:var(--ok)}
+.legend .eyek{display:inline-block;width:16px;height:12px;line-height:0;color:var(--doubt)}
+.legend .eyek svg{width:16px;height:12px;fill:none;stroke:currentColor;stroke-width:1.25}
+.mark.seqcur,.reading .mark.seqcur{outline:1.5px solid var(--accent);z-index:3}
+.symmenu{position:fixed;z-index:12;min-width:150px;background:var(--bg);border:1px solid var(--line);
+margin:0;padding:4px 0;list-style:none}
+.symmenu[hidden]{display:none}
+.symmenu .head{padding:4px 12px 6px;color:var(--muted);border-bottom:1px solid var(--line);margin-bottom:4px}
+.symmenu button{display:flex;align-items:center;gap:10px;width:100%;padding:4px 12px;background:none;border:0;
+text-align:left;cursor:pointer;color:var(--fg)}
+.symmenu button:hover,.symmenu button[aria-checked="true"]{color:var(--accent)}
+svg.pc{width:24px;height:24px;flex:none;display:block}
+svg.pc .sq{fill:var(--board-light)}
+.reviewing .lsec,.reviewing .treesec,.reviewing #infosec{display:none}
+#review[hidden],#fix[hidden]{display:none}
+.revhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.revlist{list-style:none;margin:8px 0 0;padding:0}
+.revlist .grp{margin:12px 0 4px;color:var(--muted)}
+.revlist li{border-top:1px solid var(--line)}
+.revlist li:last-child{border-bottom:1px solid var(--line)}
+.revlist button{display:grid;grid-template-columns:14px minmax(0,1fr) auto;align-items:baseline;width:100%;
+padding:6px 0;background:none;border:0;text-align:left;cursor:pointer;color:var(--fg)}
+.revlist button:hover .rl{text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px}
+.revlist button[aria-current="true"] .rl{color:var(--accent)}
+.revlist .rl{min-width:0;overflow-wrap:anywhere}
+.revlist .rp{color:var(--muted);padding-left:12px}
+.revlist .rd{grid-column:2/4;color:var(--muted)}
+.revlist .dot{margin:0}
+.dot.st-corrected,.dot.st-fixed{background:var(--ok)}
+.dot.st-unattached{background:var(--muted)}
+.fix{display:grid;gap:10px}
+.fix .fh{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.fix h3{font-size:17px}
+.fix .lab{color:var(--muted)}
+.choices{display:flex;flex-wrap:wrap;gap:4px 16px;font-family:"Geist Mono",ui-monospace,Menlo,Consolas,monospace;
+font-variant-ligatures:none}
+.choices button{background:none;border:0;padding:2px 0;margin:0;cursor:pointer;color:var(--fg);font:inherit;
+text-underline-offset:3px;text-decoration-thickness:1px}
+.choices button:hover{color:var(--accent);text-decoration:underline}
+.choices button[aria-pressed="true"]{color:var(--accent)}
+.choices .sub{font-family:"DM Sans",system-ui,sans-serif;color:var(--muted);font-size:13px;margin-left:6px}
+.choices.lines{display:grid;gap:2px}
+.fix input[type=text]{width:10em;text-align:left;font-family:"Geist Mono",ui-monospace,Menlo,Consolas,monospace}
+.fix .typed{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.fixmsg:empty{display:none}
+.fixmsg.bad{color:var(--fail)}
+.fixmsg.good{color:var(--ok)}
+.pieces{display:grid;grid-template-columns:repeat(13,minmax(0,1fr));gap:2px;max-width:420px}
+.pieces.six{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 12px;max-width:none}
+.pieces button{background:none;border:0;border-bottom:1px solid transparent;padding:2px 0;margin:0;cursor:pointer;
+display:flex;flex-direction:column;align-items:center;color:var(--fg);min-width:0}
+.pieces.six button{flex-direction:row;gap:8px;justify-content:flex-start}
+.pieces button svg.pc{width:100%;height:auto;max-width:30px}
+.pieces.six button svg.pc{width:28px;max-width:28px}
+.pieces button:hover{border-bottom-color:var(--accent)}
+.pieces button[aria-pressed="true"]{border-bottom-color:var(--accent);color:var(--accent)}
+.pieces .none{display:block;width:70%;aspect-ratio:1;border:1px solid var(--muted);margin:15%}
+.side{display:flex;gap:20px}
+.side .tb[aria-pressed="true"]{color:var(--accent);text-decoration:underline}
+.fixacts{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:baseline}
+.fixnav{display:flex;gap:20px;border-top:1px solid var(--line);padding-top:8px}
+.fixboard svg{display:block;width:100%;height:auto;max-width:min(100%,max(240px,calc(100vh - 420px)))}
+svg.board .sel{fill:none;stroke:var(--accent);stroke-width:2px;vector-effect:non-scaling-stroke}
+svg.board .hit{fill:transparent;cursor:pointer}
+.fix canvas.pic{max-width:min(100%,max(240px,calc(100vh - 420px)))}
+.editing-diagram #boardarea,.editing-diagram .controls{display:none}
+@media (max-width:900px){
+.tools{flex-wrap:wrap;row-gap:4px}
+#fix:not([hidden]){position:fixed;left:0;right:0;z-index:9;max-height:62vh;overflow:auto;background:var(--bg);
+border-top:1px solid var(--line);padding:12px 16px}
+.fixboard svg{max-width:min(100%,32vh);margin:0 auto}
+.fix canvas.pic{display:none}
+.pieces{max-width:none}
+.editing-diagram #boardarea,.editing-diagram .controls{display:block}}
+"""
+
+EYE_SVG = ("<svg viewBox='0 0 20 14' aria-hidden='true'><path d='M1.5 7C3.7 3.4 6.6 1.6 10 1.6S16.3 3.4 18.5 7"
+           "C16.3 10.6 13.4 12.4 10 12.4S3.7 10.6 1.5 7z'/><circle cx='10' cy='7' r='2.4'/></svg>")
+
+REVIEW_JS = r"""
+/* ---------------------------------------------------------------- review and corrections */
+const FIX = makeCorrections(D.corrections, {pdf: D.book.pdf, pageCount: D.pageCount, title: D.book.title});
+window.correctionsText = FIX.text;
+const EYE = "__EYE__";
+const RV = {on: false, items: [], cur: -1, edit: null, wasReading: false};
+const PIECES = {K: "king", Q: "queen", R: "rook", B: "bishop", N: "knight", P: "pawn"};
+const REVIEW = ["guessed", "ambiguous", "failed"];
+
+function inApp(){ return !!window.CHESSBOOK_APP; }
+function applyWords(){
+  return inApp() ? "Read again at the top of the page applies it." :
+    "The next run of the program applies it once you copy the corrections on the contents page into the chat.";
+}
+function pieceSvg(letter, white){
+  if (!letter) return "<span class=none aria-hidden='true'></span>";
+  const name = (white ? "white-" : "black-") + PIECES[letter.toUpperCase()];
+  // drawn on a light square, so that black pieces stay visible in the dark scheme
+  return "<svg class=pc viewBox='0 0 45 45' aria-hidden='true'><rect class=sq width='45' height='45'/><use href='#" + name +
+    "' xlink:href='#" + name + "'/></svg>";
+}
+function sideOf(n){
+  if (n && n.before) return n.before.split(" ")[1] === "b" ? "b" : "w";
+  return n && n.black ? "b" : "w";
+}
+/* positions: a board as 8 rows of 8 squares, row 0 holding rank 8 */
+function fenRows(fen){
+  return fen.split(" ")[0].split("/").map(r => {
+    const out = [];
+    for (const ch of r) { if (/\d/.test(ch)) for (let i = 0; i < +ch; i++) out.push(""); else out.push(ch); }
+    return out;
+  });
+}
+function rowsFen(rows, turn){
+  const place = rows.map(r => {
+    let s = "", e = 0;
+    for (const ch of r) { if (!ch) { e++; continue; } if (e) { s += e; e = 0; } s += ch; }
+    return s + (e ? e : "");
+  }).join("/");
+  // castling rights where king and rook stand on their first squares
+  let c = "";
+  if (rows[7][4] === "K") { if (rows[7][7] === "R") c += "K"; if (rows[7][0] === "R") c += "Q"; }
+  if (rows[0][4] === "k") { if (rows[0][7] === "r") c += "k"; if (rows[0][0] === "r") c += "q"; }
+  return place + " " + turn + " " + (c || "-") + " - 0 1";
+}
+function sqRC(name){ return [8 - parseInt(name[1], 10), "abcdefgh".indexOf(name[0])]; }
+function applyUci(fen, uci){
+  // the position after a legal move, for showing it on the board
+  const rows = fenRows(fen), turn = fen.split(" ")[1] || "w";
+  const [r0, c0] = sqRC(uci.slice(0, 2)), [r1, c1] = sqRC(uci.slice(2, 4));
+  let p = rows[r0][c0];
+  if (p.toLowerCase() === "k" && Math.abs(c1 - c0) === 2) {
+    const rf = c1 > c0 ? 7 : 0, rt = c1 > c0 ? 5 : 3;
+    rows[r0][rt] = rows[r0][rf]; rows[r0][rf] = "";
+  }
+  if (p.toLowerCase() === "p" && c1 !== c0 && !rows[r1][c1]) rows[r0][c1] = "";
+  if (uci.length > 4) p = turn === "w" ? uci[4].toUpperCase() : uci[4].toLowerCase();
+  rows[r0][c0] = ""; rows[r1][c1] = p;
+  return rowsFen(rows, turn === "w" ? "b" : "w");
+}
+function positionProblem(rows){
+  let K = 0, k = 0, pawn = false;
+  rows.forEach((r, i) => r.forEach(ch => {
+    if (ch === "K") K++; if (ch === "k") k++;
+    if ((ch === "P" || ch === "p") && (i === 0 || i === 7)) pawn = true;
+  }));
+  if (K !== 1 || k !== 1)
+    return "A position needs one king of each colour. This one has " + words(K) + " white " +
+      (K === 1 ? "king" : "kings") + " and " + words(k) + " black " + (k === 1 ? "king" : "kings") + ".";
+  if (pawn) return "A pawn cannot stand on the first or the last rank.";
+  return "";
+}
+/* SAN as the reader types it: the book's letters become English ones, and check signs,
+   annotations and zeros of castling do not count */
+function sanKey(t, loose){
+  t = String(t || "").trim().replace(/[+#!?]+$/g, "").replace(/0/g, "O").replace(/[–—]/g, "-");
+  if (/^[A-Z]/.test(t) && D.letters[t[0]] && !/^O-O/.test(t)) t = D.letters[t[0]] + t.slice(1);
+  if (loose) t = t.replace(/[x:\-=]/g, "").toLowerCase();
+  return t;
+}
+function matchSan(typed, legal){
+  const a = sanKey(typed), exact = legal.filter(m => sanKey(m[0]) === a);
+  if (exact.length === 1) return exact[0];
+  const b = sanKey(typed, true), loose = legal.filter(m => sanKey(m[0], true) === b);
+  return loose.length === 1 ? loose[0] : null;
+}
+
+/* ---------------- the list */
+function moveLabel(id){ return "<span class=n>" + moveHtml(id, true) + "</span>"; }
+function seqInfo(key){
+  for (const u of D.unattached) if (u.key === key) return u;
+  for (const u of D.dismissed) if (u.key === key) return Object.assign({dismissed: true}, u);
+  return null;
+}
+function diagInfo2(id){ const [p, d] = diagramInfo(id); return {p, d}; }
+function symbolsHere(){
+  // the chapter's unreadable piece symbols on moves that need a check, most frequent in the book first
+  const seen = {};
+  for (const p in D.pages) for (const m of D.pages[p].marks) {
+    if (!m.symbol || !symbolNeeded(m)) continue;
+    const s = seen[m.symbol] || (seen[m.symbol] = {kind: "symbol", sym: m.symbol, here: 0,
+      book: D.symbols[m.symbol] || 0, page: parseInt(p, 10), y: m.bbox[1]});
+    s.here++;
+  }
+  return Object.values(seen).sort((a, b) => b.book - a.book || b.here - a.here);
+}
+function symbolNeeded(m){
+  const n = m.node ? D.nodes[m.node] : null;
+  return n ? (REVIEW.indexOf(n.status) >= 0 || n.corrected === "symbol") : m.status === "unattached";
+}
+function buildItems(){
+  const out = [];
+  for (const p in D.pages) {
+    const P = D.pages[p], page = parseInt(p, 10);
+    if (!P.selected) continue;
+    for (const d of P.diagrams) {
+      if (!d.selected) continue;
+      const R0 = d.reading;
+      const board = d.kind === "board" || d.kind === "board_plus";
+      const unread = d.status === "unread" && board && ((d.lines || []).length || (R0 && R0.fen));
+      if (d.status === "doubtful" || unread || d.corrected || FIX.get("diagrams", d.id))
+        out.push({kind: "diagram", id: d.id, page, order: -1, y: d.rect[1]});
+    }
+    const seen = new Set();
+    P.marks.forEach((m, i) => {
+      if (m.node) {
+        const n = D.nodes[m.node];
+        if (!n || seen.has(m.node) || n.page !== page) return;
+        seen.add(m.node);
+        const need = (REVIEW.indexOf(n.status) >= 0 && n.legal) || n.corrected === "move" ||
+          n.corrected === "placed" || (n.key && FIX.get("moves", n.key));
+        if (need) out.push({kind: "move", node: m.node, page, order: i, y: m.bbox[1]});
+      } else if (m.seq && !seen.has(m.seq)) {
+        seen.add(m.seq);
+        out.push({kind: "seq", key: m.seq, page, order: i, y: m.bbox[1]});
+      }
+    });
+  }
+  for (const u of D.dismissed)
+    if (u.page in D.pages) out.push({kind: "seq", key: u.key, page: u.page, order: 1e6, y: u.bbox ? u.bbox[1] : 0});
+  out.sort((a, b) => a.page - b.page || a.order - b.order);
+  return symbolsHere().concat(out);
+}
+function itemState(it){
+  // [dot class, words] of an item: what the program made of it, or the reader's correction
+  const pend = applyWords();
+  if (it.kind === "symbol") {
+    const g = FIX.get("glyphs", it.sym), a = (D.corrections.glyphs || {})[it.sym];
+    if (g) return ["corrected", "Corrected by you: " + PIECES[g] + (g !== a ? ". " + pend : "")];
+    return ["guessed", "Unreadable piece symbol, printed " + words(it.book) + (it.book === 1 ? " time" : " times") +
+      " in the book"];
+  }
+  if (it.kind === "diagram") {
+    const {d} = diagInfo2(it.id);
+    const f = FIX.get("diagrams", it.id);
+    if (f && FIX.pending("diagrams", it.id)) return ["corrected", "Corrected by you. " + pend];
+    if (d.corrected) return ["corrected", "Corrected by you"];
+    const dq = (d.reading && d.reading.doubtful) || [];
+    if (d.status === "doubtful")
+      return ["guessed", "Board reading is unsure of " + words(dq.length) + (dq.length === 1 ? " square" : " squares")];
+    return ["failed", "Board reading could not read this position"];
+  }
+  if (it.kind === "move") {
+    const n = D.nodes[it.node];
+    if (n.key && FIX.get("moves", n.key) && FIX.pending("moves", n.key))
+      return ["corrected", "Corrected by you to " + FIX.get("moves", n.key).san + ". " + pend];
+    if (n.key && !FIX.get("moves", n.key) && FIX.pending("moves", n.key))
+      return [n.status, "You removed your correction. " + pend];
+    if (n.corrected === "move") return ["corrected", "Corrected by you"];
+    if (n.corrected === "placed") return ["corrected", "Placed by you"];
+    return [n.status, D.words[n.status]];
+  }
+  const u = seqInfo(it.key) || {};
+  const f = FIX.get("unattached", it.key);
+  if (f && FIX.pending("unattached", it.key))
+    return ["corrected", (f.attach_to === "dismiss" ? "Dismissed by you. " : "Placed by you. ") + pend];
+  if (u.dismissed) return ["corrected", "Dismissed by you as no variation"];
+  return ["unattached", D.words.unattached];
+}
+function itemLabel(it){
+  if (it.kind === "symbol") return "Piece symbol “<span class=n>" + shownHtml(it.sym) + "</span>”";
+  if (it.kind === "diagram") { const {p, d} = diagInfo2(it.id); return esc(cap(diagramName(d, p))); }
+  if (it.kind === "move") return moveLabel(it.node);
+  const u = seqInfo(it.key);
+  return "“<span class=n>" + shownHtml(u ? u.text : "") + "</span>”";
+}
+function renderReview(){
+  RV.items = buildItems();
+  const box = $("revlist");
+  let h = "", grp = null;
+  RV.items.forEach((it, i) => {
+    const g = it.kind === "symbol" ? "Piece symbols the text recognition could not name" : "On the pages, in page order";
+    if (g !== grp) { h += "<li class='grp small' role=presentation>" + g + "</li>"; grp = g; }
+    const [st, w] = itemState(it);
+    h += "<li><button data-item='" + i + "' data-kind='" + it.kind + "'" +
+      (it.kind === "symbol" ? " data-sym='" + esc(it.sym) + "'" : "") + (i === RV.cur ? " aria-current='true'" : "") + ">" +
+      "<i class='dot st-" + esc(st) + "'></i><span class=rl>" + itemLabel(it) + "</span>" +
+      "<span class='rp small num'>" + esc(it.kind === "symbol" ? it.here + " in chapter" : label(it.page)) +
+      "</span><span class='rd small'>" + esc(w) + "</span></button></li>";
+  });
+  box.innerHTML = h || "<li class='grp small'>The program found nothing to check in this chapter.</li>";
+  const open = RV.items.filter(it => itemState(it)[0] !== "corrected").length;
+  $("revsum").textContent = RV.items.length ?
+    cap(words(RV.items.length)) + (RV.items.length === 1 ? " item" : " items") + " in this chapter, of which " +
+    words(open) + (open === 1 ? " needs" : " need") + " your check. A click on an item shows it on the page " +
+    "and on the board, with the choices to correct it." :
+    "The program read every move and diagram of this chapter without doubt.";
+}
+function setReview(on){
+  RV.on = on;
+  document.body.classList.toggle("reviewing", on);
+  $("reviewbtn").setAttribute("aria-pressed", String(on));
+  $("review").hidden = !on;
+  if (on) {
+    RV.wasReading = reading();
+    if (!RV.wasReading) setReading(true);
+    renderReview();
+    if (SMALL.matches) $("review").scrollIntoView({block: "start"});
+  } else {
+    closeFix();
+    if (!RV.wasReading) setReading(false);
+  }
+  renderInfo(); layoutPanel(false);
+}
+function openItem(i){
+  const it = RV.items[i];
+  if (!it) return;
+  RV.cur = i;
+  for (const b of $("revlist").querySelectorAll("button[data-item]"))
+    if (parseInt(b.dataset.item, 10) === i) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
+  if (it.kind === "move") { openMove(it.node); }
+  else if (it.kind === "diagram") { openDiagramFix(it.id); }
+  else if (it.kind === "seq") { openSeq(it.key); }
+  else openSymbol(it.sym);
+}
+
+/* ---------------- the editor */
+function fixNav(){
+  if (!RV.on || RV.cur < 0) return "<div class=fixnav><button class=tb id=fixclose>Close</button></div>";
+  return "<div class=fixnav><button class=tb id=fixprev" + (RV.cur <= 0 ? " disabled" : "") + ">Previous item</button>" +
+    "<button class=tb id=fixnext" + (RV.cur >= RV.items.length - 1 ? " disabled" : "") + ">Next item</button>" +
+    "<span class=gap></span><button class=tb id=fixclose>Close</button></div>";
+}
+function showFix(html, kind){
+  const box = $("fix");
+  box.innerHTML = "<div class=fix>" + html + fixNav() + "</div>";
+  box.hidden = false;
+  RV.edit = Object.assign(RV.edit || {}, {kind});
+  $("panel").classList.toggle("editing-diagram", kind === "diagram");
+  $("fixclose").addEventListener("click", () => closeFix());
+  if ($("fixprev")) $("fixprev").addEventListener("click", () => openItem(RV.cur - 1));
+  if ($("fixnext")) $("fixnext").addEventListener("click", () => openItem(RV.cur + 1));
+  renderMini();
+  placeSheet();
+  // on a wide screen the editor sits below the board at the top of the panel
+  if (!SMALL.matches) $("panel").scrollTop = 0;
+}
+function closeFix(){
+  const box = $("fix");
+  box.hidden = true; box.innerHTML = "";
+  RV.edit = null;
+  S.preview = null;
+  $("panel").classList.remove("editing-diagram");
+  for (const el of document.querySelectorAll(".mark.seqcur")) el.classList.remove("seqcur");
+  placeSheet();
+  renderBoard();
+}
+function placeSheet(){
+  // on a phone the editor sits above the bar at the foot of the window
+  const box = $("fix"), bar = $("mbar");
+  if (SMALL.matches && !box.hidden) {
+    box.style.bottom = bar.offsetHeight + "px";
+    // leave room above the editor for the page, so that the item stays in view
+    box.style.maxHeight = Math.max(220, window.innerHeight - bar.offsetHeight - 200) + "px";
+    document.body.style.paddingBottom = (bar.offsetHeight + box.offsetHeight) + "px";
+  } else { box.style.bottom = ""; box.style.maxHeight = ""; document.body.style.paddingBottom = ""; }
+}
+function bottomCover(){
+  const box = $("fix");
+  return SMALL.matches && box && !box.hidden ? box.offsetHeight : 0;
+}
+function setMsg(text, kind){
+  const m = $("fixmsg");
+  if (!m) return;
+  m.textContent = text || "";
+  m.className = "fixmsg small" + (kind ? " " + kind : "");
+}
+function preview(fen, uci, note){ S.preview = fen ? {fen, uci: uci || null, note: note || ""} : null; renderBoard(); }
+
+/* a move */
+function openMove(id){
+  const n = D.nodes[id];
+  if (!n) return;
+  if (S.node !== id) selectNode(id, {scrollPage: false});
+  RV.edit = {kind: "move", node: id};
+  const legal = n.legal || [];
+  const fixed = n.key ? FIX.get("moves", n.key) : null;
+  const now = n.san || n.assumed;
+  const first = [];
+  for (const s of [now].concat(n.alternatives || [])) {
+    const m = s && legal.find(x => x[0] === s);
+    if (m && !first.some(x => x[0] === m[0])) first.push(m);
+  }
+  let h = "<div class=fh><h3>Correct " + moveLabel(id) + "</h3></div>";
+  h += "<p class='small muted'>The text recognition read “<span class=n>" + shownHtml(n.raw) + "</span>”. " +
+    (n.corrected === "move" ? "You corrected this move." : esc(D.words[n.status] || "") + ".") + "</p>";
+  if (!legal.length) {
+    h += "<p class='small muted'>The program does not know the position before this move, so it cannot " +
+      "offer the moves that are legal there.</p>";
+    showFix(h, "move");
+    return;
+  }
+  if (first.length) {
+    h += "<p class='lab small'>" + (n.status === "failed" ? "The move the program assumed" :
+      "The readings the program considered") + "</p><div class=choices>" +
+      first.map(m => "<button data-san='" + esc(m[0]) + "' aria-pressed='" + String(!!fixed && fixed.san === m[0]) +
+        "'>" + esc(m[0]) + "</button>").join("") + "</div>";
+  }
+  h += "<div class=typed><label class='lab small' for=fixsan>" + (first.length ? "Or type the move" : "Type the move") +
+    "</label><input type=text id=fixsan autocomplete=off autocapitalize=off spellcheck=false placeholder='such as Nf3'" +
+    " aria-describedby=fixmsg></div>";
+  h += "<div class=choices id=fixlist aria-label='Legal moves'></div>";
+  h += "<p class='fixmsg small' id=fixmsg role=status></p>";
+  if (fixed) h += "<div class=fixacts><button class=tb id=fixundo>Remove your correction</button></div>";
+  showFix(h, "move");
+  highlightMark(true);
+  const list = () => {
+    const t = $("fixsan").value, a = sanKey(t, true);
+    const hits = legal.filter(m => !a || sanKey(m[0], true).indexOf(a) === 0);
+    $("fixlist").innerHTML = hits.slice(0, 40).map(m => "<button data-san='" + esc(m[0]) + "'>" + esc(m[0]) +
+      "</button>").join("") + (hits.length > 40 ? "<span class=sub>and " + (hits.length - 40) + " more</span>" : "") +
+      (hits.length ? "" : "<span class=sub>No legal move begins like this.</span>");
+  };
+  list();
+  $("fixsan").addEventListener("input", list);
+  $("fixsan").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const m = matchSan($("fixsan").value, legal);
+    if (m) chooseMove(id, m);
+    else setMsg("“" + $("fixsan").value + "” is not a legal move in this position. The moves below are legal.", "bad");
+  });
+  for (const b of $("fix").querySelectorAll(".choices")) b.addEventListener("click", (e) => {
+    const t = e.target.closest("button[data-san]");
+    if (t) chooseMove(id, legal.find(x => x[0] === t.dataset.san));
+  });
+  if ($("fixundo")) $("fixundo").addEventListener("click", () => {
+    FIX.set("moves", n.key, null); afterFix(); openMove(id);
+    setMsg("Your correction is removed. " + applyWords());
+  });
+  if (fixed) {
+    const m = legal.find(x => x[0] === fixed.san);
+    if (m) preview(applyUci(n.before, m[1]), m[1]);
+  }
+}
+function chooseMove(id, m){
+  const n = D.nodes[id];
+  if (!m || !n.key) return;
+  FIX.set("moves", n.key, {san: m[0]});
+  preview(applyUci(n.before, m[1]), m[1]);
+  for (const b of $("fix").querySelectorAll("button[data-san]")) b.setAttribute("aria-pressed", String(b.dataset.san === m[0]));
+  setMsg("You chose " + m[0] + ". The board shows the position after it. " + applyWords() +
+    " The program then reads the rest of the line from this move.", "good");
+  afterFix();
+}
+
+/* a diagram */
+function openDiagramFix(id){
+  const {p, d} = diagInfo2(id);
+  if (!d) return;
+  if (S.page !== p) showPage(p);
+  if (S.diagram) closeDiagram();
+  S.node = null;
+  for (const el of document.querySelectorAll(".diag.current")) el.classList.remove("current");
+  const el = document.querySelector(".diag[data-diagram='" + id + "']");
+  if (el) el.classList.add("current");
+  const R0 = d.reading || {};
+  const fixed = FIX.get("diagrams", id);
+  const start = (fixed && fixed.fen) || d.fen || R0.fen || "8/8/8/8/8/8/8/8 w - - 0 1";
+  const ed = {kind: "diagram", id, rows: fenRows(start), turn: (start.split(" ")[1] || "w"), sel: null,
+    flip: !!R0.flipped, doubt: (R0.doubtful || [])};
+  RV.edit = ed;
+  let h = "<div class=fh><h3>Correct " + esc(diagramName(d, p)) + "</h3></div>";
+  h += "<p class='small muted'>A tap on a square chooses it, and a tap on a piece below puts that piece there. " +
+    (ed.doubt.length ? "The squares with a dashed outline are the ones board reading is unsure of." : "") + "</p>";
+  h += "<div class=fixboard id=fixboard></div>";
+  h += "<div class=pieces id=fixpieces role=group aria-label='Pieces'>";
+  for (const c of "KQRBNP") h += "<button data-put='" + c + "' aria-label='White " + PIECES[c] + "' title='White " +
+    PIECES[c] + "'>" + pieceSvg(c, true) + "</button>";
+  for (const c of "KQRBNP") h += "<button data-put='" + c.toLowerCase() + "' aria-label='Black " + PIECES[c] +
+    "' title='Black " + PIECES[c] + "'>" + pieceSvg(c, false) + "</button>";
+  h += "<button data-put='' aria-label='Empty square' title='Empty square'>" + pieceSvg("", true) + "</button></div>";
+  h += "<div class='side small' role=group aria-label='Side to move'><button class=tb data-turn=w>White to move</button>" +
+    "<button class=tb data-turn=b>Black to move</button></div>";
+  h += "<p class='fixmsg small' id=fixmsg role=status></p>";
+  h += "<div class=fixacts><button class=tb id=fixsave>Save the position</button>" +
+    "<button class=tb id=fixagain>Start again from the reading</button>" +
+    (fixed ? "<button class=tb id=fixundo>Remove your correction</button>" : "") + "</div>";
+  h += PIC;
+  showFix(h, "diagram");
+  if (el) revealMark(el);
+  cropInto($("fix").querySelector("canvas"), id);
+  drawEditBoard();
+  $("fixboard").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-sq]");
+    if (t) { ed.sel = t.dataset.sq; drawEditBoard(); }
+  });
+  $("fixpieces").addEventListener("click", (e) => {
+    const t = e.target.closest("button[data-put]");
+    if (!t) return;
+    if (!ed.sel) { setMsg("Choose a square on the board first."); return; }
+    const [r, c] = sqRC(ed.sel);
+    ed.rows[r][c] = t.dataset.put;
+    drawEditBoard();
+  });
+  for (const b of $("fix").querySelectorAll("[data-turn]"))
+    b.addEventListener("click", () => { ed.turn = b.dataset.turn; drawEditBoard(); });
+  $("fixsave").addEventListener("click", () => {
+    const bad = positionProblem(ed.rows);
+    if (bad) { setMsg(bad, "bad"); return; }
+    FIX.set("diagrams", id, {fen: rowsFen(ed.rows, ed.turn)});
+    afterFix();
+    setMsg("The position is saved. " + applyWords() + " Lines that start from this diagram then start from it.", "good");
+  });
+  $("fixagain").addEventListener("click", () => {
+    const f = d.fen || R0.fen || "8/8/8/8/8/8/8/8 w - - 0 1";
+    ed.rows = fenRows(f); ed.turn = f.split(" ")[1] || "w"; ed.sel = null; drawEditBoard(); setMsg("");
+  });
+  if ($("fixundo")) $("fixundo").addEventListener("click", () => {
+    FIX.set("diagrams", id, null); afterFix(); openDiagramFix(id);
+    setMsg("Your correction is removed. " + applyWords());
+  });
+  setState();
+}
+function drawEditBoard(){
+  const ed = RV.edit;
+  if (!ed || ed.kind !== "diagram") return;
+  const fen = rowsFen(ed.rows, ed.turn);
+  let s = boardSvg(fen, ed.flip, null, ed.doubt);
+  let extra = "";
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const name = "abcdefgh"[c] + (8 - r);
+    const x = M + (ed.flip ? 7 - c : c) * SQ, y = TOP + (ed.flip ? 7 - r : r) * SQ;
+    const piece = ed.rows[r][c];
+    const what = piece ? (piece === piece.toUpperCase() ? "white " : "black ") + PIECES[piece.toUpperCase()] : "empty";
+    extra += "<rect class=hit data-sq='" + name + "' x='" + x + "' y='" + y + "' width='" + SQ + "' height='" + SQ +
+      "'><title>" + name + ", " + what + "</title></rect>";
+    if (ed.sel === name) extra += "<rect class=sel x='" + (x + 1.5) + "' y='" + (y + 1.5) + "' width='" + (SQ - 3) +
+      "' height='" + (SQ - 3) + "' pointer-events='none'/>";
+  }
+  s = s.replace(/<\/svg>$/, extra + "</svg>");
+  $("fixboard").innerHTML = s;
+  sizeCoords($("fixboard"));
+  for (const b of $("fix").querySelectorAll("[data-turn]")) b.setAttribute("aria-pressed", String(b.dataset.turn === ed.turn));
+  if (ed.sel) {
+    const [r, c] = sqRC(ed.sel);
+    for (const b of $("fixpieces").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.put === ed.rows[r][c]));
+  }
+  const bad = positionProblem(ed.rows);
+  $("fixsave").disabled = !!bad;
+  if (bad) setMsg(bad, "bad"); else if ($("fixmsg").classList.contains("bad")) setMsg("");
+}
+
+/* a sequence placed in no line */
+function openSeq(key){
+  const u = seqInfo(key);
+  if (!u) return;
+  if (S.page !== u.page && (u.page in D.pages)) showPage(u.page);
+  for (const el of document.querySelectorAll(".mark.seqcur")) el.classList.remove("seqcur");
+  let first = null;
+  for (const el of document.querySelectorAll(".mark[data-seq='" + CSS.escape(key) + "']")) { el.classList.add("seqcur"); if (!first) first = el; }
+  RV.edit = {kind: "seq", key};
+  const fixed = FIX.get("unattached", key);
+  const num = /^(\d{1,3})/.exec(u.text || "");
+  const want = num ? parseInt(num[1], 10) : null;
+  // the main-line moves on this page and the page before it, those with the sequence's move number first
+  const mains = Object.values(D.nodes).filter(n => n.main && n.parent != null && n.key && n.fen && n.page);
+  let cands = mains.filter(n => n.page === u.page || n.page === u.page - 1);
+  if (cands.length < 3) cands = mains.filter(n => Math.abs(n.page - u.page) <= 3);
+  const at = u.bbox || [0, 0];
+  const dist = (n) => n.page !== u.page || !n.bbox ? 1e6 : Math.hypot(n.bbox[0] - at[0], 2 * (n.bbox[1] - at[1]));
+  cands.sort((a, b) => ((b.number === want) - (a.number === want)) || dist(a) - dist(b) ||
+    Math.abs(a.page - u.page) - Math.abs(b.page - u.page) ||
+    parseInt(b.id.slice(1), 10) - parseInt(a.id.slice(1), 10));
+  let h = "<div class=fh><h3>Place “<span class=n>" + shownHtml(u.text) + "</span>”</h3></div>";
+  h += "<p class='small muted'>The program placed these moves in no line" + (u.reason ? ", because " + esc(u.reason) : "") +
+    ". Choose the move of the line that they replace, or tap that move on the page.</p>";
+  if (cands.length)
+    h += "<div class='choices lines'>" + cands.slice(0, 12).map(n => "<button data-to='" + esc(n.key) + "' aria-pressed='" +
+      String(!!fixed && fixed.attach_to === n.key) + "'>" + esc(moveText(n.id, true)) + "<span class=sub>" +
+      esc(title(D.lines[n.line] ? D.lines[n.line].title : "")) + ", " + esc(pageName(n.page)) + "</span></button>").join("") + "</div>";
+  h += "<p class='fixmsg small' id=fixmsg role=status></p>";
+  h += "<div class=fixacts><button class=tb id=fixdismiss>Not a variation</button>" +
+    (fixed ? "<button class=tb id=fixundo>Remove your correction</button>" : "") + "</div>";
+  showFix(h, "seq");
+  if (first) revealMark(first);
+  $("fix").querySelector(".fix").addEventListener("click", (e) => {
+    const t = e.target.closest("button[data-to]");
+    if (t) attachTo(key, t.dataset.to);
+  });
+  $("fixdismiss").addEventListener("click", () => {
+    FIX.set("unattached", key, {attach_to: "dismiss"}); afterFix();
+    setMsg("You marked these moves as no variation. " + applyWords(), "good");
+  });
+  if ($("fixundo")) $("fixundo").addEventListener("click", () => {
+    FIX.set("unattached", key, null); afterFix(); openSeq(key);
+    setMsg("Your correction is removed. " + applyWords());
+  });
+}
+function nodeByKey(key){ for (const id in D.nodes) if (D.nodes[id].key === key) return id; return null; }
+function attachTo(key, target){
+  const id = nodeByKey(target);
+  if (!id) return;
+  FIX.set("unattached", key, {attach_to: target});
+  for (const b of $("fix").querySelectorAll("button[data-to]")) b.setAttribute("aria-pressed", String(b.dataset.to === target));
+  const par = D.nodes[id].parent;
+  if (par && D.nodes[par].fen) preview(D.nodes[par].fen, null);
+  setMsg("You placed the moves as a variation of " + moveText(id, true) + ". The board shows the position " +
+    "before that move. " + applyWords() + " The program places them there when they are legal.", "good");
+  afterFix();
+}
+
+/* a piece symbol */
+function symbolPlaces(sym){
+  const out = [];
+  for (const p in D.pages) D.pages[p].marks.forEach((m, i) => { if (m.symbol === sym) out.push([parseInt(p, 10), i, m]); });
+  return out;
+}
+function symbolSide(m){ const n = m && m.node ? D.nodes[m.node] : null; return n ? sideOf(n) : "w"; }
+function symbolChoices(sym, white){
+  const cur = FIX.get("glyphs", sym);
+  return "KQRBNP".split("").map(c => "<button data-piece='" + c + "' role=menuitemradio aria-checked='" +
+    String(cur === c) + "' aria-pressed='" + String(cur === c) + "'>" + pieceSvg(c, white) + "<span>" +
+    esc(D.pieceWords[c]) + "</span></button>").join("");
+}
+function symbolSaid(sym){
+  const n = D.symbols[sym] || 0;
+  return "This symbol appears " + words(n) + (n === 1 ? " time" : " times") + " in the book; " +
+    (inApp() ? "Read again applies your choice to all of them." :
+      "the next run of the program applies your choice to all of them once you copy the corrections into the chat.");
+}
+function chooseSymbol(sym, piece){
+  FIX.set("glyphs", sym, piece);
+  afterFix();
+  return "You chose the " + D.pieceWords[piece].toLowerCase() + " for the symbol “" + shown(sym) + "”. " + symbolSaid(sym);
+}
+function openSymbol(sym){
+  const places = symbolPlaces(sym);
+  const pick = places.find(([, , m]) => m.node && REVIEW.indexOf(D.nodes[m.node].status) >= 0) || places[0];
+  if (pick) {
+    const [p, , m] = pick;
+    if (m.node) selectNode(m.node, {scrollPage: false});
+    else { if (S.page !== p) showPage(p); }
+  }
+  RV.edit = {kind: "symbol", sym};
+  const white = symbolSide(pick ? pick[2] : null) === "w";
+  let h = "<div class=fh><h3>Piece symbol “<span class=n>" + shownHtml(sym) + "</span>”</h3></div>";
+  h += "<p class='small muted'>The text recognition could not name this piece symbol. It appears " +
+    words(D.symbols[sym] || 0) + ((D.symbols[sym] || 0) === 1 ? " time" : " times") +
+    " in the book. Choose the piece it stands for; the choice applies to every move printed with it.</p>";
+  h += "<div class='pieces six' id=fixsym role=group aria-label='Pieces'>" + symbolChoices(sym, white) + "</div>";
+  h += "<p class='fixmsg small' id=fixmsg role=status></p>";
+  if (FIX.get("glyphs", sym)) h += "<div class=fixacts><button class=tb id=fixundo>Remove your correction</button></div>";
+  showFix(h, "symbol");
+  highlightMark(true);
+  $("fixsym").addEventListener("click", (e) => {
+    const t = e.target.closest("button[data-piece]");
+    if (!t) return;
+    const said = chooseSymbol(sym, t.dataset.piece);
+    for (const b of $("fixsym").querySelectorAll("button")) {
+      b.setAttribute("aria-pressed", String(b === t)); b.setAttribute("aria-checked", String(b === t));
+    }
+    setMsg(said, "good");
+  });
+  if ($("fixundo")) $("fixundo").addEventListener("click", () => {
+    FIX.set("glyphs", sym, null); afterFix(); openSymbol(sym);
+    setMsg("Your correction is removed. " + applyWords());
+  });
+}
+/* the menu of an eye on the page */
+function openSymMenu(btn){
+  const sym = btn.dataset.sym, m = D.pages[S.page].marks[parseInt(btn.dataset.eye, 10)];
+  const menu = $("symmenu");
+  menu.innerHTML = "<li class='head small' role=presentation>Which piece is “<span class=n>" + shownHtml(sym) +
+    "</span>”?</li>" + symbolChoices(sym, symbolSide(m) === "w").replace(/<button/g, "<li role=none><button").replace(/<\/button>/g, "</button></li>");
+  menu.hidden = false;
+  menu.dataset.sym = sym;
+  // below the eye, or above it when the window has no room below
+  const r = btn.getBoundingClientRect(), W = document.documentElement.clientWidth;
+  const free = window.innerHeight - ($("mbar").offsetHeight || 0) - bottomCover();
+  menu.style.left = Math.max(8, Math.min(r.left, W - menu.offsetWidth - 8)) + "px";
+  menu.style.top = (r.bottom + 2 + menu.offsetHeight > free ? Math.max(8, r.top - 2 - menu.offsetHeight) : r.bottom + 2) + "px";
+  const first = menu.querySelector("button");
+  if (first) first.focus({preventScroll: true});
+}
+function closeSymMenu(){ const m = $("symmenu"); if (m) { m.hidden = true; m.innerHTML = ""; } }
+
+function afterFix(){
+  if (RV.on) {
+    const keep = RV.cur;
+    renderReview();
+    RV.cur = keep;
+    const b = $("revlist").querySelector("button[data-item='" + keep + "']");
+    if (b) b.setAttribute("aria-current", "true");
+  }
+  paintFixes();
+  renderInfo();
+  placeSheet();
+}
+function paintFixes(){
+  // the boxes and eyes of the page show the corrections stored in this browser
+  if (!S.page) return;
+  for (const el of document.querySelectorAll("#ov .eye"))
+    el.classList.toggle("fixed", !!FIX.get("glyphs", el.dataset.sym));
+  for (const el of document.querySelectorAll("#ov .mark")) {
+    const m = D.pages[S.page].marks[parseInt(el.dataset.mark, 10)];
+    const n = m.node ? D.nodes[m.node] : null;
+    const fixed = !!(m.corrected || (n && n.corrected) || (n && n.key && FIX.get("moves", n.key)) ||
+      (m.seq && FIX.get("unattached", m.seq)));
+    el.classList.toggle("fixed", fixed);
+  }
+}
+function pageEyes(){
+  // an eye at each piece symbol that the program could not name, on moves that need a check
+  const P = D.pages[S.page], ov = $("ov");
+  P.marks.forEach((m, i) => {
+    if (!m.symbol || !symbolNeeded(m)) return;
+    const b = document.createElement("button");
+    b.className = "eye";
+    b.dataset.eye = i; b.dataset.sym = m.symbol;
+    b.style.left = pct(m.bbox[0], P.w); b.style.top = pct(m.bbox[1], P.h);
+    b.innerHTML = EYE;
+    const t = "Unreadable piece symbol “" + shown(m.symbol) + "”: choose the piece it stands for";
+    b.title = t; b.setAttribute("aria-label", t); b.setAttribute("aria-haspopup", "menu");
+    ov.appendChild(b);
+  });
+  paintFixes();
+}
+function initReview(){
+  $("reviewbtn").addEventListener("click", () => setReview(!RV.on));
+  $("revlist").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-item]");
+    if (b) openItem(parseInt(b.dataset.item, 10));
+  });
+  $("symmenu").addEventListener("click", (e) => {
+    const t = e.target.closest("button[data-piece]");
+    if (!t) return;
+    const sym = $("symmenu").dataset.sym;
+    say(chooseSymbol(sym, t.dataset.piece));
+    closeSymMenu();
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#symmenu") && !e.target.closest(".eye")) closeSymMenu();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSymMenu(); });
+  window.addEventListener("scroll", closeSymMenu, {passive: true});
+  window.addEventListener("resize", placeSheet);
+}
+"""

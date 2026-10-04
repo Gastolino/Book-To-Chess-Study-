@@ -172,7 +172,8 @@ async function take(file) {
   status("Reading " + file.name);
   const bytes = await file.arrayBuffer();
   const name = file.name.replace(/[^\\w.\\-]+/g, "_");
-  worker.postMessage({ type: "process", name, bytes, selection: storedSelection(name) }, [bytes]);
+  worker.postMessage({ type: "process", name, bytes, selection: storedSelection(name),
+    corrections: storedCorrections(name) }, [bytes]);
 }
 $("drop").addEventListener("click", () => $("file").click());
 $("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") $("file").click(); });
@@ -196,6 +197,19 @@ function storedSelection(name) {
       if (k && k.startsWith("chessbook-selection:" + name + ":")) {
         const v = JSON.parse(localStorage.getItem(k));
         if (v && v.selection) return JSON.stringify(v.selection);
+      }
+    }
+  } catch (e) { /* no storage */ }
+  return null;
+}
+// The reader keeps its corrections under "chessbook-corrections:<file>:<pages>".
+function storedCorrections(name) {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("chessbook-corrections:" + name + ":")) {
+        const v = JSON.parse(localStorage.getItem(k));
+        if (v && v.corrections) return JSON.stringify(v.corrections);
       }
     }
   } catch (e) { /* no storage */ }

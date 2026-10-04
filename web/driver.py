@@ -17,10 +17,21 @@ CFG = Path("/cfg")
 STATE = {}
 
 
-def process(path, say, selection_json=None):
+def process(path, say, selection_json=None, corrections_json=None):
     """Assemble the book and build its contents page. Returns the page's HTML.
-    selection_json is the selection the reader stored in the browser, if any."""
+    selection_json is the selection the reader stored in the browser, if any;
+    corrections_json holds the reader's corrections stored there (diagrams,
+    moves, sequences and piece symbols, see chessbook/corrections.py)."""
     pdf = Path(path)
+    from chessbook import corrections
+    fix_path = corrections.corrections_path(pdf, CFG)
+    if corrections_json:
+        try:
+            corrections.save(corrections.parse_corrections_text(corrections_json), fix_path)
+        except ValueError as exc:
+            say(f"The stored corrections were not used: {exc}")
+    elif fix_path.exists():
+        fix_path.unlink()
     if selection_json:
         from chessbook import selection
         target = selection.selection_path(pdf, CFG)

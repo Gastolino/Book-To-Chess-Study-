@@ -67,6 +67,35 @@ on a desktop browser; each chapter then opens in about two seconds.
 The workflow in `.github/workflows/pages.yml` rebuilds and publishes the site
 whenever `main` changes. `python3 tools/build_web.py --help` builds it by hand.
 
+## Correcting what the program could not read
+
+Each chapter reader has a Review button. It lists, in page order, every place
+where the program is unsure: diagrams with doubtful squares or no reading,
+moves chosen between several readings, moves it could not read, and moves
+that it placed in no line. Above them it lists the piece symbols that the
+text recognition could not name (in scanned books a figurine often becomes
+junk such as "tLl"), the most frequent in the book first. A click on an item
+shows it on the page and on the board, with the choices to correct it:
+
+- a diagram: a tap on a square, then on one of thirteen pieces (or the empty
+  square), and the side to move; the program accepts only a position with one
+  king of each colour;
+- a move: one of the readings the program considered, or a move typed in the
+  book's letters, which the program accepts only when it is legal there;
+- a sequence placed in no line: the move of the line it replaces, or "Not a
+  variation";
+- a piece symbol: one of the six pieces. The choice applies to every move of
+  the book printed with that symbol (the eye on the page opens the same
+  choice).
+
+The browser keeps the corrections for each book. In the app, Read again
+applies them. From the command line, the contents page's "Copy corrections"
+button copies them; `python3 make_reader.py book.pdf --corrections FILE`
+saves the pasted text as `books/<book>/corrections.json`, which every later
+run applies (`chessbook/corrections.py` describes the format). A corrected
+item shows in the colour of a decoded move, with the words "Corrected by
+you", and the contents page counts the corrections a run used.
+
 ## Running it from the command line
 
 ```
