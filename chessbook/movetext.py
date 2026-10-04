@@ -181,6 +181,9 @@ class Token:
     labels, board coordinates): they do not interrupt a run of moves.
     dotless marks a move number printed without a dot ("12 Nf3"), which
     tokenize() reads only when asked to (books that number moves that way).
+    forced holds the SAN that a reader's correction gives a move token: the
+    decoder then reads the token as that move, and as nothing else, where it
+    is legal.
     """
     kind: str
     raw: str
@@ -191,6 +194,7 @@ class Token:
     side_known: bool = True
     layout: bool = False
     dotless: bool = False
+    forced: Optional[str] = None    # the SAN a reader's correction gives this move token
 
 
 @dataclass
@@ -1956,6 +1960,48 @@ class _Hyp:
         self.gmap = gmap            # glyph -> {piece type: uses so far in this run}
 
 
+def _forced_candidates(board: chess.Board, san: str):
+    """The one reading a corrected token allows: its SAN, where it is legal."""
+    try:
+        m = board.parse_san(san)
+    except ValueError:
+        return []
+    b2 = board.copy(stack=False)
+    b2.push(m)
+    return [(m, 0.0, None, 0.0, b2, None)]
+
+
+def _token_candidates(scorer, board, tok, parsed, gmap):
+    if getattr(tok, "forced", None):
+        return _forced_candidates(board, tok.forced)
+    return _adjusted(scorer.candidates(board, parsed), board, gmap, scorer)
+
+
+def junk_prefix(raw: str, letters=None) -> Optional[str]:
+    """The piece symbol of a move token that is neither a piece letter of the
+    notation nor a figurine: the junk OCR made of a figurine ("tLl" in
+    "tLlxf6"), normalised as GlyphModel keys it. None for a pawn move, a
+    castling, a clean letter or a token with no square."""
+    parsed = _parse_raw(raw)
+    if parsed.castle:
+        return None
+    known = _resolve_letters(letters)
+    best = None
+    for p in parsed.parses:
+        if not p.prefix or p.fch is None or p.rch is None or p.dfile is not None \
+                or p.drank is not None or p.promo is not None:
+            continue
+        key = (p.cap is not True, len(p.prefix))
+        if best is None or key < best[0]:
+            best = (key, p.prefix)
+    if best is None:
+        return None
+    prefix = best[1]
+    if prefix in known or prefix in _FILE_LETTERS:
+        return None
+    return prefix
+
+
 def _board_key(b: chess.Board):
     return b._transposition_key()
 
@@ -2026,8 +2072,7 @@ def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
         def expand(h, b, off, extra, ins):
             nonlocal best_total
             best_local = math.inf
-            for m, c, glyph, pc, b2, prs in _adjusted(scorer.candidates(b, parsed), b,
-                                                      h.gmap, scorer):
+            for m, c, glyph, pc, b2, prs in _token_candidates(scorer, b, tok, parsed, h.gmap):
                 total = h.cost + extra + c
                 best_local = min(best_local, extra + c)
                 best_total = min(best_total, total)
@@ -2254,6 +2299,13 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
             alt = b.san(m)
             b.push(m)
             out.append(failed(tok, parsed, [alt], c, prs))
+            continue
+        if getattr(tok, "forced", None):
+            san = b.san(m)
+            b.push(m)
+            out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, san, m.uci(),
+                               b.fen(), "ok", [], 0.0, None, parsed.annotation, (None, None),
+                               missing, None, False))
             continue
         cands = _adjusted(scorer.candidates(b, parsed), b, gmap, scorer)
         mine_c = next((cc for mm, cc, *_ in cands if mm == m), c)

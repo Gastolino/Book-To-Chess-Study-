@@ -152,13 +152,14 @@ from typing import Optional
 import chess
 import pymupdf
 
+from . import corrections as fixes
 from . import figurines
 from . import pdftext as pt
 from . import selection as sel
 from .movetext import GlyphModel, clean_run, decode, find_sequences, numbering_counts
 from .movetext import DOTLESS_MIN, DOTLESS_SHARE
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
-from .movetext import _ocr_digit_slip
+from .movetext import _ocr_digit_slip, junk_prefix
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -657,24 +658,31 @@ class _Line:
 
 
 class _Decoder:
-    """decode() with the book's glyph model, letter set and a memo."""
+    """decode() with the book's glyph model, letter set and a memo. fixed maps
+    piece symbols the reader identified (corrections.py "glyphs") to their
+    piece: they read as certainly as the notation's own letters."""
 
-    def __init__(self, glyphs, letters):
+    def __init__(self, glyphs, letters, fixed=None):
         self.glyphs = glyphs
         self.letters = letters
+        self.fixed = dict(fixed or {})
+        self.decode_letters = letters
+        if self.fixed:
+            self.decode_letters = {**LETTER_SETS.get(letters or "English", LETTER_SETS["English"]),
+                                   **self.fixed}
         self.memo = {}
         self.accepted = []
         self.calls = 0
         self.seconds = 0.0
 
     def run(self, fen, tokens):
-        key = (fen, tuple((t.kind, t.raw, t.number, t.black) for t in tokens))
+        key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced) for t in tokens))
         hit = self.memo.get(key)
         if hit is None:
             t0 = time.perf_counter()
             # Never supply a move the text lacks: a gap in the numbering is
             # shown as a gap (see _Builder.gap), not filled with a guess.
-            hit = decode(chess.Board(fen), tokens, glyphs=self.glyphs, letters=self.letters,
+            hit = decode(chess.Board(fen), tokens, glyphs=self.glyphs, letters=self.decode_letters,
                          insert=False)
             self.seconds += time.perf_counter() - t0
             self.calls += 1
@@ -705,7 +713,7 @@ def _fit(decs):
 
 class _Builder:
     def __init__(self, doc, fonts, chapters, diagrams, selection, decoder, diagram_fens=None,
-                 dotless=False, readings=None):
+                 dotless=False, readings=None, fix=None):
         self.doc, self.fonts, self.chapters = doc, fonts, chapters
         self.dotless = dotless          # the book prints move numbers without a dot
         self.diagrams = diagrams
@@ -730,6 +738,15 @@ class _Builder:
         self.moves_font = bool(fonts.get("moves"))
         self.bs = (fonts.get("body") or {}).get("size") or 10.0
         self.folio_offset = (fonts.get("layout") or {}).get("folio_offset")
+        # the reader's corrections (corrections.py)
+        fix = fix or {}
+        self.fix_moves = fixes.TokenIndex(fix.get("moves"))
+        self.fix_unattached = fixes.TokenIndex(fix.get("unattached"))
+        self.fix_glyphs = dict(fix.get("glyphs") or {})
+        self.node_by_key = {}           # token key -> node id
+        self.pending_attach = []        # sequences the reader tied to a move: (run, target, ...)
+        self.dismissed = []             # sequences the reader dismissed as no variation
+        self.attached = []              # sequences placed where the reader said
 
     def page_label(self, page):
         """The page number printed in the book (the PDF page when unknown)."""
