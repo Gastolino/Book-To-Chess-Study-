@@ -251,6 +251,8 @@ CHAPTER_CSS = r"""
 .notes p:empty,.notes:not(:has(p:not(:empty))){display:none}
 .reader{display:grid;grid-template-columns:minmax(0,1fr) 50vw;align-items:start}
 .pagecol{min-width:0;padding:24px 32px 40px 24px}
+.turnhint{margin:0 0 12px}
+.turnhint .tb{margin-left:8px}
 .offpage{margin:0 0 16px;padding-left:12px;border-left:1px solid var(--doubt)}
 .offpage:empty,.diagnote:empty{display:none}
 .diagnote{margin:0 0 16px}
@@ -1323,6 +1325,22 @@ function init(){
       const seen = es[es.length - 1].isIntersecting;
       if (seen !== S.panelSeen) { S.panelSeen = seen; renderMini(); }
     }, {rootMargin: "0px 0px -64px 0px"}).observe($("panel"));
+  // A tablet held upright gets a quiet note that the reader prefers the
+  // tablet held sideways; turning it (or Hide) removes the note.
+  (function(){
+    const tablet = matchMedia("(pointer: coarse)").matches &&
+      Math.min(screen.width, screen.height) >= 700;
+    const upright = matchMedia("(orientation: portrait)");
+    let hidden = false;
+    try { hidden = localStorage.getItem("chessbook-turnhint") === "off"; } catch (e) { hidden = false; }
+    const show = () => { $("turnhint").hidden = !(tablet && upright.matches && !hidden); };
+    $("turnhide").addEventListener("click", () => {
+      hidden = true; show();
+      try { localStorage.setItem("chessbook-turnhint", "off"); } catch (e) { /* no storage */ }
+    });
+    if (upright.addEventListener) upright.addEventListener("change", show);
+    show();
+  })();
   // A horizontal swipe on the page turns it. An enlarged page that can still
   // scroll that way scrolls first, and turns only at its edge.
   (function(){
@@ -1436,11 +1454,12 @@ CHAPTER_HTML = """<!doctype html>
 <div class="notes small"><p id="pagemsg" role="status"></p><p class="muted" id="selnote" role="status"></p></div>
 <main class="reader">
 <section class="pagecol" aria-label="Book page">
+<p class="turnhint small muted" id="turnhint" hidden>The reader works best with the tablet held sideways. <button class="tb" id="turnhide" type="button">Hide</button></p>
 <p class="offpage small" id="offpage"></p>
 <p class="diagnote small muted" id="diagnote"></p>
 <div class="key small muted">
 <div class="help"><p class="mouse">A click on a move or a diagram shows it in the panel. The left and right arrow keys step through the moves, the up and down arrow keys switch between the moves the book gives at a branch, and Page Up and Page Down turn the pages.</p>
-<p class="touch">A tap on a move or a diagram shows it on the small board and in the panel below the page.</p></div>
+<p class="touch">A tap on a move or a diagram shows it on the board. A swipe across the page turns it.</p></div>
 <div class="legend" aria-label="What the outlines and marks mean">
 <span class="ls">A move with no outline is read without doubt.</span>
 <span><i class="k doubt"></i>Chosen from several readings</span>
