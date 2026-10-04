@@ -380,11 +380,12 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
 #mboard[aria-pressed="true"]{color:var(--accent)}
-.mini.on{display:block;flex:none;width:144px}
+.mini.on{display:block;flex:none;width:188px}
 .mbar.withboard{align-items:stretch}
 .mbar.withboard .mside{flex-direction:column;align-items:stretch;justify-content:space-between}
 .mbar.withboard .mtxt{flex:none;padding-top:4px}
-.mbar.withboard .mbtns{justify-content:flex-start;margin-left:-6px}
+.mbar.withboard .mbtns{justify-content:flex-start;margin-left:-6px;flex-wrap:wrap;gap:0 12px}
+.mbar.withboard .mside{min-width:0}
 .mini svg,.mini canvas{display:block;width:100%;height:auto}
 .mini .co{display:none}}
 """
@@ -668,7 +669,31 @@ function highlightMark(scroll){
   for (const el of document.querySelectorAll(".mark[data-node='" + S.node + "']")) {
     el.classList.add("current"); if (!first) first = el;
   }
-  if (first && scroll) first.scrollIntoView({block: "nearest", inline: "nearest"});
+  if (first && scroll) revealMark(first);
+}
+
+// Keep the current move in the part of the screen that is free: above the
+// board bar on a phone, and inside the enlarged page when it scrolls
+// sideways. The page moves only when the move leaves the middle of that
+// space, so stepping through a line does not make it jump.
+function revealMark(el){
+  const bar = $("mbar");
+  const barH = bar && getComputedStyle(bar).display !== "none" ? bar.offsetHeight : 0;
+  if (!barH) { el.scrollIntoView({block: "nearest", inline: "nearest"}); return; }
+  const r = el.getBoundingClientRect();
+  const free = window.innerHeight - barH;
+  const cy = r.top + r.height / 2;
+  if (cy < free * 0.2 || cy > free * 0.8) {
+    window.scrollBy({top: cy - free * 0.45, behavior: "smooth"});
+  }
+  const ps = $("pagescroll");
+  if (ps && ps.scrollWidth > ps.clientWidth) {
+    const p = ps.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    if (cx < p.left + p.width * 0.2 || cx > p.right - p.width * 0.2) {
+      ps.scrollBy({left: cx - (p.left + p.width / 2), behavior: "smooth"});
+    }
+  }
 }
 
 /* ---------------------------------------------------------------- board */
