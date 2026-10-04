@@ -25,6 +25,18 @@ their method page by page:
   ClearScan) and each diagram is a separate embedded picture.
 - **text**: typeset pages whose diagrams are drawn from shapes or a chess font.
 
+A diagram printed as text in a chess diagram font (as ChessBase and Fritz
+export them, and as the Chess Merida, Chess Alpha and similar fonts print
+them) holds its position in the text layer. Stage 1 reads such a diagram
+directly into a FEN (`chessbook/textdiagram.py`), takes the side to move from
+the text around it, and lists it with the board pictures, so the moves after
+it decode at once.
+
+Books set with figurine fonts (for example ChessBase's "CB...Link" fonts)
+often give each piece figurine as a private character code. The program
+learns from the book which code stands for which piece and reads the letter
+in its place (`chessbook/figurines.py`), so "Nxe6" is read as printed.
+
 ## Using the app
 
 Open the published site, drop a chess book PDF on the page, and read it beside

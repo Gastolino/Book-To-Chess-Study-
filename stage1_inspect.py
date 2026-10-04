@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pymupdf
 
-from chessbook import style
+from chessbook import style, textdiagram
 
 DPI = 300
 MAX_SAMPLES = 12
@@ -330,6 +330,14 @@ def analyse(pdf, out_dir):
         lines = list(text_lines(page))
         chars = sum(len(t) for t, _ in lines)
         cover, xpics = _page_pictures(page)
+        # Diagrams printed as text in a chess font count as board pictures
+        # with no image (a (diagram, FEN) pair in place of the xref), sorted into the same reading order.
+        tds = textdiagram.page_text_diagrams(lines)
+        for td, fen in tds:
+            xpics.append((pymupdf.Rect(td.rect), 0, 0, (td, fen)))
+        if tds:
+            mid = page.rect.width / 2
+            xpics.sort(key=lambda t: ((t[0].x0 + t[0].x1) / 2 > mid, t[0].y0))
         pics = [(r, w, h) for r, w, h, _ in xpics]
         invisible = any(t.get("type") == 3 for t in page.get_texttrace())
         head = page.rect.height * 0.06  # running head with the page number
@@ -353,6 +361,16 @@ def analyse(pdf, out_dir):
             raw = labels[k][0] if k is not None else None
             if k is not None:
                 used.add(k)
+            if isinstance(xref, tuple):
+                td, fen = xref
+                ink = textdiagram.ink_rect(page, pic)
+                diagrams.append({
+                    "page": i + 1, "rect": [round(v, 1) for v in ink], "pixels": [0, 0],
+                    "label": raw.translate(DIGIT_FIX) if raw else None,
+                    "label_repaired": bool(raw) and raw != raw.translate(DIGIT_FIX),
+                    "circled": False, "partial": False, "tall": False, "coords": [0, 0],
+                    "text": True, "fen": fen, "encoding": td.encoding})
+                continue
             stack = stacked_boards(doc, xref, pic) if pic.height > 1.3 * pic.width else []
             sub = []
             for j, br in enumerate(stack):
@@ -387,8 +405,10 @@ def analyse(pdf, out_dir):
                 diagrams[-1]["boards"] = sub
         for m in REF_RE.finditer(page.get_text()):
             refs[m.group(1).translate(DIGIT_FIX)] += 1
-        pages.append({"page": i + 1, "chars": chars, "pictures": len(pics),
-                      "kind": page_kind(chars, cover, pics, invisible),
+        pages.append({"page": i + 1, "chars": chars, "pictures": len(pics) - len(tds),
+                      "text_diagrams": len(tds),
+                      "kind": page_kind(chars, cover, [x for x in xpics if not isinstance(x[3], tuple)],
+                                        invisible),
                       "ocr_layer": invisible})
 
     main_ids = main_series(numbers)
@@ -571,8 +591,9 @@ def main():
             out.append(
                 f"<tr><td class=\"r\">{d['page']}</td><td class=\"r\">{e(d['label'] or '')}"
                 f"{'*' if d['label_repaired'] else ''}</td><td>{series_name(d)}</td>"
-                f"<td class=\"r\">{d['pixels'][0]}&thinsp;&times;&thinsp;{d['pixels'][1]}</td>"
-                f"<td><i class=\"dot {cls}\"></i>{words}</td></tr>")
+                + ("<td class=\"r\">text</td>" if d.get("text") else
+                   f"<td class=\"r\">{d['pixels'][0]}&thinsp;&times;&thinsp;{d['pixels'][1]}</td>")
+                + f"<td><i class=\"dot {cls}\"></i>{words}</td></tr>")
         out.append("</tbody></table></div></section>")
 
     out.append("<section><h2>Every diagram number in the text</h2><p>This list gives each "

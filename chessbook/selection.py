@@ -95,7 +95,8 @@ def board_size(diagrams, first_page=1):
     """The usual printed size of a whole board in points: the median shorter
     side of the square pictures from first_page on (None without any)."""
     sides = [min(d["rect"][2] - d["rect"][0], d["rect"][3] - d["rect"][1])
-             for d in diagrams if not d.get("partial") and d["page"] >= first_page]
+             for d in diagrams if not d.get("partial") and not d.get("text")
+             and d["page"] >= first_page]
     return statistics.median(sides) if sides else None
 
 
@@ -114,12 +115,17 @@ def picture_kinds(diagrams, first_page=1):
     illustration  far larger than a board, such as a drawing across the page
     icon          far smaller than a board, such as an ornament
     front         any picture before first_page (covers and publisher logos)
+
+    A diagram printed as text in a chess font (Stage 1 marks it "text") is
+    always a board.
     """
     B = board_size(diagrams, first_page)
     out = {}
     for did, d in zip(diagram_ids(diagrams), diagrams):
         w, h = d["rect"][2] - d["rect"][0], d["rect"][3] - d["rect"][1]
-        if d["page"] < first_page:
+        if d.get("text"):
+            kind = "board"              # a position printed in a chess font
+        elif d["page"] < first_page:
             kind = "front"
         elif B is None:
             kind = "partial" if d.get("partial") else "board"
