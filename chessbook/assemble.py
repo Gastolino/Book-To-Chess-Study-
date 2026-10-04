@@ -1869,6 +1869,7 @@ class _Builder:
             para = self.para_start_of(para - 2)     # the run opens its paragraph
         lead = self.st.orig_text[max(para, run.start - 60):run.start]
         # the numbers stand after a word of the sentence, or open the paragraph
+        lo = run.start - len(lead)
         words = lead.split()
         found, sentence = [], para >= run.start - 60
 
@@ -1878,10 +1879,15 @@ class _Builder:
         for i in range(len(words) - 1, -1, -1):
             w = words[i]
             if re.fullmatch(r"\d{1,3}\.?", w):
-                # a move number with the (unreadable) move after it
+                # a move number with a move after it that cannot be read (a
+                # move that reads would stand in a run)
                 n = int(w.rstrip("."))
-                nxt = words[i + 1].rstrip(".") if i + 1 < len(words) else None
-                if nxt is not None and not (nxt.isdigit() and int(nxt) == n + 1):
+                rest = [x for x in words[i + 1:] if not _DOTS_RE.match(x)]
+                nxt = rest[0] if rest else None
+                # (not a year that OCR split, "1 957", nor the next number)
+                if nxt is not None and not re.match(r"\d{2}", nxt) \
+                        and not (nxt.rstrip(".").isdigit() and int(nxt.rstrip(".")) == n + 1) \
+                        and _shape(nxt) != "strong":
                     found.append(n)
             elif prose(w):
                 sentence = True             # a word of the sentence
@@ -1889,11 +1895,9 @@ class _Builder:
         found = [n for n in found if want - 3 <= n < want]
         if not found or not sentence:
             return None
-        # moves that read stand in a run of their own, and moves in the move
-        # font belong to the main line's own runs: these are neither
-        lo = run.start - len(lead)
-        if any(r is not run and lo < r.end <= run.start for r in self.all_runs) \
-                or any(ch.isalnum() for ch in self.st.main_text[lo:run.start]):
+        # moves that read stand in a run (the run itself may be the rest of
+        # a longer one, split_lost): these did not
+        if any(r is not run and r.start < run.start and r.end > lo for r in self.all_runs):
             return None
         return min(found)
 
