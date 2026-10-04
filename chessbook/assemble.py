@@ -1603,10 +1603,15 @@ class _Builder:
             if fen:
                 cands.append((k + 1, did, None, fen))
         prev = self.last_closed
-        if prev is not None and prev.chapter == self.ci and not prev.waiting:
-            for nid in reversed(prev.main_nodes):
+        if prev is not None and prev.chapter == self.ci and not prev.waiting \
+                and not prev.broken and len(prev.main_nodes) > 1:
+            # the run goes on where the line before it stopped (a diagram,
+            # a heading or a box of text between them closed that line), or
+            # replaces one of its last two moves (a move taken from the notes)
+            for nid in reversed(prev.main_nodes[1:][-3:]):
                 node = self.nodes[nid]
-                if node["fen"] and node["status"] != "failed" and _board_ply(node["fen"]) == run.ply:
+                if node["fen"] and node["status"] != "failed" \
+                        and _board_ply(node["fen"]) == run.ply:
                     cands.append((9, None, prev, node["fen"]))
                     break
         if not cands:
@@ -1626,7 +1631,11 @@ class _Builder:
             (cp, cf, cc) = c["score"]
             clean = cf == 0 and cc <= 1.0 and all(d.cost <= 1.5 for d in c["decs"])
             if b is None:
-                # no usable default: only a clean reading of two moves or more
+                # no usable default: the line before goes on when its next
+                # moves read cleanly (as after a heading, see resume), and a
+                # diagram serves only when the moves read cleanly throughout
+                if c["line"] is not None:
+                    return _fit(c["decs"][:4])[0] == 0
                 return clean and n >= 2
             (bp, bf, bc) = b["score"]
             if c["hits"] and not b["hits"] and cp >= bp and cp >= 1 and cf <= bf:
@@ -1692,7 +1701,6 @@ class _Builder:
         if not squares:
             return None
         base = chess.Board(cand["fen"])
-        (bp, bf, bc) = cand["score"]
         results = []
         for name in squares:
             sq = chess.parse_square(name)
@@ -1717,12 +1725,13 @@ class _Builder:
                 results.append((sc, name, old, p, fen, decs))
         if not results:
             return None
-        results.sort(key=lambda r: (-r[0][0], r[0][1], r[0][2]))
-        sc, name, old, p, fen, decs = results[0]
-        if not (sc[0] >= min(n, bp + 3) and sc[1] < bf):
+        # only a change under which every move reads cleanly and with one
+        # reading, over four moves at least, and no other change does so
+        good = [r for r in results if n >= 4 and r[0][1] == 0 and r[0][2] <= 1.0
+                and all(d.cost <= 1.5 and d.status in ("ok", "guessed") for d in r[5])]
+        if len(good) != 1:
             return None
-        if len(results) > 1 and results[1][0][:2] == sc[:2]:
-            return None             # two changes read equally well: no reason to pick one
+        sc, name, old, p, fen, decs = good[0]
         def word(piece):
             if piece is None:
                 return "empty"
@@ -1799,7 +1808,11 @@ class _Builder:
         P = run.ply
         first = run.tokens[0]
         if self.main_prose_before(run.start) or (
-                first.kind == "number" and first.number is None and self.prose_line(run.start)):
+                first.kind == "number" and first.number is None and self.prose_line(run.start)) or (
+                L is not None and P is not None and P < L.next_ply and not L.waiting
+                and P - 1 in L.ply_node and self.prose_line(run.start)):
+            # (the last: an earlier move of the line named in a sentence, as
+            # in a box of advice set in the move font, is a variation)
             # "WARNING: ... 10 ... gxf5 is always very risky; for instance,
             # 11 Qh4", "playing ... d5 in one go": moves named in a box of
             # advice that the book sets in the move font, not moves of the game
@@ -2610,7 +2623,7 @@ def usable_fens(readings):
 
 
 def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3,
-               diagram_fens=None, write=True, progress=None, boards=True):
+               diagram_fens=None, write=True, progress=None, boards=True, readings=None):
     """Assemble the whole book and write output/<stem>/book.json.
 
     letters names a movetext.LETTER_SETS entry (default English; figurines are
@@ -2620,7 +2633,9 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     pictures after the first pass, using the positions that the first pass
     decoded at diagrams as known examples, and the later passes use its FENs.
     passes is the number of assembly passes (the glyph model of each pass is
-    learnt from the runs the previous pass decoded cleanly).
+    learnt from the runs the previous pass decoded cleanly). readings may give
+    Stage 3's readings (doubtful squares, sides to move) of the diagrams whose
+    FENs diagram_fens supplies.
     """
     t0 = time.perf_counter()
     pdf_path = Path(pdf_path)
@@ -2646,7 +2661,7 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
         f"{'without' if numbering['dotless'] else 'with'} dots")
     glyphs = GlyphModel()
     timings = []
-    readings = {}
+    readings = dict(readings or {})
     if read_now and passes <= 1:
         readings = read_boards(doc, diagrams, say=say)
         diagram_fens = {**usable_fens(readings), **text_fens}
