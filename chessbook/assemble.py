@@ -9,21 +9,26 @@ It writes output/<stem>/book.json and returns the same dict:
      "pages": [{"page", "folio", "width", "height", "chapter", "selected",
                 "diagrams": [{"id", "rect", "label", "kind", "selected", "fen",
                               "status", "reading"?, "after_node", "checked", "lines"}],
-                "marks": [{"bbox", "node", "status", "raw", "line", "reason"?}]}],
+                "marks": [{"bbox", "node", "status", "raw", "line", "reason"?, "key",
+                           "seq"?, "symbol"?, "corrected"?}]}],
      "chapters": [{..book_structure chapter.., "index", "file", "counts"}],
      "lines": [{"id", "title", "kind", "chapter", "page", "end_page", "start_fen",
                 "root", "status", "diagram", "section", "header", "result",
                 "moves", "variations", "start_note"}],
      "nodes": {id: {"san", "fen", "parent", "children", "number", "black",
                     "page", "bbox", "status", "raw", "comment", "main",
-                    "assumed", "uci", "line", "alternatives"?, "reason"?}},
-     "unattached": [{"page", "chapter", "text", "reason"}],
+                    "assumed", "uci", "line", "alternatives"?, "reason"?, "key"?,
+                    "corrected"?}},
+     "unattached": [{"page", "chapter", "text", "reason", "key", "bbox"}],
+     "dismissed", "attached": [the same, for sequences the reader dismissed or placed],
+     "symbols": {piece symbol: times printed}, "letters", "corrections",
      "waiting": [{"page", "chapter", "text", "reason", "line", "diagram"}],
      "stats": {...}}
 
 A diagram's "fen" is the position lines start from, read from its picture by
 Stage 3 (boards.py) unless build_book was given FENs; "status" is "read",
-"doubtful" (read, with squares the reader is unsure of), "partial" (the
+"doubtful" (read, with squares the reader is unsure of), "corrected" (the
+reader gave the position, see corrections.py), "partial" (the
 picture shows part of a board only) or "unread"; "reading" holds Stage 3's
 reading itself: its FEN, confidence, doubtful squares, side to move and
 whether the book shows the board from Black's side.
@@ -34,6 +39,17 @@ none); line titles and reasons name printed pages. Diagram ids are those of
 selection.py: a picture that holds stacked boards gives one diagram per board
 ("p79-1a", "p79-1b"). A decoded node's number and side come from the
 position it is played in, so the labels always match the board.
+
+The reader's corrections
+------------------------
+corrections.py keeps the reader's corrections of a book. A token's "key"
+("page:x,y:raw") names a move token on the page; a mark's "seq" is the key
+of the sequence placed in no line that it belongs to, and its "symbol" the
+piece symbol the text recognition could not name. A node's or mark's
+"corrected" says what the reader corrected: "move" (the token reads as the
+move given), "symbol" (its piece symbol), or "placed" (the first move of a
+sequence the reader placed). "symbols" counts every such piece symbol in
+the book, for the reader's Review view.
 
 How the text is read
 --------------------
@@ -152,13 +168,14 @@ from typing import Optional
 import chess
 import pymupdf
 
+from . import corrections as fixes
 from . import figurines
 from . import pdftext as pt
 from . import selection as sel
 from .movetext import GlyphModel, clean_run, decode, find_sequences, numbering_counts
 from .movetext import DOTLESS_MIN, DOTLESS_SHARE
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
-from .movetext import _ocr_digit_slip
+from .movetext import _ocr_digit_slip, junk_prefix
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -657,24 +674,31 @@ class _Line:
 
 
 class _Decoder:
-    """decode() with the book's glyph model, letter set and a memo."""
+    """decode() with the book's glyph model, letter set and a memo. fixed maps
+    piece symbols the reader identified (corrections.py "glyphs") to their
+    piece: they read as certainly as the notation's own letters."""
 
-    def __init__(self, glyphs, letters):
+    def __init__(self, glyphs, letters, fixed=None):
         self.glyphs = glyphs
         self.letters = letters
+        self.fixed = dict(fixed or {})
+        self.decode_letters = letters
+        if self.fixed:
+            self.decode_letters = {**LETTER_SETS.get(letters or "English", LETTER_SETS["English"]),
+                                   **self.fixed}
         self.memo = {}
         self.accepted = []
         self.calls = 0
         self.seconds = 0.0
 
     def run(self, fen, tokens):
-        key = (fen, tuple((t.kind, t.raw, t.number, t.black) for t in tokens))
+        key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced) for t in tokens))
         hit = self.memo.get(key)
         if hit is None:
             t0 = time.perf_counter()
             # Never supply a move the text lacks: a gap in the numbering is
             # shown as a gap (see _Builder.gap), not filled with a guess.
-            hit = decode(chess.Board(fen), tokens, glyphs=self.glyphs, letters=self.letters,
+            hit = decode(chess.Board(fen), tokens, glyphs=self.glyphs, letters=self.decode_letters,
                          insert=False)
             self.seconds += time.perf_counter() - t0
             self.calls += 1
@@ -705,7 +729,7 @@ def _fit(decs):
 
 class _Builder:
     def __init__(self, doc, fonts, chapters, diagrams, selection, decoder, diagram_fens=None,
-                 dotless=False, readings=None):
+                 dotless=False, readings=None, fix=None):
         self.doc, self.fonts, self.chapters = doc, fonts, chapters
         self.dotless = dotless          # the book prints move numbers without a dot
         self.diagrams = diagrams
@@ -730,6 +754,15 @@ class _Builder:
         self.moves_font = bool(fonts.get("moves"))
         self.bs = (fonts.get("body") or {}).get("size") or 10.0
         self.folio_offset = (fonts.get("layout") or {}).get("folio_offset")
+        # the reader's corrections (corrections.py)
+        fix = fix or {}
+        self.fix_moves = fixes.TokenIndex(fix.get("moves"))
+        self.fix_unattached = fixes.TokenIndex(fix.get("unattached"))
+        self.fix_glyphs = dict(fix.get("glyphs") or {})
+        self.node_by_key = {}           # token key -> node id
+        self.pending_attach = []        # sequences the reader tied to a move: (run, target, ...)
+        self.dismissed = []             # sequences the reader dismissed as no variation
+        self.attached = []              # sequences placed where the reader said
 
     def page_label(self, page):
         """The page number printed in the book (the PDF page when unknown)."""
@@ -754,11 +787,36 @@ class _Builder:
         if page is None:
             return None, None
         m = {"bbox": box, "node": node, "status": status, "raw": tok.raw, "line": line_id,
-             "_o": tok.start}
+             "_o": tok.start, "key": fixes.token_key(page, box, tok.raw)}
         if reason:
             m["reason"] = reason
+        if node is not None:
+            self.node_by_key.setdefault(m["key"], node)
+            n = self.nodes[node]
+            if n.get("corrected"):
+                m["corrected"] = n["corrected"]
         self.marks[page].append(m)
         return page, box
+
+    def token_place(self, tok):
+        """(page, bbox) of a token of the current chapter's text."""
+        return self.st.locate(tok.start, tok.end)
+
+    def force(self, st, toks):
+        """Move tokens that the reader corrected carry the move they gave."""
+        if not self.fix_moves:
+            return toks
+        pages = self.fix_moves.pages()
+        out = []
+        for t in toks:
+            if t.kind == "move" and st.page_at(t.start) in pages:
+                page, box = st.locate(t.start, t.end)
+                if box is not None:
+                    _, v = self.fix_moves.find(page, box, t.raw)
+                    if v:
+                        t = replace(t, forced=v["san"])
+            out.append(t)
+        return out
 
     # -------------------------------------------------------- stream building
     def word_classes(self, ln):
@@ -1036,6 +1094,7 @@ class _Builder:
                 for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font,
                                         dotless=self.dotless):
                     toks = [replace(t, start=t.start + a, end=t.end + a) for t in s.tokens]
+                    toks = self.force(st, toks)
                     parts = _split_at_diagrams(toks, diagrams)
                     if kind == "main" and self.moves_font:
                         parts = [q for part in parts for q in self.split_inline(st, part)]
@@ -1229,6 +1288,7 @@ class _Builder:
                 prev_kind = kind
         self.close(st.pos)
         self.flush_pre_notes()
+        self.attach_pending()
 
     def flush_pre_notes(self):
         """Note runs held back while no line was open: the context they belong
@@ -1847,11 +1907,70 @@ class _Builder:
         return re.sub(r"[ \n\r]+", " ", self.st.orig_text[run.start:run.end]).strip()
 
     def unplaced(self, run, reason):
-        page = self.st.page_at(run.start)
-        self.unattached.append({"page": page, "chapter": self.ci, "text": self.run_text(run),
-                                "reason": reason})
+        page, box = self.st.locate(run.moves[0].start, run.moves[0].end) if run.moves else (None, None)
+        key = fixes.token_key(page, box, run.moves[0].raw) if box is not None else None
+        if key is not None and self.fix_unattached:
+            k, v = self.fix_unattached.find(page, box, run.moves[0].raw)
+            if v is not None:
+                entry = {"page": page, "chapter": self.ci, "text": self.run_text(run),
+                         "reason": reason, "key": key, "bbox": box}
+                if v["attach_to"] == "dismiss":
+                    self.dismissed.append(entry)
+                    return
+                self.pending_attach.append((run, v["attach_to"], entry))
+                return
+        self.unattached.append({"page": page or self.st.page_at(run.start), "chapter": self.ci,
+                                "text": self.run_text(run), "reason": reason, "key": key,
+                                "bbox": box})
         for t in run.moves:
-            self.mark(self.st, t, None, "unattached", reason=reason)
+            m_page, _ = self.mark(self.st, t, None, "unattached", reason=reason)
+            if m_page is not None and key:
+                self.marks[m_page][-1]["seq"] = key
+
+    def attach_pending(self):
+        """Place the sequences the reader tied to a move of a line: as an
+        alternative to that move, or else as the moves that follow it,
+        whichever reads legally (and better)."""
+        pending, self.pending_attach = self.pending_attach, []
+        by_id = {L.id: L for L in self.lines}
+        for run, target, entry in pending:
+            nid = self.node_by_key.get(target)
+            if nid is None:
+                t_page, t_x, t_y, t_raw = fixes.parse_key(target)
+                for k, n in self.node_by_key.items():
+                    p2, x2, y2, r2 = fixes.parse_key(k)
+                    if p2 == t_page and max(abs(x2 - t_x), abs(y2 - t_y)) <= fixes.TOLERANCE:
+                        nid = n
+                        break
+            L = by_id.get(self.nodes[nid]["line"]) if nid is not None else None
+            best = None
+            if L is not None and not L.waiting:
+                node = self.nodes[nid]
+                for parent in (node["parent"], nid):
+                    if parent is None or not self.nodes[parent]["fen"]:
+                        continue
+                    decs = self.dec.run(self.nodes[parent]["fen"], run.tokens)
+                    f = _fit(decs)
+                    if f[0] <= 1 and (best is None or f < best[0]):
+                        best = (f, parent, decs)
+            if best is None:
+                why = ("you tied it to a move that the program no longer finds" if L is None else
+                       "its moves are not legal at the move you tied it to")
+                self.unattached.append({**entry, "reason": why})
+                for t in run.moves:
+                    m_page, _ = self.mark(self.st, t, None, "unattached", reason=why)
+                    if m_page is not None:
+                        self.marks[m_page][-1]["seq"] = entry["key"]
+                continue
+            _, parent, decs = best
+            nodes = self.insert_decoded(L, parent, run, decs)
+            L.variations += 1
+            if nodes:
+                self.nodes[nodes[0]]["corrected"] = "placed"
+                for m in self.marks.get(self.nodes[nodes[0]]["page"], []):
+                    if m["node"] == nodes[0]:
+                        m["corrected"] = "placed"
+            self.attached.append({**entry, "node": nodes[0] if nodes else None})
 
     # -------------------------------------------------------- main runs
     def on_main(self, run):
@@ -2126,6 +2245,8 @@ class _Builder:
             status = "failed"
         page, box = self.mark(self.st, tok, nid, status, L.id)
         self.nodes[nid]["page"], self.nodes[nid]["bbox"] = page, box
+        if box is not None:
+            self.nodes[nid]["key"] = fixes.token_key(page, box, tok.raw)
         return nid
 
     def add_decoded(self, L, parent, tok, d, main, merge=False):
@@ -2147,6 +2268,10 @@ class _Builder:
                                 uci=d.uci)
             if d.alternatives:
                 self.nodes[nid]["alternatives"] = list(d.alternatives[:4])
+            if tok.forced:
+                self.nodes[nid]["corrected"] = "move"
+            elif d.glyph and d.glyph in self.fix_glyphs:
+                self.nodes[nid]["corrected"] = "symbol"
         else:
             assumed = d.alternatives[0] if d.alternatives else None
             uci = None
@@ -2160,8 +2285,13 @@ class _Builder:
             nid = self.new_node(L, parent=parent, san=None, fen=board.fen(), number=number,
                                 black=black, status="failed", raw=tok.raw, main=main,
                                 assumed=assumed, uci=uci)
+            if tok.forced:
+                self.nodes[nid]["reason"] = (f"The move you gave here, {tok.forced}, is not legal "
+                                             "in this position.")
         page, box = self.mark(self.st, tok, nid, self.nodes[nid]["status"], L.id)
         self.nodes[nid]["page"], self.nodes[nid]["bbox"] = page, box
+        if box is not None:
+            self.nodes[nid]["key"] = fixes.token_key(page, box, tok.raw)
         out.append(nid)
         return out, False
 
@@ -2667,9 +2797,15 @@ class _Builder:
 # ---------------------------------------------------------------- top level
 
 def _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens, only=None,
-              dotless=False, readings=None):
-    dec = _Decoder(glyphs, letters)
-    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens, dotless, readings)
+              dotless=False, readings=None, fix=None):
+    fix = fix or {}
+    dec = _Decoder(glyphs, letters, fix.get("glyphs"))
+    if fix.get("diagrams") and readings:
+        # a position the reader gave has no doubtful squares to repair
+        readings = {did: (dict(r, doubtful=[]) if did in fix["diagrams"] else r)
+                    for did, r in readings.items()}
+    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens, dotless, readings,
+                 fix)
     for ci, ch in enumerate(chapters):
         if ch["end"] < ch["start"]:
             continue
@@ -2709,7 +2845,8 @@ def usable_fens(readings):
 
 
 def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3,
-               diagram_fens=None, write=True, progress=None, boards=True, readings=None):
+               diagram_fens=None, write=True, progress=None, boards=True, readings=None,
+               corrections=None):
     """Assemble the whole book and write output/<stem>/book.json.
 
     letters names a movetext.LETTER_SETS entry (default English; figurines are
@@ -2721,7 +2858,12 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     passes is the number of assembly passes (the glyph model of each pass is
     learnt from the runs the previous pass decoded cleanly). readings may give
     Stage 3's readings (doubtful squares, sides to move) of the diagrams whose
-    FENs diagram_fens supplies.
+    FENs diagram_fens supplies. corrections holds the reader's corrections
+    (corrections.py); by default they are read from
+    books/<stem>/corrections.json. A diagram's corrected position wins over
+    every reading of it, a corrected move token reads as the move given, a
+    corrected piece symbol reads as its piece throughout the book, and a
+    sequence placed in no line goes where the reader tied it.
     """
     t0 = time.perf_counter()
     pdf_path = Path(pdf_path)
@@ -2738,8 +2880,11 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     # Stage 3 reads the pictures unless the caller supplied the positions;
     # positions printed as text always win, since they are exact.
     read_now = diagram_fens is None and boards
-    if text_fens or diagram_fens is not None:
-        diagram_fens = {**(diagram_fens or {}), **text_fens}
+    fix = fixes.normalise(corrections) if corrections is not None else \
+        fixes.load(pdf_path, books_dir)
+    fix_fens = {did: v["fen"] for did, v in fix["diagrams"].items()}
+    if text_fens or diagram_fens is not None or fix_fens:
+        diagram_fens = {**(diagram_fens or {}), **text_fens, **fix_fens}
     chapters = book_chapters(structure, doc.page_count)
     selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
     numbering = book_numbering(doc)
@@ -2749,8 +2894,8 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     timings = []
     readings = dict(readings or {})
     if read_now and passes <= 1:
-        readings = read_boards(doc, diagrams, say=say)
-        diagram_fens = {**usable_fens(readings), **text_fens}
+        readings = read_boards(doc, diagrams, known=fix_fens or None, say=say)
+        diagram_fens = {**usable_fens(readings), **text_fens, **fix_fens}
         read_now = False
     figmap, learnt = {}, {}
     fig_cands = figurines.candidates(
@@ -2762,12 +2907,14 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
             # positions the first pass reached at diagrams teach the reader
             known = {did: builder.nodes[nid]["fen"] for did, nid in builder.after_node.items()
                      if builder.nodes.get(nid, {}).get("fen")}
+            known.update(fix_fens)          # the positions the reader gave are certain
             readings = read_boards(doc, diagrams, known=known, say=say)
-            diagram_fens = {**usable_fens(readings), **text_fens}
+            diagram_fens = {**usable_fens(readings), **text_fens, **fix_fens}
             read_now = False
         t1 = time.perf_counter()
         builder, dec = _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters,
-                                 diagram_fens, dotless=numbering["dotless"], readings=readings)
+                                 diagram_fens, dotless=numbering["dotless"], readings=readings,
+                                 fix=fix)
         timings.append(round(time.perf_counter() - t1, 1))
         say(f"pass {len(timings)}: {len(builder.lines)} lines, {len(builder.nodes)} nodes, "
             f"{dec.calls} decodes in {timings[-1]} s")
@@ -2799,7 +2946,7 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
                 continue
         k += 1
     book = _book_dict(pdf_path, doc, chapters, diagrams, selection, builder, glyphs, structure,
-                      readings)
+                      readings, fix, letters)
     book["numbering"] = numbering
     book["figurines"] = [{"font": f, "code": f"U+{ord(ch):04X}", "piece": p,
                           "learnt": (f, ch) in learnt}
@@ -2833,14 +2980,17 @@ def _book_title(doc, structure, pdf_path):
     return pdf_path.stem
 
 
-def _diagram_reading(did, fen, reading):
+def _diagram_reading(did, fen, reading, corrected=False):
     """The fields of a diagram in book.json that describe its position:
     status "read" (a position is in use), "doubtful" (in use, with doubtful
-    squares), "partial" (the picture shows part of a board only) or
-    "unread"."""
+    squares), "corrected" (the reader gave the position), "partial" (the
+    picture shows part of a board only) or "unread"."""
     reading = reading or {}
     out = {"fen": fen or None, "status": "unread"}
-    if fen:
+    if corrected:
+        out["status"] = "corrected"
+        out["corrected"] = True
+    elif fen:
         out["status"] = "doubtful" if reading.get("doubtful") else "read"
     elif reading.get("status") == "partial":
         out["status"] = "partial"
@@ -2850,7 +3000,23 @@ def _diagram_reading(did, fen, reading):
     return out
 
 
-def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structure, readings=None):
+def _symbol_counts(book_marks, letters, fixed):
+    """{symbol: times printed} for every piece symbol of the book's move tokens
+    that is neither a letter of the notation nor a figurine."""
+    out = Counter()
+    for marks in book_marks.values():
+        for m in marks:
+            sym = junk_prefix(m["raw"], letters)
+            if sym:
+                out[sym] += 1
+                m["symbol"] = sym
+    return out
+
+
+def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structure, readings=None,
+               fix=None, letters=None):
+    fix = fix or fixes.empty()
+    symbols = _symbol_counts(b.marks, letters, fix["glyphs"])
     ids = sel.diagram_ids(diagrams)
     kinds = b.kinds
     chapter_of = {}
@@ -2878,7 +3044,8 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
             "chapter": chapter_of.get(p), "selected": b.selection.page_selected(p),
             "diagrams": [{"id": did, "rect": d["rect"], "label": d.get("label"),
                           "kind": kinds.get(did), "selected": b.selection.diagram_selected(did),
-                          **_diagram_reading(did, b.diagram_fens.get(did), (readings or {}).get(did)),
+                          **_diagram_reading(did, b.diagram_fens.get(did), (readings or {}).get(did),
+                                             did in fix["diagrams"]),
                           "after_node": b.after_node.get(did), "checked": did in b.checked,
                           "lines": diagram_lines.get(did, [])}
                          for did, d in by_page.get(p, [])],
@@ -2901,6 +3068,17 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
             c["variation_moves"] += 1
     for u in b.unattached:
         counts[u["chapter"]]["unattached"] += 1
+    for n in b.nodes.values():
+        if n.get("corrected") in ("move", "symbol"):
+            key = "moves" if n["corrected"] == "move" else "symbol_moves"
+            counts[line_chapter[n["line"]]]["corrected"][key] += 1
+    for u in b.dismissed + b.attached:
+        counts[u["chapter"]]["corrected"]["sequences"] += 1
+    for p in pages:
+        if p["chapter"] in counts:
+            for d in p["diagrams"]:
+                if d.get("corrected"):
+                    counts[p["chapter"]]["corrected"]["diagrams"] += 1
     for w in b.waiting:
         counts[w["chapter"]]["waiting"] += 1
     out_chapters = []
@@ -2909,6 +3087,7 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
         k = counts[c["index"]]
         k["line_status"] = dict(k["line_status"])
         k["moves"] = {s: k["moves"].get(s, 0) for s in STATUSES}
+        k["corrected"] = dict(k["corrected"])
         cc["counts"] = k
         out_chapters.append(cc)
     nodes = {}
@@ -2927,8 +3106,12 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
             total["moves"][s] += v
         for s, v in k["line_status"].items():
             total["line_status"][s] += v
+        for s, v in k["corrected"].items():
+            total["corrected"][s] += v
     total["moves"] = dict(total["moves"])
     total["line_status"] = dict(total["line_status"])
+    total["corrected"] = dict(total["corrected"])
+    total["corrected"]["symbols"] = len(fix["glyphs"])
     return {
         "version": VERSION,
         "title": _book_title(doc, structure, pdf_path),
@@ -2944,7 +3127,12 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
         "lines": lines,
         "nodes": nodes,
         "unattached": b.unattached,
+        "dismissed": b.dismissed,
+        "attached": b.attached,
         "waiting": b.waiting,
+        "letters": letters or "English",
+        "symbols": dict(symbols.most_common()),
+        "corrections": fix,
         "stats": total,
     }
 
@@ -2952,7 +3140,8 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
 def _empty_counts():
     return {"lines": 0, "games": 0, "fragments": 0, "line_status": Counter(),
             "moves": Counter(), "variations": 0, "variation_moves": 0, "unattached": 0,
-            "waiting": 0}
+            "waiting": 0, "corrected": Counter({"moves": 0, "symbol_moves": 0, "diagrams": 0,
+                                                "sequences": 0})}
 
 
 def main(argv=None):

@@ -34,8 +34,14 @@ from pathlib import Path
 import chess.svg
 import pymupdf
 
-from . import pgnout, style
+from . import corrections, pgnout, style
+from .review_js import CORRECTIONS_JS, EYE_SVG, REVIEW_CSS, REVIEW_JS
+from .movetext import LETTER_SETS, junk_prefix
 from .selection import EXCLUDED_KINDS
+
+# Moves the Review view lists: those the program chose between readings or could not read.
+REVIEW_STATUSES = ("guessed", "ambiguous", "failed")
+PIECE_WORDS = {"K": "King", "Q": "Queen", "R": "Rook", "B": "Bishop", "N": "Knight", "P": "Pawn"}
 
 PAGE_DPI = 120
 PAGE_QUALITY = 60
@@ -54,6 +60,7 @@ STATUS_WORDS = {
     "inserted": "Supplied by the program",
     "waiting": "Waits for board reading (Stage 3)",
     "unattached": "Placed in no line",
+    "corrected": "Corrected by you",
 }
 
 # What each kind of picture is, in words for the reader.
@@ -388,7 +395,7 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mbar.withboard .mside{min-width:0}
 .mini svg,.mini canvas{display:block;width:100%;height:auto}
 .mini .co{display:none}}
-"""
+""" + REVIEW_CSS
 
 CHAPTER_JS = r"""
 (function(){
@@ -585,16 +592,19 @@ function showPage(p){
     b.style.left = pct(x[0] - pad, P.w); b.style.top = pct(x[1] - pad, P.h);
     b.style.width = pct(x[2] - x[0] + 2 * pad, P.w); b.style.height = pct(x[3] - x[1] + 2 * pad, P.h);
     if (m.node) b.dataset.node = m.node;
+    if (m.seq) b.dataset.seq = m.seq;
     b.dataset.mark = i;
     const n = m.node ? D.nodes[m.node] : null;
     let t = n ? (n.san || n.assumed || "“" + shown(m.raw) + "”") : "“" + shown(m.raw) + "”";
-    t += ": " + lcfirst(D.words[m.status] || m.status);
+    t += ": " + lcfirst(m.corrected || (n && n.corrected) ? D.words.corrected : (D.words[m.status] || m.status));
     if (m.reason) t += ", because " + m.reason;
     t += ".";
     b.title = t;
     b.setAttribute("aria-label", t);
     ov.appendChild(b);
   });
+  pageEyes();
+  closeSymMenu();
   $("pagenum").value = label(p);
   $("pagenum").title = "PDF page " + p;
   $("prevpage").disabled = p <= 1;
@@ -681,10 +691,11 @@ function revealMark(el){
   const barH = bar && getComputedStyle(bar).display !== "none" ? bar.offsetHeight : 0;
   if (!barH) { el.scrollIntoView({block: "nearest", inline: "nearest"}); return; }
   const r = el.getBoundingClientRect();
-  const free = window.innerHeight - barH;
+  const free = window.innerHeight - barH - bottomCover();
   const cy = r.top + r.height / 2;
   if (cy < free * 0.2 || cy > free * 0.8) {
-    window.scrollBy({top: cy - free * 0.45, behavior: "smooth"});
+    // above an open editor the space is small: the page moves at once
+    window.scrollBy({top: cy - free * 0.45, behavior: bottomCover() ? "auto" : "smooth"});
   }
   const ps = $("pagescroll");
   if (ps && ps.scrollWidth > ps.clientWidth) {
@@ -788,6 +799,7 @@ function diagramLabel(id){
 }
 function boardFor(){
   // [kind, html or diagram id, note]
+  if (S.preview) return ["svg", boardSvg(S.preview.fen, S.flip, S.preview.uci), S.preview.note];
   const n = S.node ? D.nodes[S.node] : null;
   const fen = n ? nodeFen(S.node) : null;
   if (fen) return ["svg", boardSvg(fen, S.flip, n.uci), ""];
@@ -815,9 +827,12 @@ function renderMini(){
   const mini = $("mini"), bar = $("mbar");
   let [kind, x] = boardFor();
   if (S.diagram && !S.node) { kind = "crop"; x = S.diagram; }
-  const want = S.mini === null ? !!(S.node || S.diagram) : S.mini;
+  // while an editor of the Review view is open the small board stays, beside the page
+  const editing = !!(RV.edit && document.getElementById("fix") && !$("fix").hidden);
+  const want = S.mini === null ? !!(S.node || S.diagram || editing) : S.mini;
   $("mboard").setAttribute("aria-pressed", String(want));
-  const show = SMALL.matches && want && kind !== "empty" && !S.panelSeen;
+  const show = SMALL.matches && want && kind !== "empty" && (!S.panelSeen || editing) &&
+    !(RV.edit && RV.edit.kind === "diagram");
   mini.classList.toggle("on", show);
   bar.classList.toggle("withboard", show);
   const box = $("minibox");
@@ -864,7 +879,7 @@ function moveText(id, needNumber){ return moveNumber(id, needNumber) + moveBody(
 function moveHtml(id, needNumber){ return esc(moveNumber(id, needNumber)) + moveBodyHtml(id); }
 function mvHtml(id, needNumber){
   const n = D.nodes[id];
-  let tip = D.words[n.status] || n.status;
+  let tip = n.corrected ? D.words.corrected : (D.words[n.status] || n.status);
   if (n.status === "failed" && n.assumed) tip += "; the program assumed " + n.assumed;
   if (n.raw && n.status !== "ok") tip += "; the text recognition read “" + shown(n.raw) + "”";
   const num = moveNumber(id, needNumber);
@@ -979,6 +994,16 @@ function statusLines(n){
   const out = [];
   const k = 1 + (n.alternatives ? n.alternatives.length : 0);
   let lab = esc(D.words[n.status] || n.status);
+  const mine = n.key ? FIX.get("moves", n.key) : null;
+  if (mine && FIX.pending("moves", n.key))
+    out.push("You corrected this move to <span class=n>" + esc(mine.san) + "</span>. " + esc(applyWords()));
+  if (n.corrected) {
+    const why = n.corrected === "move" ? "You gave this move." :
+      n.corrected === "placed" ? "You placed this variation here." :
+      "You named its piece symbol “<span class=n>" + shownHtml(n.symbol || "") + "</span>”.";
+    return ["corrected", esc(D.words.corrected), (n.raw ? ["The text recognition read “<span class=n>" +
+      shownHtml(n.raw) + "</span>”."] : []).concat([why], out)];
+  }
   if ((n.status === "guessed" || n.status === "ambiguous") && n.alternatives && n.alternatives.length)
     lab = "Chosen from " + words(k) + (n.status === "ambiguous" ? " equal" : "") + " readings: " + readings(n);
   if (n.raw && n.status !== "ok")
@@ -1003,15 +1028,18 @@ function renderInfo(){
     if (S.node === L.root || n.parent == null) {
       if (L.diagram && !L.start_fen)
         h += "<div class='status small muted'><p><i class=dot></i>" + esc(D.words.waiting) + "</p></div>";
-    } else if (n.status !== "ok" || reading()) {
+    } else if (n.status !== "ok" || reading() || n.corrected) {
       // a move read without doubt needs no word, except while Show reading is on
       const [st, lab, more] = statusLines(n);
       h += "<div class='status small muted'><p><i class='dot st-" + esc(st) + "'></i>" + lab + "</p>" +
         more.map(x => "<p>" + x + "</p>").join("") + "</div>";
+      if (n.legal && n.key && !(RV.edit && RV.edit.node === S.node))
+        h += "<p class=small><button class=tb id=fixthis>Correct this move</button></p>";
     }
   }
   box.innerHTML = h;
   $("infosec").hidden = !h;
+  if ($("fixthis")) $("fixthis").addEventListener("click", () => openMove(S.node));
 }
 
 function selectNode(id, opts){
@@ -1020,6 +1048,8 @@ function selectNode(id, opts){
   if (!n) return;
   const treeFocus = $("tree").contains(document.activeElement);
   if (S.diagram) closeDiagram();
+  S.preview = null;
+  if (RV.edit && !(RV.edit.kind === "move" && RV.edit.node === id) && RV.edit.kind !== "symbol") closeFix();
   const lineChanged = S.line !== n.line;
   S.node = id; S.line = n.line;
   const L = D.lines[n.line];
@@ -1076,6 +1106,7 @@ function defaultView(){
 function showDiagram(id){
   const [p, d] = diagramInfo(id);
   if (!d) return;
+  if (RV.edit) closeFix();
   S.diagram = id;
   for (const el of document.querySelectorAll(".diag.current")) el.classList.remove("current");
   const el = document.querySelector(".diag[data-diagram='" + id + "']");
@@ -1107,9 +1138,14 @@ function showDiagram(id){
                           : "The program places this diagram after ") +
       "<a href='#node=" + esc(d.after_node) + "' data-goto='" +
       esc(d.after_node) + "' class=n>" + moveHtml(d.after_node, true) + "</a>.");
+  if (d.corrected) lines.push("You gave this position.");
+  if (FIX.get("diagrams", id) && FIX.pending("diagrams", id))
+    lines.push("You have corrected this position. " + esc(applyWords()));
   lines.push("<span id=dpageoff></span>");
   h += "<div class='small muted'>" + lines.map(x => "<p>" + x + "</p>").join("") + "</div>";
   h += "<label class=use><input type=checkbox id=usediag autocomplete=off> Use this diagram</label>";
+  if (D.notPosition.indexOf(d.kind) < 0 && d.status !== "partial")
+    h += "<p class=small><button class=tb id=dfix>Correct the position</button></p>";
   // the lines that start from the diagram, except the one the panel already names
   const others = (d.lines || []).filter(l => D.lines[l] && l !== S.line);
   if (others.length) {
@@ -1127,6 +1163,7 @@ function showDiagram(id){
   sizeCoords(box);
   diagramState(id);
   $("dclose").addEventListener("click", () => { closeDiagram(); renderBoard(); layoutPanel(false); });
+  if ($("dfix")) $("dfix").addEventListener("click", () => openDiagramFix(id));
   $("usediag").addEventListener("change", (e) => {
     // ticking a diagram on a page that is left out uses the page again, as on the contents page
     if (e.target.checked && !SEL.pageOn(p)) SEL.setPages(p, p, true);
@@ -1203,6 +1240,15 @@ function init(){
   $("ov").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
+    if (b.dataset.eye) { openSymMenu(b); return; }
+    if (RV.edit && RV.edit.kind === "seq" && b.dataset.node) {
+      const n = D.nodes[b.dataset.node];
+      if (n && n.main && n.key && n.parent != null) { attachTo(RV.edit.key, n.key); return; }
+    }
+    if (b.dataset.seq && RV.on) {
+      const i = RV.items.findIndex(it => it.kind === "seq" && it.key === b.dataset.seq);
+      if (i >= 0) { openItem(i); return; }
+    }
     if (b.dataset.node) { selectNode(b.dataset.node, {fromPage: true}); return; }
     if (b.dataset.diagram) { showDiagram(b.dataset.diagram); return; }
     if (b.dataset.mark) {
@@ -1298,10 +1344,11 @@ function init(){
   // the first line on that page, as an opening without a link does
   if (!fromHash() || (!S.node && !S.diagram)) defaultView();
   selNote();
+  initReview();
 }
 init();
 })();
-"""
+""".replace("init();\n})();", REVIEW_JS.replace("__EYE__", EYE_SVG) + "\ninit();\n})();")
 
 CHAPTER_HTML = """<!doctype html>
 <html lang="en">
@@ -1319,6 +1366,7 @@ CHAPTER_HTML = """<!doctype html>
 <span class="pnav"><button class="ib" id="prevpage" aria-label="Previous page" title="Previous page (Page Up)">__ICON_BACK__</button>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number">
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
+<button class="tb" id="reviewbtn" aria-pressed="false">Review</button>
 <button class="tb" id="showread" aria-pressed="false">Show reading</button>
 <a class="nav" href="index.html">Contents</a>
 </nav>
@@ -1337,11 +1385,14 @@ CHAPTER_HTML = """<!doctype html>
 <span><i class="k fail"></i><i class="dot st-failed"></i>Not read</span>
 <span><i class="k wait"></i><i class="u"></i>Waits for board reading (Stage 3)</span>
 <span><i class="k unatt"></i>Placed in no line</span>
+<span><i class="k fixed"></i>Corrected by you</span>
+<span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
 </div>
 </div>
 <div class="pagescroll" id="pagescroll">
-<div class="pagebox" id="pagebox"><img class="scan" id="pageimg" alt=""><div class="ov" id="ov"></div></div>
+<div class="pagebox" id="pagebox"><img class="scan" id="pageimg" alt=""><div class="ov" id="ov"></div>
+<ul class="symmenu small" id="symmenu" role="menu" hidden></ul></div>
 </div>
 <div class="pagefoot small">
 <div class="onpage" aria-label="Lines on this page"><span class="lab">On this page</span><span class="onlines" id="chips"></span></div>
@@ -1365,7 +1416,13 @@ CHAPTER_HTML = """<!doctype html>
 <span class="gap"></span>
 <button class="ib" id="bflip" title="Turn the board round" aria-label="Turn the board round">__ICON_FLIP__</button>
 </div>
-<section class="sec">
+<section class="sec" id="fix" aria-label="Correction" hidden></section>
+<section class="sec" id="review" aria-label="Review" hidden>
+<div class="revhead"><h2 class="ltitle">Review</h2></div>
+<p class="small muted" id="revsum"></p>
+<ul class="revlist" id="revlist"></ul>
+</section>
+<section class="sec lsec">
 <h2 class="ltitle" id="linetitle">No line chosen</h2>
 <p class="small muted" id="linemeta"></p>
 </section>
@@ -1384,6 +1441,7 @@ CHAPTER_HTML = """<!doctype html>
 <script type="application/json" id="data">__DATA__</script>
 <script type="application/json" id="images">__IMAGES__</script>
 <script>__SELJS__</script>
+<script>__CORRJS__</script>
 <script>__JS__</script>
 </body>
 </html>
@@ -1408,7 +1466,8 @@ def chapter_data(book, ch, pgn_text):
                 "w": pg["width"], "h": pg["height"], "selected": pg["selected"],
                 "folio": pg.get("folio"),
                 "diagrams": pg["diagrams"],
-                "marks": [{k: m[k] for k in ("bbox", "node", "status", "raw", "line", "reason")
+                "marks": [{k: m[k] for k in ("bbox", "node", "status", "raw", "line", "reason",
+                                             "key", "seq", "symbol", "corrected")
                            if k in m} for m in pg["marks"]]}
     lines = {}
     order = []
@@ -1430,8 +1489,23 @@ def chapter_data(book, ch, pgn_text):
                 nn["alternatives"] = n["alternatives"]
             if n.get("reason"):
                 nn["reason"] = n["reason"]
+            for k in ("key", "corrected"):
+                if n.get(k):
+                    nn[k] = n[k]
+            if n.get("raw") and n.get("parent") is not None:
+                sym = junk_prefix(n["raw"], book.get("letters"))
+                if sym:
+                    nn["symbol"] = sym
             nn["id"] = nid
             nodes[nid] = nn
+    # the legal moves of the position before each move that needs a check, so that the
+    # reader's correction is checked in the browser
+    for nid, nn in nodes.items():
+        if nn["status"] in REVIEW_STATUSES or nn.get("corrected") == "move":
+            par = book["nodes"].get(nn["parent"]) if nn["parent"] is not None else None
+            if par and par.get("fen"):
+                nn["legal"] = legal_moves(par["fen"])
+                nn["before"] = par["fen"]
     chapters = [{"index": c["index"], "title": c["title"], "start": c["start"], "end": c["end"],
                  "file": c["file"], "empty": c["end"] < c["start"]} for c in book["chapters"]]
     sel = book.get("selection") or {}
@@ -1447,7 +1521,19 @@ def chapter_data(book, ch, pgn_text):
         "selection": {"pages": sel.get("pages", {"exclude": []}),
                       "diagrams": sel.get("diagrams", {"exclude": [], "include": []})},
         "selBase": _selection_base(book),
+        "unattached": [u for u in book.get("unattached", []) if u.get("chapter") == idx and u.get("key")],
+        "dismissed": [u for u in book.get("dismissed", []) if u.get("chapter") == idx],
+        "symbols": book.get("symbols", {}),
+        "corrections": book.get("corrections") or corrections.empty(),
+        "letters": LETTER_SETS.get(book.get("letters") or "English", LETTER_SETS["English"]),
+        "pieceWords": PIECE_WORDS,
     }
+
+
+def legal_moves(fen):
+    """[[SAN, UCI], ...] of every legal move in a position, in SAN order."""
+    b = chess.Board(fen)
+    return sorted(([b.san(m), m.uci()] for m in b.legal_moves), key=lambda x: x[0])
 
 
 def chapter_heading(ch):
@@ -1495,7 +1581,9 @@ def chapter_html(book, ch, images, pgn_text, pgn_info):
         "__ICON_END__": style.icon("end"),
         "__ICON_FLIP__": style.icon("flip"),
         "__PIECES__": _pieces_defs(),
+        "__EYE__": EYE_SVG,
         "__SELJS__": SELECTION_JS,
+        "__CORRJS__": CORRECTIONS_JS,
         "__JS__": CHAPTER_JS,
         # the data last, so that no placeholder inside the book's text is replaced
         "__DATA__": _json_script(data),
@@ -1674,6 +1762,31 @@ $("resetbtn").addEventListener("click", () => {
   SEL.reset(); refresh(); say("The selection is again the one the program used for this run.");
 });
 window.selectionText = SEL.text;
+const FIX = makeCorrections(D.corrections, {pdf: D.pdf, pageCount: D.pageCount, title: D.title});
+window.correctionsText = FIX.text;
+function fixNote(){
+  const n = FIX.count();
+  $("fixnote").textContent = !n ? "You have made no corrections. The Review button of a chapter lists " +
+    "what the program could not read with certainty, and lets you correct it." :
+    (FIX.anyPending() ? "You have corrections that this run did not use yet. " + (D.app ?
+      "Read again at the top of the page applies them." :
+      "Copy corrections puts them on the clipboard, to paste into the chat for the next run.") :
+      "This run used all your corrections.");
+}
+$("copyfix").addEventListener("click", async () => {
+  const t = FIX.text();
+  let ok = false;
+  try { await navigator.clipboard.writeText(t); ok = true; } catch (err) { ok = false; }
+  if (!ok) {
+    const ta = document.createElement("textarea");
+    ta.value = t; document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
+    ta.remove();
+  }
+  say(ok ? "The corrections are on the clipboard, ready to paste into the chat." :
+    "The browser refused to copy the corrections.");
+});
+fixNote();
 refresh(); say();
 // the browser may restore the ticks of the boxes when the reader comes back to this page: the
 // stored selection wins
@@ -1697,10 +1810,11 @@ INDEX_HTML = """<!doctype html>
 <p class="how">__HOW__</p>
 </header>
 <div class="actions" role="group" aria-label="Selection">
-<div class="acts"><button class="tb" id="copybtn">Copy selection</button><button class="tb" id="dlbtn">Download selection.json</button><button class="tb" id="resetbtn">Undo changes</button></div>
+<div class="acts"><button class="tb" id="copybtn">Copy selection</button><button class="tb" id="dlbtn">Download selection.json</button><button class="tb" id="resetbtn">Undo changes</button><button class="tb" id="copyfix">Copy corrections</button></div>
 <span class="msg small muted" id="msg" role="status"></span>
 </div>
 <p class="summary">__SUMMARY__</p>
+<p class="summary small muted" id="fixnote"></p>
 __COLS__
 <ol class="chapters">
 __CHAPTERS__
@@ -1708,6 +1822,7 @@ __CHAPTERS__
 </main>
 <script type="application/json" id="data">__DATA__</script>
 <script>__SELJS__</script>
+<script>__CORRJS__</script>
 <script>__JS__</script>
 </body>
 </html>
@@ -1745,6 +1860,27 @@ def _count_cells(c):
                    for k, w in _counts(c))
 
 
+def _corrected_sentence(c):
+    """' You corrected 3 moves and 1 diagram.' from the counts of corrections the
+    build applied ('' when there are none)."""
+    parts = []
+    for key, one, many in (("moves", "move", "moves"), ("diagrams", "diagram", "diagrams"),
+                           ("sequences", "sequence placed in no line", "sequences placed in no line"),
+                           ("symbols", "piece symbol", "piece symbols")):
+        k = c.get(key, 0)
+        if k:
+            parts.append(f"{_n(k)} {one if k == 1 else many}")
+    if not parts:
+        return ""
+    text = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+    out = f" The run used your corrections of {text}."
+    k = c.get("symbol_moves", 0)
+    if k:
+        out += (f" The piece symbols you named decode {_n(k)} "
+                f"{'move' if k == 1 else 'moves'}.")
+    return out
+
+
 def index_html(book, thumbs, sizes, app=False):
     e = html.escape
     sel = book["selection"]
@@ -1763,6 +1899,7 @@ def index_html(book, thumbs, sizes, app=False):
                 f"readings, {_n(m.get('failed', 0))} {'is' if m.get('failed', 0) == 1 else 'are'} not "
                 f"read and {_n(m.get('waiting', 0))} {'waits' if m.get('waiting', 0) == 1 else 'wait'} "
                 f"for board reading (Stage 3).")
+    summary += _corrected_sentence(total.get("corrected") or {})
     parts = []
     by_page = {p["page"]: p for p in book["pages"]}
     for ch in book["chapters"]:
@@ -1812,6 +1949,8 @@ def index_html(book, thumbs, sizes, app=False):
         "selection": {"pages": sel.get("pages", {"exclude": []}),
                       "diagrams": sel.get("diagrams", {"exclude": [], "include": []})},
         "selBase": _selection_base(book),
+        "corrections": book.get("corrections") or corrections.empty(),
+        "app": app,
         "pages": [{"page": p["page"], "folio": p.get("folio"),
                    "diagrams": [{"id": d["id"], "kind": d["kind"], "label": d.get("label")}
                                 for d in p["diagrams"]]}
@@ -1835,6 +1974,7 @@ def index_html(book, thumbs, sizes, app=False):
         "__STYLE__": style.page_css(),
         "__INDEX_CSS__": INDEX_CSS,
         "__SELJS__": SELECTION_JS,
+        "__CORRJS__": CORRECTIONS_JS,
         "__JS__": INDEX_JS,
         "__DATA__": _json_script(data),
     }

@@ -113,7 +113,7 @@ class _Writer:
         self.doc.save(path)
 
 
-def make_book(path, game=GAME_EN):
+def make_book(path, game=GAME_EN, note7="The king has to walk into the open."):
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
@@ -142,7 +142,7 @@ def make_book(path, game=GAME_EN):
     w.line("7.dxc6 bxc6.")
     w.col(1)
     w.line(game[2], bold=True)
-    w.line("The king has to walk into the open.", indent=8)
+    w.line(note7, indent=8)
     w.line(game[3], bold=True)
     w.line("White has a strong attack.", indent=8)
     w.line("1-0", bold=True)

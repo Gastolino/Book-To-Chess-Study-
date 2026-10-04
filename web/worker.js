@@ -37,7 +37,7 @@ onmessage = async (event) => {
       const path = "/books/" + msg.name;
       py.FS.writeFile(path, new Uint8Array(msg.bytes));
       const t0 = performance.now();
-      const html = driver.process(path, say, msg.selection || null);
+      const html = driver.process(path, say, msg.selection || null, msg.corrections || null);
       postMessage({ type: "index", html, seconds: (performance.now() - t0) / 1000 });
     } else if (msg.type === "chapter") {
       const html = driver.chapter(msg.name, say, !!msg.small);
