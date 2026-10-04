@@ -258,8 +258,9 @@ CHAPTER_CSS = r"""
 .diagnote{margin:0 0 16px}
 .key{display:grid;margin:0 0 16px}
 .key > *{grid-area:1/1}
-.legend{visibility:hidden;display:flex;flex-wrap:wrap;align-content:start;gap:4px 20px}
-.reading .legend{visibility:visible}
+.legend{display:none;flex-wrap:wrap;align-content:start;gap:4px 20px}
+.reading .legend{display:flex}
+body:not(.reading) .key{display:none}
 .reading .key .help{visibility:hidden}
 .legend > span{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
 .legend .ls{white-space:normal}
@@ -324,6 +325,12 @@ svg.board .bo{fill:none;stroke:var(--line);stroke-width:1px}
 svg.board .co{fill:var(--muted);font-family:"DM Sans",system-ui,sans-serif}
 canvas.pic{display:block;width:100%;height:auto;outline:1px solid var(--line)}
 .boardnote{margin:8px 0 0}
+/* Outside reading mode the page holds only the book: the program's own
+   explanations show while "Show reading" is on. */
+body:not(.reading) .help,body:not(.reading) .boardnote,body:not(.reading) #linemeta,
+body:not(.reading) .lsec.generic,body:not(.reading) .where h1.generic,
+body:not(.reading) .pagefoot label.use,body:not(.reading) .pgn .muted,
+body:not(.reading) .offpage{display:none}
 .boardnote:empty{display:none}
 .boardarea.diagram #board,.boardarea.diagram #boardnote{display:none}
 .dpanel{display:grid;gap:8px}
@@ -955,6 +962,7 @@ function renderTree(){
   if (!L) {
     box.innerHTML = "<span class=none>No line is chosen. A click on a move on the page chooses its line.</span>";
     $("linetitle").textContent = "No line chosen"; $("linemeta").innerHTML = "";
+    $("lsec").classList.add("generic");
     return;
   }
   const root = D.nodes[L.root];
@@ -962,6 +970,8 @@ function renderTree(){
   box.innerHTML = "<button class='mv start" + (S.node === L.root ? " cur" : "") + "' tabindex='-1' data-node='" +
     L.root + "' title='Start position'>Start</button>" + renderLine(L.root, true) + first;
   $("linetitle").textContent = title(L.title);
+  // a title the program made up ("Page 12") is an explanation, not the book's
+  $("lsec").classList.toggle("generic", !L.header);
   $("linemeta").innerHTML = lineMeta(L);
 }
 function fitTree(){
@@ -1128,7 +1138,8 @@ function defaultView(){
   const g = governing();
   if (g) {
     selectNode(g[1], {fromPage: true});
-    say("The line “" + title(D.lines[g[0]].title) + "” begins on " + pageName(D.lines[g[0]].page) +
+    // an explanation, so it shows only while "Show reading" is on
+    if (reading()) say("The line “" + title(D.lines[g[0]].title) + "” begins on " + pageName(D.lines[g[0]].page) +
       " and goes on here. The board shows its position at the top of this page.");
     return;
   }
@@ -1440,7 +1451,7 @@ CHAPTER_HTML = """<!doctype html>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>__PIECES__</defs></svg>
 <header class="bar">
-<div class="where"><span class="book">__BOOK__</span><h1>__H1__</h1></div>
+<div class="where"><span class="book">__BOOK__</span><h1__H1CLASS__>__H1__</h1></div>
 <nav class="tools" aria-label="Pages">
 <span class="pnav"><button class="ib" id="prevpage" aria-label="Previous page" title="Previous page (Page Up)">__ICON_BACK__</button>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number">
@@ -1504,7 +1515,7 @@ CHAPTER_HTML = """<!doctype html>
 <p class="small muted" id="revsum"></p>
 <ul class="revlist" id="revlist"></ul>
 </section>
-<section class="sec lsec">
+<section class="sec lsec generic" id="lsec">
 <h2 class="ltitle" id="linetitle">No line chosen</h2>
 <p class="small muted" id="linemeta"></p>
 </section>
@@ -1563,6 +1574,7 @@ def chapter_data(book, ch, pgn_text):
                                                 "start_fen", "root", "status", "diagram",
                                                 "section", "result", "moves")}
             lines[L["id"]]["event"] = (L.get("header") or {}).get("event")
+            lines[L["id"]]["header"] = bool(L.get("header"))
             lines[L["id"]]["start_note"] = L.get("start_note") or ""
             lines[L["id"]]["chapter"] = L["chapter"]
             order.append(L["id"])
@@ -1658,6 +1670,8 @@ def chapter_html(book, ch, images, pgn_text, pgn_info):
         "__TITLE__": html.escape(f"{ch['label']} Reader"),
         "__BOOK__": html.escape(book["title"]),
         "__H1__": html.escape(chapter_heading(ch)),
+        # "Whole book" names no chapter of the book: shown only in reading mode
+        "__H1CLASS__": ' class="generic"' if ch.get("title") == "Whole book" else "",
         "__CHNAV__": "".join(nav),
         "__PGN__": pgn_block(games, waiting),
         "__STYLE__": style.page_css(),
