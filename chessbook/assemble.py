@@ -49,7 +49,15 @@ moves each at least, with no printed piece glyph or capture mark dropped to
 make it fit, and with no diagram named ("Diagram 430") or position set up in
 its sentence. Following main-font runs that continue its numbering continue
 it, across columns, pages and diagrams, until a heading, the next game
-header, a solution number, a result or the end of the chapter. Where the
+header, a solution number, a result or the end of the chapter. A heading
+only ends a decoded line when no main run continues it afterwards: one that
+continues its numbering and reads as legal play from its last position
+resumes it (a chess-font diagram set as text lines, a running title). Main-
+font moves named inside the notes ("Perhaps 15 ... Bf8"), in a box of advice
+that the book sets in the move font ("WARNING: ... for instance, 11 Qh4") or
+in a caption are notes, not moves of the line. A misread move number of a
+run that continues the line ("1 ... fxe4" for 7...fxe4, "s" for 5) is read
+as the number the line expects. Where the
 numbering skips moves that the text lacks, the program does not invent them:
 the decoded part of the line ends with a "gap" node (status failed, no move,
 with a reason) and the rest of the printed score follows unread. A run that
@@ -63,8 +71,10 @@ number among the exercises before it.
 Note runs become variations. A note run whose first move has the number of a
 move in the line becomes an alternative to that move; a run that continues a
 variation of the same note continues it ("..., followed by 15...Nxb4" can
-only continue it); a run inside parentheses branches off the variation that
-encloses it. Each placement is decoded from the position it implies and kept
+only continue it; "5.e5 in view of 5...Qa5+" continues 5.e5; "9 0-0 (or 9
+Bg5 ...) 9 ... d5 10 Bb3 and then: a) 10 ... b5" continues the variation
+that the parenthesis interrupted); a run inside parentheses or brackets
+branches off the variation that encloses it. Each placement is decoded from the position it implies and kept
 only when the moves read cleanly from there, and no printed capture mark is
 read as a quiet move. Runs the text gives as a threat or a plan
 ("threatening 13.Rh3"), runs whose sentence names another diagram (those
@@ -78,6 +88,12 @@ right after a decoded line, or the last move of an opening sequence from the
 initial position that the text gives just after the diagram ("This position
 arises after the opening moves 1.e4 e5 ..."). It is a guess for Stage 3 to
 check against its board reading.
+
+Move numbers: the book's habit is learnt from its text (book_numbering).
+In a book that prints numbers without a dot ("1 e4 c5 2 Nc3"), the
+tokenizer reads such numbers too (see movetext.tokenize); a number without
+dots names no side, so the narrow-table layout that repeats the number
+before Black's reply ("12" / "ttJxd5") reads as Black's move.
 
 Decoding uses movetext's glyph learning over the whole book: the book is
 assembled once with no glyph knowledge, a GlyphModel learns from the runs
@@ -93,7 +109,7 @@ import re
 import sys
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -102,8 +118,10 @@ import pymupdf
 
 from . import pdftext as pt
 from . import selection as sel
-from .movetext import GlyphModel, clean_run, decode, find_sequences
-from .movetext import LETTER_SETS, FIGURINES, _strip_suffix
+from .movetext import GlyphModel, clean_run, decode, find_sequences, numbering_counts
+from .movetext import DOTLESS_MIN, DOTLESS_SHARE
+from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
+from .movetext import _ocr_digit_slip
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -125,7 +143,7 @@ _MOVE_ONE_RE = re.compile(r"^(?:[0-9lI]{1,3} ?[.…•·]|[0-9lI]{1,2}$|[1lI]J[^
 # than moves played or recommended: such runs are not variations.
 _THREAT_RE = re.compile(
     r"\b(?:threat\w*|prepar(?:es|ing|ed) to|wants? to|wanting to|plans?|planning|"
-    r"intend\w*|resulting from|with the idea|aim\w* (?:at|to))\b", re.I)
+    r"intend\w*(?! to (?:play|continue|answer|meet))|resulting from|with the idea|aim\w* (?:at|to))\b", re.I)
 # Words that may stand between such a cue and the moves it introduces.
 _CONNECT_WORDS = {"and", "then", "followed", "by", "or", "with", "of", "the", "a", "an",
                   "to", "carry", "out", "play", "playing", "double", "move", "moves", "after",
@@ -150,8 +168,12 @@ _SETUP_RE = re.compile(r"\b(?:White|Black)\s*[:(]", re.I)
 _SENTENCE_END_RE = re.compile(r"(?:[^\W\d_]{2}[.!?]|;)\s|[.!?]\s+(?=[A-Z][a-z]+ )")
 _REAL_WORD_RE = re.compile(r"^[^\W\d_]{2,}")
 _BARE_NUMBER_RE = re.compile(r"^[0-9lIO]{1,3}$")
-_RESULT_NORM = {"1-0": "1-0", "l-0": "1-0", "1:0": "1-0", "0-1": "0-1", "0-l": "0-1",
-                "0:1": "0-1"}
+_NUMBER_LINE_RE = re.compile(r"^[0-9lIOS]{1,3}(?: [0-9lIOS])?(?: ?[.…•·]+)*$")
+_DOTS_RE = re.compile(r"^[.…•·]+$")
+# A move number at the end of a stretch of the notes ("... Perhaps I S ... ").
+_NOTE_NUMBER_END_RE = re.compile(r"(?:^|\s)[0-9lIOS]{1,3}(?: [0-9lIOS])?\s*(?:[.…•·]\s*){1,3}$")
+_RESULT_NORM = {"1-0": "1-0", "l-0": "1-0", "1:0": "1-0", "1-o": "1-0", "l-o": "1-0",
+                "0-1": "0-1", "0-l": "0-1", "0:1": "0-1", "o-1": "0-1", "o-l": "0-1"}
 
 
 # ---------------------------------------------------------------- helpers
@@ -160,6 +182,37 @@ def _ply(tok):
     if tok.number is None:
         return None
     return (tok.number - 1) * 2 + int(bool(tok.black))
+
+
+def _renumbered(run, ply):
+    """The run read with the first move number and side that ply implies, when
+    the number as printed can be read that way (OCR's "s" stands for 5 as well
+    as 8; a number without dots names no side), else None."""
+    first = run.tokens[0]
+    if first.kind != "number" or first.number is None or ply is None:
+        return None
+    n, black = ply // 2 + 1, bool(ply % 2)
+    if (n, black) == (first.number, bool(first.black)) or n not in _number_values(first):
+        return None
+    if first.side_known and bool(first.black) != black:
+        return None
+    toks = list(run.tokens)
+    _relabel(toks, n, black)
+    moves = [t for t in toks if t.kind == "move"]
+    return _Run(run.kind, toks, moves, run.start, run.end, run.depth, _ply(moves[0]), run.result,
+                run.home, run.context)
+
+
+def _first_moves(tokens, n):
+    """The tokens of a run up to its n-th move."""
+    out, k = [], 0
+    for t in tokens:
+        if t.kind == "move":
+            if k == n:
+                break
+            k += 1
+        out.append(t)
+    return out
 
 
 def _ply_label(ply):
@@ -596,8 +649,10 @@ def _fit(decs):
 
 
 class _Builder:
-    def __init__(self, doc, fonts, chapters, diagrams, selection, decoder, diagram_fens=None):
+    def __init__(self, doc, fonts, chapters, diagrams, selection, decoder, diagram_fens=None,
+                 dotless=False):
         self.doc, self.fonts, self.chapters = doc, fonts, chapters
+        self.dotless = dotless          # the book prints move numbers without a dot
         self.diagrams = diagrams
         self.selection = selection
         self.dec = decoder
@@ -674,12 +729,32 @@ class _Builder:
             else:
                 out.append(None)
         # A word in neither font (dots set in a symbol font: "1 • • • Re6+!")
-        # goes with the word before it, or else the word after it.
+        # goes with the word before it, or else the word after it; a plain word
+        # of prose in a third font (OCR fonts set body text in many) is a note.
+        for i, c in enumerate(out):
+            if c is None and len(words[i]) >= 2 and words[i].isalpha() and not _shape(words[i]):
+                out[i] = "n"
         for i, c in enumerate(out):
             if c is None:
                 before = next((out[j] for j in range(i - 1, -1, -1) if out[j]), None)
                 after = next((out[j] for j in range(i + 1, len(out)) if out[j]), None)
                 out[i] = before or after or line_c
+        # OCR sets a stretch of a line of moves in the body font now and then
+        # ("6 tiJgf3 .i.e7 7 o-o o-o"): moves and numbers between main-font
+        # words on both sides belong to the main line
+        i = 0
+        while i < len(out):
+            if out[i] != "n" or i == 0 or out[i - 1] != "m":
+                i += 1
+                continue
+            j = i
+            while j < len(out) and out[j] == "n":
+                j += 1
+            if j < len(out) and all(_shape(w) or _BARE_NUMBER_RE.match(w) or _DOTS_RE.match(w)
+                                    for w in words[i:j]) \
+                    and all(any(ch.isalnum() for ch in w) for w in (words[i - 1], words[j])):
+                out[i:j] = ["m"] * (j - i)
+            i = j
         return out
 
     def column_edges(self, page, col):
@@ -721,6 +796,7 @@ class _Builder:
     def build_stream(self, ch):
         st = _Stream()
         excluded_run = False
+        list_next = None        # the next item number of a numbered list in the prose
         for p in range(ch["start"], ch["end"] + 1):
             if not self.selection.page_selected(p):
                 if not excluded_run:
@@ -732,23 +808,50 @@ class _Builder:
             dpos = self.diagram_positions(p, lines)
             by_line = defaultdict(list)
             for did, k in dpos.items():
+                # a margin icon or a drawing that the selection leaves out is no
+                # position for a line to start from
+                if self.not_a_board(did):
+                    continue
                 by_line[k].append(did)
             st.event("page", p)
-            prev = None
+            prev = prev_classes = None
             for k, ln in enumerate(lines):
                 for did in sorted(by_line.get(k, []), key=sel.id_key):
                     st.event("diagram", did)
                 role = ln["role"]
+                if role == "label" and self.move_number_label(lines, k):
+                    role = "text"
+                if (role == "game_header" and prev is not None and prev["role"] == "text"
+                        and ln["text"].rstrip().endswith(".")
+                        and not self.para_start(p, ln, prev)
+                        and not re.search(r"[.!?:;)\]]\s*$", prev["text"])):
+                    # a sentence that names a game runs on to this line ("... in
+                    # L.Gomez" / "Cabrero-R.Sheldon, World Junior Championships, 1998.")
+                    role = "text"
                 if role in ("head", "coord", "blank", "label"):
                     continue
                 if role in ("heading", "game_header", "caption"):
                     st.event(role, ln)
                     prev = None
+                    if role != "caption":
+                        list_next = None
                     continue
                 classes = self.word_classes(ln)
+                if prev is not None and prev_classes:
+                    self.number_line_move(prev, prev_classes, ln, classes)
+                para = self.para_start(p, ln, prev)
+                if (not self.moves_font and not para and prev is not None
+                        and prev["role"] == "text" and all(c == "m" for c in classes)
+                        and not re.search(r"[.!?:;)\]]\s*$", prev["text"])
+                        and any(w.isalpha() and w.islower() and not _shape(w)
+                                for w in ln["text"].split(" "))):
+                    # a sentence of the notes that runs on to a line of moves
+                    # ("... Black's pieces are also well placed after 22.Ne2" /
+                    # "Qe5 23.f4 Qf6 or 23...Qc5.")
+                    classes = ["n"] * len(classes)
+                prev_classes = classes
                 text = ln["text"]
                 mask = 0
-                para = self.para_start(p, ln, prev)
                 if para:
                     st.event("para")
                 m = _EXERCISE_RE.match(text + (" " if re.fullmatch(r"\d{1,3}[a-d]?\.", text) else ""))
@@ -764,6 +867,16 @@ class _Builder:
                     if worded and not para and prev is not None \
                             and not re.search(r"[.!?:;)]$", prev["text"]):
                         worded = False       # a sentence that runs on over a line break
+                    if worded and (
+                            (m.group(1) == "1" and prev is not None
+                             and prev["text"].rstrip().endswith(":"))
+                            or (list_next is not None and m.group(1) == str(list_next))):
+                        # a numbered list in the prose ("Black gains in two ways:"
+                        # / "1. Black may play ...g6" / "2. ..."), not solutions
+                        list_next = int(m.group(1)) + 1
+                        worded = False
+                        m = None
+                if m:
                     if not rest.strip() or _MOVE_ONE_RE.match(rest) or worded:
                         mask = m.end()
                         st.event("exercise", m.group(1))
@@ -781,6 +894,48 @@ class _Builder:
                 st.event("diagram", did)
         st.finish()
         return st
+
+    def not_a_board(self, did):
+        """True for a picture the selection leaves out that is no board at all:
+        a margin icon, a drawing, or a strip far wider than high (a shaded box
+        behind a question, a rule)."""
+        if self.selection.diagram_selected(did):
+            return False
+        kind = self.kinds.get(did)
+        if kind in ("icon", "illustration"):
+            return True
+        r = self.diag_info[did]["rect"]
+        w, h = r[2] - r[0], r[3] - r[1]
+        return kind == "partial" and (w > 2.5 * h or h > 2.5 * w)
+
+    def move_number_label(self, lines, k):
+        """True when a number taken for a diagram's label is a move number set
+        in the move font on a line of its own, with the move on the next line
+        ("16" / "tLlb2!!" beside a board)."""
+        ln = lines[k]
+        if not self.moves_font or not _BARE_NUMBER_RE.match(ln["text"]) or k + 1 >= len(lines):
+            return False
+        if not all(s["role"] == "moves" for s in ln["spans"] if s["text"].strip()):
+            return False
+        nxt = lines[k + 1]
+        return (nxt["role"] in ("moves", "text") and nxt["col"] == ln["col"]
+                and bool(_shape(nxt["text"].split(" ")[0])))
+
+    @staticmethod
+    def number_line_move(prev, prev_classes, ln, classes):
+        """Moves set as a narrow table: a move number in the move font alone on
+        its line, the move on the next line ("12" / "ttJxd5"). OCR fonts often
+        set that move in another font; it belongs to the main line all the
+        same, as do the moves that follow it on its line."""
+        if (prev["col"] != ln["col"] or not all(c == "m" for c in prev_classes)
+                or not _NUMBER_LINE_RE.match(prev["text"])):
+            return
+        for k, w in enumerate(ln["text"].split(" ")):
+            if classes[k] == "m":
+                continue
+            if not (_shape(w) or _DOTS_RE.match(w)):
+                break
+            classes[k] = "m"
 
     def centred(self, page, ln):
         edges = self.column_edges(page, ln["col"])
@@ -821,10 +976,13 @@ class _Builder:
                     continue
                 # the main-font text holds moves only, so junk standing where
                 # the numbering expects a move is kept as an unreadable move
-                for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font):
-                    toks = [t.__class__(t.kind, t.raw, t.start + a, t.end + a, t.number, t.black,
-                                        t.side_known, t.layout) for t in s.tokens]
-                    for part in _split_at_diagrams(toks, diagrams):
+                for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font,
+                                        dotless=self.dotless):
+                    toks = [replace(t, start=t.start + a, end=t.end + a) for t in s.tokens]
+                    parts = _split_at_diagrams(toks, diagrams)
+                    if kind == "main" and self.moves_font:
+                        parts = [q for part in parts for q in self.split_inline(st, part)]
+                    for part in parts:
                         moves = [t for t in part if t.kind == "move"]
                         if not moves:
                             continue
@@ -833,6 +991,60 @@ class _Builder:
                         out.append(_Run(kind, part, moves, part[0].start, part[-1].end, s.depth,
                                         _ply(moves[0]), res))
         out.sort(key=lambda r: (r.start, r.kind))
+        return out
+
+    def main_prose_before(self, off):
+        """True when words of prose in the move font stand before off on its
+        printed line ("pawn to take; for instance, 11 Qh4 ...")."""
+        i = self.line_index(self.st, off)
+        if i < 0:
+            return False
+        seg = self.st.main_text[self.st.lines[i].start:off]
+        return any(re.fullmatch(r"(?=[a-z]*[aeiouy])[a-z]{3,}", w) and not _shape(w)
+                   for w in re.split(r"[\s,;:.()]+", seg))
+
+    def prose_line(self, off):
+        """True when the printed line holding off has words of prose in it,
+        whatever their font, or continues a sentence from the line before."""
+        i = self.line_index(self.st, off)
+        if i < 0:
+            return False
+
+        def prose(k):
+            words = self.st.lines[k].line["text"].split(" ")
+            return sum(1 for w in words if len(w) >= 3 and w.isalpha() and not _shape(w)) >= 2
+
+        if prose(i):
+            return True
+        # or the sentence of the line before runs on to this line
+        return (i > 0 and self.st.lines[i].start == off and prose(i - 1)
+                and not re.search(r"[.!?:;]\s*$", self.st.lines[i - 1].line["text"]))
+
+    @staticmethod
+    def line_index(st, off):
+        return bisect.bisect_right(st.starts, off) - 1
+
+    def split_inline(self, st, toks):
+        """Split off a move set in the move font inside a sentence of the notes
+        whose move number stands in the notes' font ("Perhaps I S ... .tf8 was
+        still the best"): in the main-font text it follows the main line's
+        last move directly, and find_sequences would take it for the next
+        move. It starts a run of its own (a note, see inline_run) that ends
+        where a move number begins a new line."""
+        out, cur, inline = [], [], False
+        for t in toks:
+            line = self.line_index(st, t.start)
+            new_line = bool(cur) and self.line_index(st, cur[-1].start) != line
+            if new_line and t.kind == "move" and self.inline_at(st, t.start) \
+                    and _NOTE_NUMBER_END_RE.search(st.note_text[max(0, t.start - 40):t.start]):
+                out.append(cur)
+                cur, inline = [], True
+            elif new_line and inline and t.kind == "number":
+                out.append(cur)
+                cur, inline = [], False
+            cur.append(t)
+        if cur:
+            out.append(cur)
         return out
 
     # -------------------------------------------------------- chapter
@@ -862,6 +1074,7 @@ class _Builder:
         self.section_raw = ""
         self.prev_heading = None
         self.last_closed = None
+        self.suspended = None           # (line, offset): a line a heading interrupted
         prev_kind = None
         self.now = 0
         for off, _, _, kind, x in items:
@@ -869,11 +1082,13 @@ class _Builder:
             a = self.active
             if a is not None and a.close_at is not None and off >= a.busy_until:
                 self.close(max(a.close_at, a.busy_until))
+            if kind in ("game_header", "break", "diagram", "exercise"):
+                self.close_suspended()          # the heading did end the line
             if kind in ("heading", "game_header", "break", "diagram", "exercise"):
                 self.flush_pre_notes()
             a = self.active
             if kind == "heading":
-                self.close(off)
+                self.suspend(off)
                 raw = x["text"]
                 ph = self.prev_heading
                 joined = (prev_kind == "heading" and ph is not None and ph["page"] == x["page"]
@@ -1127,14 +1342,19 @@ class _Builder:
         """True for main-font moves inside a sentence of body text ("should White
         play 1.g6+, the reply would be ..."): set in the move font, but
         mentioned in the notes rather than played."""
-        st = self.st
-        i = bisect.bisect_right(st.starts, run.start) - 1
+        return self.inline_at(self.st, run.start)
+
+    @staticmethod
+    def inline_at(st, off):
+        """True when the main-font text at off stands inside a sentence of body
+        text (see inline_run)."""
+        i = bisect.bisect_right(st.starts, off) - 1
         if i < 0:
             return False
         tl = st.lines[i]
         if tl.line["role"] != "text":
             return False
-        if any(ch.isalpha() for ch in st.note_text[tl.start:run.start].replace(NOTE_BREAK, " ")):
+        if any(ch.isalpha() for ch in st.note_text[tl.start:off].replace(NOTE_BREAK, " ")):
             return True
         # a printed line that the PDF splits at a wide gap: body words before
         # the run on the same row
@@ -1283,14 +1503,31 @@ class _Builder:
 
     # -------------------------------------------------------- main runs
     def on_main(self, run):
+        if self.suspended is not None:
+            L = self.suspended[0]
+            if run.ply != L.next_ply:
+                run = _renumbered(run, L.next_ply) or self.misnumbered(L, run) or run
+            if not self.resume(run):
+                self.close_suspended()
         L = self.active
+        if L is not None and run.ply != L.next_ply:
+            run = _renumbered(run, L.next_ply) or self.misnumbered(L, run) or run
         P = run.ply
+        first = run.tokens[0]
+        if self.main_prose_before(run.start) or (
+                first.kind == "number" and first.number is None and self.prose_line(run.start)):
+            # "WARNING: ... 10 ... gxf5 is always very risky; for instance,
+            # 11 Qh4", "playing ... d5 in one go": moves named in a box of
+            # advice that the book sets in the move font, not moves of the game
+            self.on_note(run)
+            return
         if P is None and L is not None and run.moves[0].black:
             # "... Kd8": Black's move with no number. When the line expects
             # White's move, White's move is missing from the text.
             P = L.next_ply if L.next_ply % 2 == 1 else L.next_ply + 1
         solution = self.exercise is not None and L is None
-        if (L is None or P != L.next_ply) and not solution and self.inline_run(run):
+        if (L is None or P != L.next_ply or run.tokens[0].kind != "number") and not solution \
+                and self.inline_run(run):
             self.on_note(run)                   # moves mentioned in a sentence
             return
         if P == 0:
@@ -1353,6 +1590,27 @@ class _Builder:
             self.active = L2
             self.extend(L2, run)
             self.adopt_pre_notes(L2)
+
+    def misnumbered(self, L, run):
+        """The run renumbered to continue L when its printed number differs from
+        the expected one in a digit that OCR misreads ("1 ... fxe4" for 7...fxe4)
+        and its moves read cleanly as the continuation of L, else None."""
+        first = run.tokens[0]
+        if (L.waiting or L.broken or not L.last_fen or first.kind != "number"
+                or first.number is None):
+            return None
+        n, black = L.next_ply // 2 + 1, bool(L.next_ply % 2)
+        if first.side_known and bool(first.black) != black:
+            return None
+        if not _ocr_digit_slip(first.raw, n):
+            return None
+        toks = list(run.tokens)
+        _relabel(toks, n, black)
+        if _fit(self.dec.run(L.last_fen, toks))[0] != 0:
+            return None
+        moves = [t for t in toks if t.kind == "move"]
+        return _Run(run.kind, toks, moves, run.start, run.end, run.depth, _ply(moves[0]),
+                    run.result, run.home, run.context)
 
     def gap(self, L, run, P, follow=True):
         """The numbering skips moves that the text does not show (P is the ply
@@ -1664,6 +1922,11 @@ class _Builder:
                     add(v["last"], "branch-end")
             if cont and cont[-1]["next"] == ply:
                 add(cont[-1]["last"], "continue")
+            # an earlier variation of the note that ends where the run begins
+            # ("9 0-0 (or 9 Bg5 ...) 9 ... d5 10 Bb3 and then: a) 10 ... b5")
+            for v in reversed(vars_):
+                if v["next"] == ply and v["depth"] <= run.depth:
+                    add(v["last"], "resume")
             for v in reversed(vars_):
                 if ply in v["plies"]:
                     add(self.nodes[v["plies"][ply]]["parent"], "branch")
@@ -1701,8 +1964,8 @@ class _Builder:
             best, tried = None, None
             for parent, how in cands:
                 fen = self.nodes[parent]["fen"]
-                if fen is None:
-                    continue
+                if fen is None or (how == "resume" and best is not None):
+                    continue            # an older variation only when nothing nearer reads
                 decs = self.dec.run(fen, run.tokens)
                 f = _fit(decs)
                 if any(d.capture_mark and d.san and "x" not in d.san for d in decs):
@@ -1814,7 +2077,46 @@ class _Builder:
                     L.replace.append((t.start, t.end, text))
 
     # -------------------------------------------------------- closing
+    def suspend(self, off):
+        """A heading interrupts the active line. The line is held open instead
+        of closed when its decoded moves could go on: when the next main run
+        continues its numbering and reads as legal play from its last
+        position, the heading was a line inside the game (a chess-font
+        diagram, a running title) and the game goes on (see resume)."""
+        L = self.active
+        if L is None:
+            return                  # a suspended line stays so over several headings
+        if L.waiting or L.broken or not L.main_tok or not L.last_fen:
+            self.close(off)
+            return
+        self.close_suspended()
+        self.suspended = (L, off)
+        self.active = None
+
+    def resume(self, run):
+        """Reopen the suspended line for a main run that continues it; True when
+        it did."""
+        L, off = self.suspended
+        if run.ply != L.next_ply or self.pending_header is not None:
+            return False
+        if _fit(self.dec.run(L.last_fen, _first_moves(run.tokens, 4)))[0] != 0:
+            return False
+        self.suspended = None
+        self.active = L
+        self.adopt_pre_notes(L)
+        return True
+
+    def close_suspended(self):
+        if self.suspended is None:
+            return
+        L, off = self.suspended
+        self.suspended = None
+        active, self.active = self.active, L
+        self.close(off)
+        self.active = active
+
     def close(self, off):
+        self.close_suspended()
         L = self.active
         self.active = None
         if L is None:
@@ -1919,9 +2221,10 @@ class _Builder:
 
 # ---------------------------------------------------------------- top level
 
-def _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens, only=None):
+def _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens, only=None,
+              dotless=False):
     dec = _Decoder(glyphs, letters)
-    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens)
+    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens, dotless)
     for ci, ch in enumerate(chapters):
         if ch["end"] < ch["start"]:
             continue
@@ -1952,13 +2255,15 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     diagrams = sel.expand_boards(load_stage1(pdf_path, out_root, doc.page_count))
     chapters = book_chapters(structure, doc.page_count)
     selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
-    say(f"layout and structure read in {time.perf_counter() - t0:.1f} s")
+    numbering = book_numbering(doc)
+    say(f"layout and structure read in {time.perf_counter() - t0:.1f} s; move numbers "
+        f"{'without' if numbering['dotless'] else 'with'} dots")
     glyphs = GlyphModel()
     timings = []
     for k in range(max(1, passes)):
         t1 = time.perf_counter()
         builder, dec = _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters,
-                                 diagram_fens)
+                                 diagram_fens, dotless=numbering["dotless"])
         timings.append(round(time.perf_counter() - t1, 1))
         say(f"pass {k + 1}: {len(builder.lines)} lines, {len(builder.nodes)} nodes, "
             f"{dec.calls} decodes in {timings[-1]} s")
@@ -1967,6 +2272,7 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
             for decs in dec.accepted:
                 glyphs.learn_run(decs)
     book = _book_dict(pdf_path, doc, chapters, diagrams, selection, builder, glyphs, structure)
+    book["numbering"] = numbering
     book["stats"]["seconds"] = round(time.perf_counter() - t0, 1)
     book["stats"]["pass_seconds"] = timings
     if write:
@@ -1975,6 +2281,15 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
         out.write_text(json.dumps(book, ensure_ascii=False, separators=(",", ":")),
                        encoding="utf-8")
     return book
+
+
+def book_numbering(doc):
+    """How the book numbers its moves, learnt from its text: {"dotless": True when
+    it prints numbers without a dot ("1 e4 c5 2 Nf3"), "counts": the clean
+    dotless and dotted examples found (movetext.numbering_counts)}."""
+    counts = numbering_counts(page.get_text() for page in doc)
+    dotless = counts["dotless"] >= DOTLESS_MIN and counts["dotless"] >= DOTLESS_SHARE * counts["dotted"]
+    return {"dotless": dotless, "counts": counts}
 
 
 def _book_title(doc, structure, pdf_path):
