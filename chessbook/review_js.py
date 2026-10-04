@@ -968,13 +968,20 @@ function applyPatch(p){
   for (const id of p.removed || []) delete D.nodes[id];
   Object.assign(D.nodes, p.nodes || {});
   if (p.lines) { D.lines = p.lines; D.lineOrder = p.lineOrder; }
-  for (const k in (p.pages || {})) if (D.pages[k]) Object.assign(D.pages[k], p.pages[k]);
+  for (const k in (p.pages || {})) if (D.pages[k]) {
+    Object.assign(D.pages[k], p.pages[k]);
+    for (const d of D.pages[k].diagrams || []) kinds[d.id] = d.kind;
+  }
   for (const k of ["unattached", "dismissed", "symbols", "pgn"]) if (p[k] !== undefined) D[k] = p[k];
   if (p.corrections) { D.corrections = p.corrections; FIX.rebase(p.corrections); }
+  // a new reading of the chapter while the app reads the book (see progressive.py)
+  const reread = p.reading !== undefined;
+  if (reread) { D.reading = p.reading; readingState(); }
+  // a renamed move wins: a new reading may give the same id to another move
   const ren = p.renamed || {};
-  if (S.node && !D.nodes[S.node]) S.node = ren[S.node] || null;
+  if (S.node && (ren[S.node] || !D.nodes[S.node])) S.node = ren[S.node] || null;
   const edit = RV.edit;
-  if (edit && edit.node && !D.nodes[edit.node]) edit.node = ren[edit.node] || null;
+  if (edit && edit.node && (ren[edit.node] || !D.nodes[edit.node])) edit.node = ren[edit.node] || null;
   if (S.node) S.line = D.nodes[S.node].line;
   else if (S.line && !D.lines[S.line]) S.line = null;
   showPage(S.page);
@@ -988,7 +995,11 @@ function applyPatch(p){
   if (pgn) pgn.disabled = !D.pgn;
   if (S.node) history.replaceState(null, "", "#node=" + S.node);
   setState();
-  say(p.progress || "Your correction is applied.");
+  // a new reading speaks only in reading mode; the top bar already says how far the app has come
+  if (!reread || reading()) say(p.progress || "Your correction is applied.");
+  else say("");
+  // corrections stored in this browser that the new reading does not hold yet
+  if (reread && inApp() && FIX.anyPending()) liveApply();
 }
 window.applyPatch = applyPatch;
 function initPencil(){

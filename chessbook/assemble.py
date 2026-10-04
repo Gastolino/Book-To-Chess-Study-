@@ -575,6 +575,23 @@ def load_stage1(pdf_path, output_dir=None, page_count=None):
     """Stage 1's diagrams.json for the book. When output_dir lacks it, the
     project's own Stage 1 results for the same book are copied, or Stage 1 is
     run (it writes into ./output/<stem>/stage1 of its working directory)."""
+    return _drain(load_stage1_steps(pdf_path, output_dir, page_count))
+
+
+def _drain(steps):
+    """Run a generator of steps to its end and return its value."""
+    while True:
+        try:
+            next(steps)
+        except StopIteration as done:
+            return done.value
+
+
+def load_stage1_steps(pdf_path, output_dir=None, page_count=None, first=None, found=None):
+    """load_stage1 in steps of a few pages (yields (pages done, page count)).
+    first and found go to stage1_inspect.analyse_steps when Stage 1 runs:
+    first chooses the pages to inspect first, and found (a dict) receives
+    the findings of every page inspected so far."""
     import shutil
     import tempfile
     pdf_path = Path(pdf_path).resolve()
@@ -595,7 +612,15 @@ def load_stage1(pdf_path, output_dir=None, page_count=None):
                 sys.path.insert(0, str(PROJECT_ROOT))
             import stage1_inspect
             src = Path(tempfile.mkdtemp(prefix="stage1_"))
-            stage1_inspect.analyse(pdf_path, src)
+            steps = stage1_inspect.analyse_steps(pdf_path, src, first=first)
+            while True:
+                try:
+                    done, n, pages = next(steps)
+                except StopIteration:
+                    break
+                if found is not None:
+                    found.update(pages)
+                yield done, n
         dest.mkdir(parents=True, exist_ok=True)
         for name in ("diagrams.json", "numbers.json", "pages.json"):
             if (src / name).exists() and (src / name).resolve() != (dest / name).resolve():
@@ -1322,6 +1347,13 @@ class _Builder:
 
     # -------------------------------------------------------- chapter
     def chapter(self, ci, ch):
+        _drain(self.chapter_steps(ci, ch))
+
+    def chapter_steps(self, ci, ch, slice_seconds=None):
+        """chapter() in slices of about slice_seconds each (none when None):
+        a generator that yields between them, for a caller with other work
+        to do (the browser app). The slices do not change the result."""
+        mark = time.perf_counter()
         st = self.build_stream(ch)
         self.st, self.ci = st, ci
         runs = self.runs(st)
@@ -1367,6 +1399,9 @@ class _Builder:
         prev_kind = None
         self.now = 0
         for off, _, _, kind, x in items:
+            if slice_seconds is not None and time.perf_counter() - mark > slice_seconds:
+                yield
+                mark = time.perf_counter()
             self.now = off
             a = self.active
             if a is not None and a.close_at is not None and off >= a.busy_until:
@@ -4127,27 +4162,71 @@ def _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagra
               dotless=False, readings=None, fix=None):
     """One assembly pass. The corrections (fix) are not used here: the
     caller applies them with _Builder.finalize."""
+    b, dec, _ = _drain(_assemble_steps(doc, fonts, chapters, diagrams, selection, glyphs, letters,
+                                       diagram_fens, only, dotless, readings))
+    return b, dec
+
+
+CHAPTER_SLICE = 0.5     # seconds of a chapter's assembly per step of build_steps
+
+
+def _assemble_steps(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens,
+                    only=None, dotless=False, readings=None, ctx=None, pass_no=None):
+    """_assemble in steps: yields ("chapter", (pass_no, chapter index)) after
+    each chapter, with ctx["builder"] the builder at work, and when ctx is
+    given, ("part", (pass_no, chapter index)) inside a chapter about every
+    CHAPTER_SLICE seconds. Returns (builder, decoder, seconds spent in the
+    pass)."""
     dec = _Decoder(glyphs, letters)
     b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens, dotless, readings)
+    if ctx is not None:
+        ctx["builder"] = b
+    seconds = 0.0
     for ci, ch in enumerate(chapters):
         if ch["end"] < ch["start"]:
             continue
         if only is not None and ci not in only:
             continue
-        b.chapter(ci, ch)
-    return b, dec
+        t = time.perf_counter()
+        for _ in b.chapter_steps(ci, ch, CHAPTER_SLICE if ctx is not None else None):
+            seconds += time.perf_counter() - t
+            yield "part", (pass_no, ci)
+            t = time.perf_counter()
+        seconds += time.perf_counter() - t
+        yield "chapter", (pass_no, ci)
+    return b, dec, seconds
 
 
 def read_boards(doc, diagrams, known=None, say=None):
     """Stage 3's readings of the book's boards ({id: reading}), or {} when
     the board reader cannot run (OpenCV missing)."""
+    return _drain(read_boards_steps(doc, diagrams, known, say, batch=1 << 30))
+
+
+BOARD_BATCH = 20        # board pictures per step of read_boards_steps
+
+
+def read_boards_steps(doc, diagrams, known=None, say=None, batch=BOARD_BATCH):
+    """read_boards in steps: yields ("boards", (pictures done, pictures))
+    after each batch of pictures; the readings that need the whole book
+    (the piece drawings grouped and named) come in the last step."""
     try:
         from . import boards
     except ImportError as exc:          # pragma: no cover - depends on the platform
         (say or (lambda *_: None))(f"board reading skipped: {exc}")
         return {}
     t = time.perf_counter()
-    out = boards.read_book_boards(doc, diagrams, known=known, progress=say)
+    if any(d.get("boards") for d in diagrams):
+        diagrams = sel.expand_boards(diagrams)
+    ids = sel.diagram_ids(diagrams)
+    pics = boards.Pictures(doc)
+    cells = {}
+    for j in range(0, len(ids), batch):
+        for did, rec in zip(ids[j:j + batch], diagrams[j:j + batch]):
+            cells[did] = boards.picture_cells(pics, rec)
+        if len(ids) > batch:
+            yield "boards", (min(j + batch, len(ids)), len(ids))
+    out = boards.read_book_boards(doc, diagrams, known=known, progress=say, cells=cells)
     if say:
         n = sum(1 for r in out.values() if r.get("fen"))
         say(f"boards read in {time.perf_counter() - t:.1f} s: {n} positions")
@@ -4187,7 +4266,44 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     every reading of it, a corrected move token reads as the move given, a
     corrected piece symbol reads as its piece throughout the book, and a
     sequence placed in no line goes where the reader tied it.
+
+    build_steps does the same work in small steps (the browser app).
     """
+    book = _drain(build_steps(pdf_path, output_dir, books_dir, letters, passes, diagram_fens,
+                              progress, boards, readings, corrections, state))
+    if write:
+        out = Path(output_dir or OUTPUT_DIR) / Path(pdf_path).stem / "book.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(book, ensure_ascii=False, separators=(",", ":")),
+                       encoding="utf-8")
+    return book
+
+
+def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3,
+                diagram_fens=None, progress=None, boards=True, readings=None,
+                corrections=None, state=None, ctx=None):
+    """build_book in small steps, for a caller with other work to do between
+    them (the browser app reads chapters while the book is assembled, see
+    progressive.py). A generator: it yields (event, info) after each step
+    and returns the book (as build_book does, without writing it). The
+    events are "structure" (the layout and the chapters are known), "stage1"
+    ((pages inspected, pages)), "diagrams" (Stage 1 is complete), "chapter"
+    ((pass, chapter index), after each chapter of each assembly pass), "part"
+    (the same, inside a chapter, about every CHAPTER_SLICE seconds),
+    "boards" ((pictures read, pictures)), "pass" (pass number, after each
+    pass) and "restructure" (the figurines were learnt and the book is read
+    again from the start, its chapters perhaps changed).
+
+    ctx, a dict, receives what the build knows at each step: doc, fonts,
+    structure, chapters, numbering, the Stage 1 findings so far
+    ("stage1_found", page index -> stage1_inspect.inspect_page) or the
+    diagrams once complete, selection, text_fens, diagram_fens, readings,
+    glyphs (the glyph model of the pass at work), builder and pass_no. The
+    caller may set ctx["first_pages"] (a callable giving the page numbers
+    Stage 1 is to inspect first) and ctx["fix"] (the corrections to apply at
+    the end, in place of corrections); neither changes the result otherwise.
+    """
+    ctx = {} if ctx is None else ctx
     t0 = time.perf_counter()
     pdf_path = Path(pdf_path)
     out_root = Path(output_dir or OUTPUT_DIR)
@@ -4195,8 +4311,18 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     doc = pymupdf.open(pdf_path)
     fonts = pt.book_fonts(doc)
     structure = pt.book_structure(doc)
+    chapters = book_chapters(structure, doc.page_count)
+    numbering = book_numbering(doc)
+    ctx.update(pdf=pdf_path, books_dir=books_dir, letters=letters, doc=doc, fonts=fonts,
+               structure=structure, chapters=chapters, numbering=numbering,
+               glyphs=GlyphModel(), readings=dict(readings or {}), pass_no=0, builder=None,
+               stage1_found={}, diagrams=None)
+    yield "structure", None
     # a picture of stacked boards counts as one diagram per board
-    diagrams = sel.expand_boards(load_stage1(pdf_path, out_root, doc.page_count))
+    raw = yield from load_stage1_steps(
+        pdf_path, out_root, doc.page_count,
+        first=lambda: (ctx.get("first_pages") or (lambda: []))(), found=ctx["stage1_found"])
+    diagrams = sel.expand_boards(raw)
     # Diagrams printed as text in a chess font carry their position already.
     text_fens = {did: d["fen"] for did, d in zip(sel.diagram_ids(diagrams), diagrams)
                  if d.get("fen")}
@@ -4207,18 +4333,20 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
         fixes.load(pdf_path, books_dir)
     if text_fens or diagram_fens is not None:
         diagram_fens = {**(diagram_fens or {}), **text_fens}
-    chapters = book_chapters(structure, doc.page_count)
     selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
-    numbering = book_numbering(doc)
+    ctx.update(diagrams=diagrams, text_fens=text_fens, diagram_fens=diagram_fens,
+               selection=selection)
     say(f"layout and structure read in {time.perf_counter() - t0:.1f} s; move numbers "
         f"{'without' if numbering['dotless'] else 'with'} dots")
+    yield "diagrams", None
     glyphs = GlyphModel()
     timings = []
     readings = dict(readings or {})
     if read_now and passes <= 1:
-        readings = read_boards(doc, diagrams, say=say)
+        readings = yield from read_boards_steps(doc, diagrams, say=say)
         diagram_fens = {**usable_fens(readings), **text_fens}
         read_now = False
+        ctx.update(readings=readings, diagram_fens=diagram_fens)
     figmap, learnt = {}, {}
     fig_cands = figurines.candidates(
         (pt._raw_page(doc, i) for i in range(doc.page_count)),
@@ -4229,15 +4357,18 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
             # positions the first pass reached at diagrams teach the reader
             known = {did: builder.nodes[nid]["fen"] for did, nid in builder.after_node.items()
                      if builder.nodes.get(nid, {}).get("fen")}
-            readings = read_boards(doc, diagrams, known=known, say=say)
+            readings = yield from read_boards_steps(doc, diagrams, known=known, say=say)
             diagram_fens = {**usable_fens(readings), **text_fens}
             read_now = False
-        t1 = time.perf_counter()
-        builder, dec = _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters,
-                                 diagram_fens, dotless=numbering["dotless"], readings=readings)
-        timings.append(round(time.perf_counter() - t1, 1))
+            ctx.update(readings=readings, diagram_fens=diagram_fens)
+        ctx.update(glyphs=glyphs, pass_no=len(timings) + 1, first_pass=(k == 0))
+        builder, dec, secs = yield from _assemble_steps(
+            doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens,
+            dotless=numbering["dotless"], readings=readings, ctx=ctx, pass_no=len(timings) + 1)
+        timings.append(round(secs, 1))
         say(f"pass {len(timings)}: {len(builder.lines)} lines, {len(builder.nodes)} nodes, "
             f"{dec.calls} decodes in {timings[-1]} s")
+        yield "pass", len(timings)
         if k + 1 < passes or fig_cands:
             learned = GlyphModel()
             for decs in dec.accepted:
@@ -4262,9 +4393,14 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
                 selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
                 say(f"read {len(figmap)} figurine codes as piece letters; reading again")
                 glyphs = GlyphModel()
+                ctx.update(fonts=fonts, structure=structure, chapters=chapters,
+                           selection=selection, figmap=figmap)
+                yield "restructure", None
                 k = 0
                 continue
         k += 1
+    if ctx.get("fix") is not None:
+        fix = fixes.normalise(ctx["fix"])
     # the reader's corrections, applied by replaying the lines they touch
     builder.finalize(fix)
     book = _book_dict(pdf_path, doc, chapters, diagrams, selection, builder, glyphs, structure,
@@ -4280,11 +4416,6 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
                      letters=letters, pdf=pdf_path)
     book["stats"]["seconds"] = round(time.perf_counter() - t0, 1)
     book["stats"]["pass_seconds"] = timings
-    if write:
-        out = out_root / pdf_path.stem / "book.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(book, ensure_ascii=False, separators=(",", ":")),
-                       encoding="utf-8")
     return book
 
 

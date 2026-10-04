@@ -113,13 +113,17 @@ class _Writer:
         self.doc.save(path)
 
 
-def make_book(path, game=GAME_EN, note7="The king has to walk into the open."):
+def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False):
+    """The little test book: one chapter, or with second a second chapter
+    after it (pages 10 and 11) that holds another game."""
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
     w.page(head=False)
     w.pg.insert_text((40, 60), "Contents", fontname="tiro", fontsize=20)
     w.pg.insert_text((40, 90), "Chapter 1 First Steps 3", fontname="tiro", fontsize=10)
+    if second:
+        w.pg.insert_text((40, 105), "Chapter 2 Further Steps 10", fontname="tiro", fontsize=10)
     # page 3: chapter title
     w.page(head=False)
     w.pg.insert_text((40, 80), "Chapter 1", fontname="tiro", fontsize=24)
@@ -177,6 +181,26 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open."):
         w.page()
         w.prose(n=10)
         w.line("1.d4 d5 2.c4 e6 3.Nc3 Nf6", bold=True)
+        w.prose(until=H - 60)
+        w.col(1)
+        w.prose(until=H - 60)
+    if second:
+        w.page(head=False)
+        w.pg.insert_text((40, 80), "Chapter 2", fontname="tiro", fontsize=24)
+        w.pg.insert_text((40, 112), "Further Steps", fontname="tiro", fontsize=18)
+        w.y = 150
+        w.prose(until=H - 60)
+        w.col(1)
+        w.y = 150
+        w.prose(until=H - 60)
+        w.page()
+        w.prose(n=6)
+        w.mixed([("Brown - Green, ", True), ("Paris 1902", False)])
+        w.line("1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6", bold=True)
+        w.line("The main line of the Spanish game.", indent=8)
+        w.line("5.O-O Be7 6.Re1 b5 7.Bb3 d6 8.c3 O-O", bold=True)
+        w.line("Both sides have completed their development.", indent=8)
+        w.line("9.h3 Na5 10.Bc2 c5 11.d4 Qc7 1/2-1/2", bold=True)
         w.prose(until=H - 60)
         w.col(1)
         w.prose(until=H - 60)

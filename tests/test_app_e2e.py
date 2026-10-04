@@ -8,7 +8,10 @@ wheels for Pyodide, since the CDN may be out of reach:
     CHESSBOOK_WHEELS    a folder holding pymupdf-*.whl and chess-*.whl
 
 It is skipped when they are missing. The book is the generated test book with
-a garbled game (fast, and with every kind of correction), or the PDF that
+a garbled game and a second chapter (fast, and with every kind of
+correction; each step of its reading is slowed down by CHESSBOOK_APP_PACE
+milliseconds, 2000 by default, so that the test reads it while it is read),
+or the PDF that
 CHESSBOOK_APP_BOOK names (corpus/gpa.pdf exercises the piece-symbol batches
 across chapters). numpy and OpenCV need not be there: the app then reads the
 book without board reading.
@@ -61,10 +64,13 @@ def test_app_in_chromium(tmp_path):
                     "--local", str(PYODIDE), "--pymupdf", str(_wheel("pymupdf-*.whl")),
                     "--chess", str(_wheel("chess-*.whl"))], check=True)
     book = os.environ.get("CHESSBOOK_APP_BOOK")
+    # the generated book is read in a few seconds: each step of its reading is
+    # slowed down, so that the test can read it while it is read
+    pace = os.environ.get("CHESSBOOK_APP_PACE", "0" if book else "2000")
     if not book:
         from test_assemble import make_book
         from test_corrections import GARBLED, NOTE
-        book = str(make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE))
+        book = str(make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, second=True))
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), functools.partial(_Handler, directory=str(site)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -72,7 +78,8 @@ def test_app_in_chromium(tmp_path):
     try:
         env = dict(os.environ, NODE_PATH=NODE_PATH)
         proc = subprocess.run([NODE, str(ROOT / "tests" / "app_e2e.js"),
-                               f"http://127.0.0.1:{server.server_address[1]}/", book, str(screens)],
+                               f"http://127.0.0.1:{server.server_address[1]}/?pace={pace}", book,
+                               str(screens)],
                               capture_output=True, text=True, env=env, timeout=3600)
     finally:
         server.shutdown()
@@ -86,7 +93,14 @@ def test_app_in_chromium(tmp_path):
     assert {"the following moves turn decoded again without navigation",
             "the contents page counts the corrections",
             "the move correction persists across chapters",
-            "reading the book again applies the stored corrections"} <= names
+            "reading the book again applies the stored corrections",
+            "the contents page shows while the book is still read",
+            "the first chapter shows its moves before the reading finishes",
+            "the moves of the first reading can be stepped through",
+            "reading mode says that the moves are a first reading",
+            "the final reading reaches the open chapter as a patch",
+            "the final reading keeps the chosen move",
+            "the correction made while the book was read survives the final reading"} <= names
     assert {c["mode"] for c in res["checks"]} >= {"desktop", "phone"}
     print(json.dumps(res["timings"], indent=1))
     print("\n".join(res["notes"]))

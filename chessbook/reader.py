@@ -84,6 +84,11 @@ def page_jpeg(doc, page, dpi, quality, clip=None):
     return pix.tobytes("jpg", jpg_quality=quality)
 
 
+def thumb(doc, page):
+    """A page thumbnail of the contents page, as base64 JPEG."""
+    return _b64(page_jpeg(doc, page, THUMB_DPI, THUMB_QUALITY))
+
+
 def _b64(data):
     return base64.b64encode(data).decode("ascii")
 
@@ -256,6 +261,8 @@ CHAPTER_CSS = r"""
 .offpage{margin:0 0 16px;padding-left:12px;border-left:1px solid var(--doubt)}
 .offpage:empty,.diagnote:empty{display:none}
 .diagnote{margin:0 0 16px}
+.provnote{display:none;margin:0 0 16px}
+.reading.first .provnote{display:block}
 .key{display:grid;margin:0 0 16px}
 .key > *{grid-area:1/1}
 .legend{display:none;flex-wrap:wrap;align-content:start;gap:4px 20px}
@@ -669,7 +676,8 @@ function renderChips(){
   const ids = linesHere();
   box.innerHTML = "";
   if (!ids.length) {
-    box.innerHTML = "<span class=none>" + (D.lineOrder.length ? "The program found no line on this page." :
+    box.innerHTML = "<span class=none>" + (D.reading === "pages" ? "The program has not read the moves of this chapter yet." :
+      D.lineOrder.length ? "The program found no line on this page." :
       "The program found no line in this chapter.") + "</span>";
     return;
   }
@@ -1285,7 +1293,14 @@ function fromHash(){
   if (m[1] === "line" && D.lines[m[2]]) { selectNode(D.lines[m[2]].root, {scrollPage: true}); return true; }
   return false;
 }
+function readingState(){
+  // while the app reads the book: "pages" (no moves read yet) or "first" (a first reading)
+  document.body.classList.toggle("first", D.reading === "first");
+  document.body.classList.toggle("pagesonly", D.reading === "pages");
+}
+window.readingState = readingState;
 function init(){
+  readingState();
   $("ov").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
@@ -1469,6 +1484,7 @@ __PGNBTN__
 <p class="turnhint small muted" id="turnhint" hidden>The reader works best with the tablet held sideways. <button class="tb" id="turnhide" type="button">Hide</button></p>
 <p class="offpage small" id="offpage"></p>
 <p class="diagnote small muted" id="diagnote"></p>
+<p class="provnote small muted" id="provnote">The program is still reading the book. The moves of this chapter are a first reading, made with what the program had learnt when it reached them. When it has read the whole book, the final reading replaces them here, and the page and the chosen move stay where they are.</p>
 <div class="key small muted">
 <div class="help"><p class="mouse">A click on a move or a diagram shows it in the panel. The left and right arrow keys step through the moves, the up and down arrow keys switch between the moves the book gives at a branch, and Page Up and Page Down turn the pages.</p>
 <p class="touch">A tap on a move or a diagram shows it on the board. A swipe across the page turns it.</p></div>
@@ -1626,6 +1642,8 @@ def chapter_data(book, ch, pgn_text):
         "corrections": book.get("corrections") or corrections.empty(),
         "letters": LETTER_SETS.get(book.get("letters") or "English", LETTER_SETS["English"]),
         "pieceWords": PIECE_WORDS,
+        # while the browser app reads the book: "pages" or "first" (progressive.py)
+        "reading": book.get("reading"),
     }
 
 
@@ -1885,6 +1903,10 @@ const FIX = makeCorrections(D.corrections, {pdf: D.pdf, pageCount: D.pageCount, 
 window.correctionsText = FIX.text;
 function fixNote(){
   const n = FIX.count();
+  if (D.loading) {
+    $("fixnote").textContent = n ? "The program applies your corrections as it reads the book." : "";
+    return;
+  }
   $("fixnote").textContent = !n ? "You have made no corrections. The Review button of a chapter lists " +
     "what the program could not read with certainty, and lets you correct it." :
     (FIX.anyPending() ? "You have corrections that this run did not use yet. " + (D.app ?
@@ -1910,6 +1932,15 @@ refresh(); say();
 // the browser may restore the ticks of the boxes when the reader comes back to this page: the
 // stored selection wins
 window.addEventListener("pageshow", () => { refresh(); });
+// the browser app sends the page thumbnails as it draws them, while it reads the book
+window.addEventListener("message", (e) => {
+  const t = e.data && e.data.thumbs;
+  if (!t || e.source !== window.parent) return;
+  for (const p in t) {
+    const img = document.querySelector(".pg[data-page='" + p + "'] img.scan");
+    if (img && !img.getAttribute("src")) img.src = "data:image/jpeg;base64," + t[p];
+  }
+});
 })();
 """
 
@@ -2003,7 +2034,7 @@ def _corrected_sentence(c):
     return out
 
 
-def index_html(book, thumbs, sizes, app=False):
+def index_html(book, thumbs, sizes, app=False, loading=False):
     e = html.escape
     sel = book["selection"]
     total = book["stats"]
@@ -2022,6 +2053,11 @@ def index_html(book, thumbs, sizes, app=False):
                 f"read and {_n(m.get('waiting', 0))} {'waits' if m.get('waiting', 0) == 1 else 'wait'} "
                 f"for board reading (Stage 3).")
     summary += _corrected_sentence(total.get("corrected") or {})
+    if loading:
+        # the browser app shows the contents while it reads the book (progressive.py)
+        summary = ("The program is reading the book. Every chapter opens now as pages, and its "
+                   "moves appear as the program reads them. The counts of lines and moves appear "
+                   "here when it has read the whole book.")
     parts = []
     by_page = {p["page"]: p for p in book["pages"]}
     for ch in book["chapters"]:
@@ -2048,8 +2084,9 @@ def index_html(book, thumbs, sizes, app=False):
             cards.append(
                 f'<div class="pg" data-page="{p}"><div class="thumb" '
                 f'style="aspect-ratio:{pg["width"]}/{pg["height"]}">'
-                f'<img class="scan" loading="lazy" alt="{e(name.capitalize())}" '
-                f'src="data:image/jpeg;base64,{thumbs[p]}">{"".join(ds)}</div>'
+                f'<img class="scan" loading="lazy" alt="{e(name.capitalize())}"'
+                + (f' src="data:image/jpeg;base64,{thumbs[p]}"' if p in thumbs else "")
+                + f'>{"".join(ds)}</div>'
                 f'<div class="cap"><input type="checkbox" class="pcb" data-page="{p}" autocomplete="off" '
                 f'aria-label="Use {e(name)}">{num}</div><p class="pgnote small muted"></p></div>')
         has_lines = ch["counts"]["lines"] > 0
@@ -2073,6 +2110,7 @@ def index_html(book, thumbs, sizes, app=False):
         "selBase": _selection_base(book),
         "corrections": book.get("corrections") or corrections.empty(),
         "app": app,
+        "loading": loading,
         "pages": [{"page": p["page"], "folio": p.get("folio"),
                    "diagrams": [{"id": d["id"], "kind": d["kind"], "label": d.get("label")}
                                 for d in p["diagrams"]]}
@@ -2090,8 +2128,9 @@ def index_html(book, thumbs, sizes, app=False):
                      "includes it or leaves it out. When you have finished, you copy the "
                      "selection and paste it into the chat. The program uses it on its next run.")),
         "__SUMMARY__": summary,
-        "__COLS__": ('<div class="cols small muted" aria-hidden="true"><span></span><span></span>'
-                     + "".join(f"<span>{w}</span>" for w in COUNT_COLUMNS) + "</div>"),
+        "__COLS__": "" if loading else (
+            '<div class="cols small muted" aria-hidden="true"><span></span><span></span>'
+            + "".join(f"<span>{w}</span>" for w in COUNT_COLUMNS) + "</div>"),
         "__CHAPTERS__": "\n".join(parts),
         "__STYLE__": style.page_css(),
         "__INDEX_CSS__": INDEX_CSS,
@@ -2114,9 +2153,13 @@ def _chevron():
 # ---------------------------------------------------------------- build
 
 def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_index=True,
-                 app=False):
+                 app=False, thumbs=None, loading=False):
     """Write index.html and chNN.html into out_dir. chapters limits the chapter
     readers to those indices (the contents page always covers the whole book).
+    thumbs, when given, holds the page thumbnails drawn already ({page: base64
+    JPEG}); the contents page then leaves the others blank (the browser app
+    draws them while it reads the book). loading marks the contents page of a
+    book the app is still reading.
     Returns {"files": {name: bytes}, "pgn": pgnout report, "sizes": {index: bytes}}."""
     say = progress or (lambda *_: None)
     out_dir = Path(out_dir)
@@ -2155,9 +2198,9 @@ def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_ind
         say(f"{ch['file']}: {len(data) / 1048576:.1f} MB (JPEG quality {quality}, {dpi} dpi)")
     if not with_index:
         return {"files": files, "pgn": pgn_report, "sizes": sizes}
-    thumbs = {p: _b64(page_jpeg(doc, p, THUMB_DPI, THUMB_QUALITY))
-              for p in range(1, doc.page_count + 1)}
-    text = index_html(book, thumbs, sizes, app=app)
+    if thumbs is None:
+        thumbs = {p: thumb(doc, p) for p in range(1, doc.page_count + 1)}
+    text = index_html(book, thumbs, sizes, app=app, loading=loading)
     data = text.encode("utf-8")
     (out_dir / "index.html").write_bytes(data)
     files["index.html"] = len(data)

@@ -9,7 +9,17 @@
 // test, in a fresh browser profile:
 //   - loads the site and waits for "Ready" (numpy and OpenCV may be missing:
 //     the app then reads the book without board reading);
-//   - uploads the book and opens a chapter with its Open link;
+//   - uploads the book; the contents page shows while the book is still read
+//     (SITE_URL may carry ?pace=MS, which slows each step of the reading down,
+//     so that a small book is read slowly enough for the following);
+//   - opens the first chapter before the reading finishes, waits for its first
+//     reading and steps through its moves; reading mode says it is a first
+//     reading;
+//   - opens a later chapter, which is read before the chapters in between,
+//     makes a correction there (a new line at a move) and chooses that move;
+//   - waits for the final reading: it reaches the open chapter as a patch, the
+//     page and the chosen move stay put, and the correction survives;
+//   - opens a chapter with its Open link;
 //   - turns the pencil on and corrects a move read without doubt to another
 //     legal move: the patch arrives, the page and the move stay put, and the
 //     moves after it change; removing the correction turns them back into
@@ -26,8 +36,8 @@
 //     opens, without Read again;
 //   - opens the contents page and checks that its counts show the corrections;
 //   - goes back to the first chapter and checks every correction is still there;
-//   - reloads the page, uploads the book again, and checks that the stored
-//     corrections are applied to the new reading.
+//   - loads the page again (without pace), uploads the book again, and checks
+//     that the stored corrections are applied to the new reading.
 // Screenshots of each step go to SCREENS_DIR (NAME_desktop.png, NAME_phone.png).
 // Prints one JSON object {ok, checks, errors, timings, screenshots, notes};
 // the exit code is 1 when a check fails.
@@ -112,17 +122,161 @@ async function run(browser, which) {
   await shot("01_ready");
   await instrument();
 
+  const goPage = async (p) => {
+    await inFrame((p) => { location.hash = "#page=" + p; }, p);
+    await waitFrame((p) => window.readerState.page === p, p);
+  };
+  const tapMark = async (sel) => {
+    await inFrame((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); }, sel);
+    const f = await frame();
+    await f.click(sel);
+  };
   // ---------------------------------------------------------------- upload
+  // the contents page shows as soon as the chapters are known; the book is read on
   const upload = async () => {
     const t = now();
     await page.setInputFiles("#file", bookPdf);
     await page.waitForSelector("#view", { state: "visible", timeout: 1800000 });
-    await waitFrame(() => !!document.querySelector("li.chapter"));
+    await waitFrame(() => !!document.querySelector("li.chapter"), null, 1800000);
     return now() - t;
   };
+  const tookText = () => page.evaluate(() => document.getElementById("took").textContent);
+  const loading = async () => !/read in \d+ seconds/.test(await tookText());
+  // the final book: the top bar says how long the reading took, and an open contents page shows the counts
+  const waitFinal = async () => {
+    await page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent),
+      null, { timeout: 3600000 });
+    if (await page.evaluate(() => openChapter === "index.html"))
+      await waitFrame(() => !window.READER && !!document.querySelector("li.chapter") &&
+        !/is reading the book/.test(document.querySelector("main").innerText), null, 300000);
+  };
+  const tUpload = now();
   let secs = await upload();
-  timing("book processing (s)", secs);
-  const took = await page.evaluate(() => document.getElementById("took").textContent);
+  timing("upload until the contents page (s)", secs);
+  const took0 = await tookText();
+  check("the contents page shows while the book is still read", await loading(), took0);
+  check("the top bar says how far the reading has come", /^Reading/.test(took0), took0);
+  check("the thin line under the top bar moves while the book is read",
+    await page.evaluate(() => document.getElementById("topbar").classList.contains("on")));
+  check("the contents page says that the book is still read",
+    /is reading the book/.test(await inFrame(() => document.querySelector("main").innerText)));
+  await shot("02_contents_loading");
+  const openLink = async (file) => {
+    const t = now();
+    await inFrame((f) => { const a = document.querySelector("li.chapter a.read[href='" + f + "']"); a.click(); }, file);
+    await waitFrame((f) => window.READER && window.READER.chapter && window.READER.chapter.file === f &&
+      window.readerState && window.readerState.page, file, 300000);
+    return now() - t;
+  };
+  const backToContents = async () => {
+    await inFrame(() => document.querySelector("a.nav[href='index.html']").click());
+    await waitFrame(() => !window.READER && !!document.querySelector("li.chapter"), null, 300000);
+  };
+  const files0 = await inFrame(() => [...document.querySelectorAll("li.chapter a.read")].map((a) => a.getAttribute("href")));
+  const first = files0.find((f) => f !== "ch00.html") || files0[0];
+  const later = files0.filter((f) => f !== "ch00.html" && f !== first).pop() || null;
+
+  // ---------------------------------------------------------------- the first chapter while the book is read
+  secs = await openLink(first);
+  timing("opening " + first + " while the book is read (s)", secs);
+  const r1 = await inFrame(() => window.READER.reading);
+  check("the first chapter opens before the reading finishes", await loading() && (r1 === "pages" || r1 === "first"), { r1 });
+  await shot("03_first_chapter_loading");
+  await waitFrame(() => window.READER.lineOrder.length > 0 && window.READER.reading === "first", null, 1800000);
+  timing("upload until " + first + " shows its moves (s)", now() - tUpload);
+  check("the first chapter shows its moves before the reading finishes", await loading());
+  // step through the moves of its first line
+  await inFrame(() => { const b = document.querySelector("#chips [data-line]"); if (b) b.click(); else {
+    const D = window.READER; window.__sel = D.lines[D.lineOrder[0]].root; } });
+  const stepped = [];
+  for (let i = 0; i < 4; i++) {
+    await inFrame(() => document.getElementById("bfwd").click());
+    stepped.push(await inFrame(() => ({ node: window.readerState.nodeId, fen: window.readerState.fen })));
+  }
+  check("the moves of the first reading can be stepped through",
+    new Set(stepped.map((x) => x.fen)).size >= 3 && stepped.every((x) => x.node), stepped);
+  await inFrame(() => document.getElementById("showread").click());
+  check("reading mode says that the moves are a first reading",
+    await inFrame(() => { const n = document.getElementById("provnote"); return n.offsetParent !== null && /first reading/.test(n.textContent); }));
+  await shot("04_first_reading_note");
+  await inFrame(() => document.getElementById("showread").click());
+  check("the note shows in reading mode only",
+    await inFrame(() => document.getElementById("provnote").offsetParent === null));
+
+  // ---------------------------------------------------------------- a later chapter jumps the queue
+  let L = null;
+  if (later && await loading()) {
+    await backToContents();
+    secs = await openLink(later);
+    timing("opening " + later + " while the book is read (s)", secs);
+    const r2 = await inFrame(() => window.READER.reading);
+    const tOpen = now();
+    await waitFrame(() => window.READER.lineOrder.length > 0 && window.READER.reading === "first", null, 1800000);
+    timing("opening " + later + " until it shows its moves (s)", now() - tOpen);
+    note(later + " opened in the state " + JSON.stringify(r2) + " and showed its moves " +
+      (now() - tOpen).toFixed(1) + " s later");
+    check("a later chapter opened during the reading shows its moves before the reading finishes", await loading(), r2);
+    await shot("05_later_chapter_loading");
+    // a move to keep chosen across the final reading, and a correction made while the book is read
+    await inFrame(() => window.__stay = 2);
+    L = await inFrame(() => {
+      const D = window.READER;
+      for (const id of D.lineOrder) {
+        let cur = D.nodes[D.lines[id].root], k = 0;
+        while (cur) {
+          const next = (cur.children || []).map((c) => D.nodes[c]).find((n) => n && n.main);
+          if (k >= 3 && cur.key && cur.page && cur.status === "ok" && next) return { id: cur.id, key: cur.key, page: cur.page };
+          cur = next || null; k++;
+        }
+      }
+      return null;
+    });
+    check("the later chapter has a move to correct", !!L);
+    await goPage(L.page);
+    await inFrame((phone) => document.getElementById(phone ? "mpen" : "penbtn").click(), which === "phone");
+    await tapMark(".mark[data-node='" + L.id + "']");
+    await waitFrame(() => !!document.getElementById("splithere"));
+    const tFix = now();
+    await (await frame()).click("#splithere");
+    await waitFrame((k) => window.READER.corrections.disconnect[k] &&
+      Object.values(window.READER.nodes).some((n) => n.key === k && n.corrected === "split"), L.key, 600000);
+    timing("a correction while the book is read, to the patch (s)", now() - tFix);
+    check("the correction applies while the book is still read", await loading());
+    await inFrame((phone) => document.getElementById(phone ? "mpen" : "penbtn").click(), which === "phone");
+    await inFrame(() => { const c = document.getElementById("fixclose"); if (c && !document.getElementById("fix").hidden) c.click(); });
+    // choose the corrected move, which the final reading must keep chosen
+    await inFrame((k) => { const n = Object.values(window.READER.nodes).find((x) => x.key === k);
+      document.querySelector(".mark[data-node='" + n.id + "']").click(); }, L.key);
+    L.page = await inFrame(() => window.readerState.page);
+    await shot("06_correction_loading");
+  } else note("the book has no second chapter with lines, or the reading finished before it could be opened");
+
+  // ---------------------------------------------------------------- the final reading
+  await waitFinal();
+  timing("upload until the final book (s)", now() - tUpload);
+  const tl = await page.evaluate(() => new Promise((resolve) => {
+    const on = worker.onmessage;
+    worker.onmessage = (e) => { if (e.data && e.data.type === "timeline") { worker.onmessage = on; resolve(e.data.timeline); } else on(e); };
+    worker.postMessage({ type: "timeline" });
+  }));
+  note("the worker's timeline: " + JSON.stringify(tl));
+  if (L) {
+    await waitFrame(() => window.READER.reading === null, null, 120000);
+    const fin = await inFrame((k) => {
+      const D = window.READER, n = Object.values(D.nodes).find((x) => x.key === k);
+      return { stay: window.__stay, page: window.readerState.page, node: window.readerState.nodeId,
+               chosen: n ? n.id : null, corrected: n ? n.corrected : null, fix: !!D.corrections.disconnect[k],
+               said: document.getElementById("pagemsg").textContent };
+    }, L.key);
+    check("the final reading reaches the open chapter as a patch", fin.stay === 2, fin);
+    check("the final reading says nothing on the page outside reading mode", !/whole book/.test(fin.said), fin);
+    check("the final reading keeps the page", fin.page === L.page, { fin, L });
+    check("the final reading keeps the chosen move", fin.node && fin.node === fin.chosen, fin);
+    check("the correction made while the book was read survives the final reading", fin.corrected === "split" && fin.fix, fin);
+    await shot("07_final_reading");
+    await backToContents();
+  } else if (await page.evaluate(() => openChapter !== "index.html")) await backToContents();
+  const took = await tookText();
   check("the contents page shows how long the reading took", /read in \d+ seconds/.test(took), took);
   await shot("02_contents");
   const chapters = await inFrame(() => [...document.querySelectorAll("li.chapter")].map((li) => {
@@ -148,10 +302,6 @@ async function run(browser, which) {
     await inFrame(() => document.querySelector("a.nav[href='index.html']").click());
     await waitFrame(() => !window.READER && !!document.querySelector("li.chapter"), null, 300000);
     return now() - t;
-  };
-  const goPage = async (p) => {
-    await inFrame((p) => { location.hash = "#page=" + p; }, p);
-    await waitFrame((p) => window.readerState.page === p, p);
   };
   const A = withLines[0];
   secs = await openFromContents(A.file);
@@ -194,11 +344,6 @@ async function run(browser, which) {
   });
   check("the chapter has a move read without doubt with decoded moves after it", !!target);
   await goPage(target.page);
-  const tapMark = async (sel) => {
-    await inFrame((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); }, sel);
-    const f = await frame();
-    await f.click(sel);
-  };
   await tapMark(".mark[data-node='" + target.id + "']");
   await waitFrame(() => !document.getElementById("fix").hidden && document.getElementById("fixsan"));
   const dest = (san) => { const m = /([a-h][1-8])(=[QRBN])?[+#]?$/.exec(san); return m ? m[1] : null; };
@@ -574,10 +719,12 @@ async function run(browser, which) {
 
   // ---------------------------------------------------------------- reload and read the book again
   const storedFix = await fixOf();
-  await page.reload();
+  await page.goto(siteUrl.split("?")[0]);
   await page.waitForFunction(() => /Ready/.test(document.getElementById("status").textContent), null, { timeout: 300000 });
-  secs = await upload();
-  timing("book processing with the stored corrections (s)", secs);
+  const tAgain = now();
+  await upload();
+  await waitFinal();
+  timing("book processing with the stored corrections (s)", now() - tAgain);
   const again = await inFrame(() => document.querySelector("main").innerText);
   const m2 = /The run used your corrections of ([^.]*)\./.exec(again);
   check("reading the book again applies the stored corrections", !!m2 && m2[0] === m[0], { before: m && m[0], after: m2 && m2[0] });

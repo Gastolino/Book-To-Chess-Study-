@@ -61,8 +61,23 @@ positions checked by eye against the pictures of five books.
 Open the published site, drop a chess book PDF on the page, and read it beside
 a live board. The book is processed in your own browser (Python runs there
 through Pyodide) and is never uploaded. The first visit downloads about 30 MB;
-later visits start at once. The Primer (402 pages) takes about three minutes
-on a desktop browser; each chapter then opens in about two seconds.
+later visits start at once.
+
+The book can be read while it is processed. As soon as the program knows the
+book's chapters (a few seconds), the contents page shows, and every chapter
+opens as pages that can be turned and swiped. The top bar says how far the
+reading has come ("Reading the moves: chapter 3 of 11") above a thin moving
+line. The moves then appear chapter by chapter, the first chapters first; a
+chapter that the reader opens is read before the others. These first readings
+use what the program has learnt so far, and reading mode ("Show reading") says
+so. When the program has read the whole book (its glyph passes, the figurines
+and the board pictures), the open chapter receives the final reading in place, and
+the page and the chosen move stay put; the other chapters receive it when
+they open. Corrections made meanwhile apply at once to the open chapter and are
+part of the final book, which is the same book the command line makes. The
+Primer (402 pages) takes about three minutes in all on a desktop browser; each
+chapter then opens in about two seconds. `chessbook/progressive.py` describes
+how the work is divided.
 
 The workflow in `.github/workflows/pages.yml` rebuilds and publishes the site
 whenever `main` changes. `python3 tools/build_web.py --help` builds it by hand.

@@ -92,6 +92,11 @@ const CFG = __CFG__;
 const $ = (id) => document.getElementById(id);
 const worker = new Worker("worker.js");
 let ready = false, busy = false, current = null, lastFile = null;
+// While the worker reads the book, the reader can already read it: the top bar
+// says how far the reading has come, and the thin line under it moves.
+let loading = false;
+// ?pace=MS slows the reading down by MS milliseconds a step (for tests)
+CFG.pace = parseInt(new URLSearchParams(location.search).get("pace") || "0", 10) || 0;
 
 // Links inside the reader pages ask this page to open another page.
 // String.raw keeps the backslashes of the pattern below; an ordinary template
@@ -110,7 +115,7 @@ function status(text, error) {
 }
 function working(on) {
   $("bar").classList.toggle("on", on);
-  $("topbar").classList.toggle("on", on);
+  $("topbar").classList.toggle("on", on || loading);
 }
 // The flag goes first in the head, so that the page's own script sees it
 // while it starts (the stored corrections it sends, the words it chooses).
@@ -134,10 +139,26 @@ worker.onmessage = (e) => {
     status(m.boards === false ? "Ready. Choose a book. This browser could not load board reading, so " +
       "the program reads only the diagrams that the book prints in a chess font." : "Ready. Choose a book.");
   } else if (m.type === "index") {
+    // the contents, as soon as the chapters are known: the reading goes on
     busy = false;
+    loading = true;
     $("bar").classList.remove("on");
-    $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
+    $("took").textContent = "Reading the book";
+    openChapter = "index.html";
     show("index.html", "", m.html);
+    working(false);
+  } else if (m.type === "status") {
+    if (loading) $("took").textContent = m.text;
+  } else if (m.type === "thumbs") {
+    if (openChapter === "index.html") toView({ thumbs: m.thumbs });
+  } else if (m.type === "done") {
+    loading = false;
+    $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
+    working(false);
+    if (m.html && openChapter === "index.html") show("index.html", "", m.html);
+  } else if (m.type === "reopen") {
+    // the final reading changed the chapters: the open one opens again
+    worker.postMessage({ type: "chapter", name: m.chapter, small: window.matchMedia("(max-width: 700px)").matches });
   } else if (m.type === "patch") {
     patched(m);
   } else if (m.type === "page") {
@@ -156,6 +177,7 @@ worker.onmessage = (e) => {
       return;
     }
     busy = false;
+    if (m.during === "process") { loading = false; working(false); }
     status("Something went wrong: " + m.text, true);
   }
 };
@@ -197,6 +219,7 @@ function patched(m) {
   } else status("");
 }
 window.addEventListener("message", (e) => {
+  if (e.data && e.data.open === "index.html") openChapter = "index.html";
   if (e.data && e.data.correct) {
     openChapter = e.data.chapter;
     worker.postMessage({ type: "correct", corrections: e.data.correct, chapter: e.data.chapter });

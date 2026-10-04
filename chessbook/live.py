@@ -151,26 +151,41 @@ def snapshot(data):
     return json.loads(json.dumps(data))
 
 
-def chapter_patch(book, ch, old, with_pgn=True):
+def chapter_patch(book, ch, old, with_pgn=True, replace=False):
     """(patch, new data): what changed in the chapter reader's data since old
     (reader.chapter_data as the reader holds it). The patch holds the nodes
     added or changed and those removed, every line of the chapter, the marks
     and diagrams of the pages that changed, and the lists that the Review
     view reads. renamed maps a removed node to the node that now holds the
-    same printed move, so that the reader keeps its place."""
+    same printed move, so that the reader keeps its place.
+
+    replace says that book is another reading of the chapter (a first
+    reading, or the final one, while the browser app reads the book): its
+    node ids say nothing about the old ones, so every old node is removed
+    and renamed by its printed move, and the patch carries the reading's
+    state (reader.chapter_data "reading")."""
     pgn = pgnout.chapter_pgn(book, ch["index"])[0] if with_pgn else (old or {}).get("pgn", "")
     new = snapshot(reader.chapter_data(book, ch, pgn))
     old = old or {}
     on, nn = old.get("nodes", {}), new["nodes"]
-    changed = {k: v for k, v in nn.items() if on.get(k) != v}
-    removed = [k for k in on if k not in nn]
+    if replace:
+        changed, removed = dict(nn), list(on)
+    else:
+        changed = {k: v for k, v in nn.items() if on.get(k) != v}
+        removed = [k for k in on if k not in nn]
     by_key = {v["key"]: k for k, v in nn.items() if v.get("key")}
     renamed = {k: by_key[on[k]["key"]] for k in removed
                if on[k].get("key") in by_key}
     for k in removed:
         if k not in renamed and on[k].get("parent") is None:
             line = on[k]["line"]
-            if line in new["lines"]:
+            if replace:
+                # the root of a line: the line that now holds its first printed move
+                first = next((on[c] for c in on[k].get("children") or []
+                              if c in on and on[c].get("key") in by_key), None)
+                if first is not None:
+                    renamed[k] = nn[by_key[first["key"]]]["parent"]
+            elif line in new["lines"]:
                 renamed[k] = new["lines"][line]["root"]
     pages = {}
     for p, pg in new["pages"].items():
@@ -181,6 +196,10 @@ def chapter_patch(book, ch, old, with_pgn=True):
              "unattached": new["unattached"], "dismissed": new["dismissed"],
              "corrections": new["corrections"], "symbols": new["symbols"],
              "pgn": new["pgn"]}
+    if replace:
+        patch["reading"] = new.get("reading")
+        patch["pages"] = {p: {"marks": pg["marks"], "diagrams": pg["diagrams"]}
+                          for p, pg in new["pages"].items()}
     return patch, new
 
 

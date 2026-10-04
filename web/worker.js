@@ -32,17 +32,44 @@ async function init(cfg) {
   postMessage({ type: "ready", boards });
 }
 
+// The book is read in small steps (driver.step). Between two steps the
+// worker lets the page's messages in (a chapter to open, a correction), so
+// that the reader can read the book while it is processed. Only one book is
+// read at a time: a new "process" message ends the steps of the one before.
+let job = 0, pace = 0;
+const pause = () => new Promise((resolve) => setTimeout(resolve, pace));
+async function run(id, t0) {
+  for (;;) {
+    await pause();
+    if (id !== job) return;
+    let out;
+    try { out = JSON.parse(driver.step()); }
+    catch (err) {
+      postMessage({ type: "error", during: "process", text: String(err && err.message ? err.message : err) });
+      return;
+    }
+    for (const ev of out.events) {
+      if (ev.type === "done") ev.seconds = (performance.now() - t0) / 1000;
+      postMessage(ev);
+    }
+    if (out.done) return;
+  }
+}
+
 onmessage = async (event) => {
   const msg = event.data;
   try {
     if (msg.type === "init") {
+      pace = msg.cfg.pace || 0;
       await init(msg.cfg);
     } else if (msg.type === "process") {
+      const t0 = performance.now();
       const path = "/books/" + msg.name;
       py.FS.writeFile(path, new Uint8Array(msg.bytes));
-      const t0 = performance.now();
-      const html = driver.process(path, say, msg.selection || null, msg.corrections || null);
-      postMessage({ type: "index", html, seconds: (performance.now() - t0) / 1000 });
+      const id = ++job;
+      for (const ev of JSON.parse(driver.start(path, msg.selection || null, msg.corrections || null)))
+        postMessage(ev);
+      await run(id, t0);
     } else if (msg.type === "chapter") {
       const html = driver.chapter(msg.name, say, !!msg.small);
       postMessage({ type: "page", name: msg.name, hash: msg.hash || "", html });
@@ -57,6 +84,8 @@ onmessage = async (event) => {
       postMessage({ type: "patch", chapter: result.chapter || msg.chapter, more: true, result });
     } else if (msg.type === "index") {
       postMessage({ type: "page", name: "index.html", hash: msg.hash || "", html: driver.index() });
+    } else if (msg.type === "timeline") {
+      postMessage({ type: "timeline", timeline: JSON.parse(driver.timeline()) });
     }
   } catch (err) {
     // the type of the failed request lets the page say what did not happen
