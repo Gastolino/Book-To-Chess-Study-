@@ -22,6 +22,7 @@ from chessbook import assemble, corrections, live, reader  # noqa: E402
 OUT = Path("/out")
 CFG = Path("/cfg")
 STATE = {}
+BATCH_PAGES = 10        # pages of lines a piece-symbol correction replays per call (correct_more)
 
 
 def process(path, say, selection_json=None, corrections_json=None):
@@ -114,7 +115,7 @@ def correct_more(chapters_json, name):
     t0 = time.perf_counter()
     todo = set(json.loads(chapters_json))
     fix = STATE["book"]["corrections"]
-    res = live.apply(STATE["keep"], STATE["book"], fix, chapters=todo)
+    res = live.apply(STATE["keep"], STATE["book"], fix, chapters=todo, window=BATCH_PAGES)
     patch = None
     if name and name in STATE["data"]:
         ch = _chapter_of(name)

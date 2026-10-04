@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from chessbook import corrections as fixes  # noqa: E402
 from chessbook import live, reader  # noqa: E402
-from chessbook.assemble import _LONG_TEXT_RE, _RANGE_AFTER_RE, build_book  # noqa: E402
+from chessbook.assemble import _LONG_TEXT_RE, _RANGE_AFTER_RE, _RANGE_BEFORE_RE, build_book  # noqa: E402
 from chessbook.movetext import Token, decode, find_sequences, tokenize  # noqa: E402
 from test_corrections import GARBLED, NOTE, game_nodes, key_of  # noqa: E402
 from test_assemble import make_book  # noqa: E402
@@ -88,11 +88,14 @@ def test_long_notation_is_strict(raw, fen, san):
     ("see pages 12-14", []),
     ("it takes 2-3 moves", []),
     ("and won, 1-0", []),
+    ("only three squares on the short diagonal (a6-c8)", []),
+    ("since the diagonals a2-g8 and e8-h5 are opened up", []),
 ])
 def test_long_notation_in_prose(text, found):
     """Moves in long notation inside sentences are found; ranges are not."""
     got = [m.group(3) for m in _LONG_TEXT_RE.finditer(text)
-           if not _RANGE_AFTER_RE.match(text[m.end(3):m.end(3) + 20])]
+           if not _RANGE_AFTER_RE.match(text[m.end(3):m.end(3) + 20])
+           and not _RANGE_BEFORE_RE.search(text[max(0, m.start(2) - 32):m.start(2)])]
     assert got == found
 
 

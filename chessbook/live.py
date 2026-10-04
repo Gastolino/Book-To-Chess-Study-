@@ -31,15 +31,16 @@ def _node_out(n):
     return nn
 
 
-def apply(state, book, fix, chapters=None):
+def apply(state, book, fix, chapters=None, window=None):
     """Apply the corrections fix to the book (book.json as a dict, changed in
     place). chapters limits the replay of lines that a changed piece symbol
-    touches to those chapters. Returns {"lines", "removed", "pages",
-    "pending", "seconds"}."""
+    touches to those chapters, and window to the lines that start within
+    that many pages of the first of them (a small batch). Returns {"lines",
+    "removed", "pages", "pending", "seconds"}."""
     t0 = time.perf_counter()
     b = state["builder"]
     fix = fixes.normalise(fix or {})
-    res = b.apply_fix(fix, chapters)
+    res = b.apply_fix(fix, chapters, window)
     gone = set(res["lines"]) | set(res["removed"])
     nodes = book["nodes"]
     for nid in [k for k, n in nodes.items() if n["line"] in gone]:

@@ -248,7 +248,12 @@ _LONG_TEXT_RE = re.compile(r"(?<![^\s(\[“\"‘'])((?:\.\.\.|…)\s?)?((?![(\[�
 _RANGE_AFTER_RE = re.compile(r"^\W{0,2}(?:diagonals?|files?|ranks?|lines?|squares?|direction|sector|"
                              r"wing|side|axis|pawns?)\b", re.I)
 _PLAN_RE = re.compile(r"\b(?:idea|plans?|intend\w*|aim\w*|manoeuvre\w*|maneuver\w*|regroup\w*|"
-                      r"transfer\w*|reroute\w*|route|prepar\w*|going to|wants? to|hope\w* to)\b", re.I)
+                      r"transfer\w*|reroute\w*|route|prepar\w*|going to|wants? to|hope\w* to|"
+                      r"purpose|in order to|so as to|clear\w* the way|would|could|might|potential|"
+                      r"deterr\w*)\b", re.I)
+# A square range named after a word such as "diagonal": "the short diagonal (a6-c8)".
+_RANGE_BEFORE_RE = re.compile(r"\b(?:diagonals?|files?|ranks?|lines?)\W{0,3}"
+                              r"(?:[a-h][1-8]\s?[-–—]\s?[a-h][1-8]\W{0,2}\s(?:and|or)\s)?$", re.I)
 # Words before a run that make it an alternative or a supposition rather than
 # the resumed line: "Or 4...d5", "Instead 4...d5", "If 4...d5", "After 4...d5".
 _ALT_LEAD_RE = re.compile(r"\b(?:or|instead|if|after|alternatively|otherwise)\b[^.;:!?]*$", re.I)
@@ -1400,7 +1405,7 @@ class _Builder:
             k = bisect.bisect_right(starts, b) - 1
             if k >= 0 and taken[k][1] > a:
                 continue                        # part of a run already
-            if _RANGE_AFTER_RE.match(text[b:b + 20]):
+            if _RANGE_AFTER_RE.match(text[b:b + 20]) or _RANGE_BEFORE_RE.search(text[max(0, a - 32):a]):
                 continue
             sq = _SQUARES_RE.findall(m.group(3))
             if len(set(sq)) < len(sq) or not (m.group(2) or m.group(1) or self.square_move(sq[0], sq[1])):
@@ -1710,7 +1715,8 @@ class _Builder:
         if pick is not None and pick.get("line") is not None:
             # the run goes on from a position of the line before it
             prev = pick["line"]
-            if (prev.end_offset is not None and prev is not self.active and prev.main_nodes
+            if (born == "main" and prev.end_offset is not None and prev is not self.active
+                    and prev.main_nodes
                     and self.nodes[prev.main_nodes[-1]]["fen"] == pick["fen"]
                     and self.pending_header is None and run.depth == 0
                     and not _ALT_LEAD_RE.search(self.lead_text(run.start, 60))):
@@ -1870,7 +1876,7 @@ class _Builder:
             if fen:
                 cands.append((k + 1, did, None, fen))
         recent = [M for M in reversed(self.lines) if M.chapter == self.ci
-                  and M.end_offset is not None and M is not self.active][:4]
+                  and M.end_offset is not None and M is not self.active][:2]
         for k, prev in enumerate(recent):
             if prev.waiting or prev.broken or len(prev.main_nodes) <= 1:
                 continue
@@ -2511,7 +2517,11 @@ class _Builder:
         if len(_SQUARES_RE.findall(run.moves[0].raw)) > 2:
             return "plan"               # a manoeuvre: "Nf3-d2-c4"
         lead = self.lead_text(run.start, 80)
-        return "plan" if (_THREAT_RE.search(lead) or _PLAN_RE.search(lead)) else None
+        # the rest of its sentence ("... Nc3-e2 comes into White's plans")
+        tail = re.split(r"[.;!?]\s", self.st.orig_text[run.end:run.end + 80] + " ", maxsplit=1)[0]
+        if _THREAT_RE.search(lead) or _PLAN_RE.search(lead) or _PLAN_RE.search(tail):
+            return "plan"
+        return None
 
     def do_long(self, L, op):
         """Place a move printed in long notation that has no move number:
@@ -2946,13 +2956,25 @@ class _Builder:
             return None
         if _ALT_LEAD_RE.search(self.lead_text(run.start, 60)):
             return None
-        seen = 0
-        for M in reversed(self.lines):
+        # moves named inside a sentence ("... after 9 b3 d4! you have to ask") are no resumption
+        i = self.line_index(self.st, run.start)
+        if i >= 0:
+            before = self.st.orig_text[self.st.lines[i].start:run.start]
+            if any(len(w) >= 3 and w.isalpha() and not _shape(w) for w in before.split()):
+                return None
+        # the line the open one interrupted (the line just before it), or the
+        # line closed last when none is open: a digression stands between
+        # one line and its continuation, not between several
+        if active is not None:
+            k = self.lines.index(active)
+            before = [M for M in self.lines[:k] if M.chapter == self.ci and M.end_offset is not None
+                      and M.born != "note"]
+            cands = before[-1:]
+        else:
+            cands = [self.last_closed] if self.last_closed is not None else []
+        for M in cands:
             if M.chapter != self.ci or M is active or M.end_offset is None:
                 continue
-            seen += 1
-            if seen > 4:
-                break
             if M.waiting or M.broken or not M.last_fen or M.next_ply != run.ply:
                 continue
             toks = _first_moves(run.tokens, 4)
@@ -3590,11 +3612,13 @@ class _Builder:
                  if self.nodes[n]["page"] and self.nodes[n].get("key")]
         L.end_page = max(pages + [L.page])
 
-    def apply_fix(self, fix, chapters=None):
+    def apply_fix(self, fix, chapters=None, window=None):
         """Apply a set of corrections to the assembled book: derive the lines
         they ask for and replay those that changed. chapters limits the
         replay of lines whose moves change through a piece symbol to those
-        chapters (the others wait for a later call). Returns {"lines":
+        chapters (the others wait for a later call); window limits it further
+        to the lines that start within that many pages of the first such
+        line (a small batch). Returns {"lines":
         replayed line ids, "removed": line ids, "pages": pages whose marks
         changed, "pending": chapters still to replay}."""
         fix = fixes.normalise(fix) if fix is not None else fixes.empty()
@@ -3636,9 +3660,12 @@ class _Builder:
                     self.stale.add(L.id)
                 if L.spec.get("after") in touched:
                     touched.add(L.id)
+        due = sorted(L.page for L, ops in derived if L.id in self.stale
+                     and (chapters is None or L.chapter in chapters))
+        limit = due[0] + window if (due and window) else None
         for L, ops in derived:
             if L.id in self.stale:
-                if chapters is None or L.chapter in chapters:
+                if (chapters is None or L.chapter in chapters) and (limit is None or L.page < limit):
                     touched.add(L.id)
                     self.stale.discard(L.id)
                 else:

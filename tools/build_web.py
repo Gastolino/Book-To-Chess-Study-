@@ -165,7 +165,8 @@ function patched(m) {
   more = (r.pending || []).slice();
   if (!m.more) moreTotal = more.length;
   if (more.length) {
-    const done = moreTotal - more.length + 1;
+    // a chapter stays pending until all its pages are done, ten pages at a time
+    const done = Math.min(moreTotal, moreTotal - more.length + 1);
     const text = "Applying your piece choice to the other chapters: " + done + " of " + moreTotal + ".";
     status(text); toView({ progress: text });
     worker.postMessage({ type: "correct-more", chapters: [more[0]], chapter: openChapter });
