@@ -1460,6 +1460,7 @@ CHAPTER_HTML = """<!doctype html>
 <button class="tb" id="reviewbtn" aria-pressed="false">Review</button>
 <button class="tb" id="showread" aria-pressed="false">Show reading</button>
 <a class="nav" href="index.html">Contents</a>
+__PGNBTN__
 </nav>
 </header>
 <div class="notes small"><p id="pagemsg" role="status"></p><p class="muted" id="selnote" role="status"></p></div>
@@ -1492,7 +1493,6 @@ CHAPTER_HTML = """<!doctype html>
 <div class="row"><label class="use"><input type="checkbox" id="usepage" autocomplete="off"> Use this page</label>
 <button class="tb" id="zoom">Enlarge page</button></div>
 <nav class="chnav" aria-label="Chapters">__CHNAV__</nav>
-<div class="pgn">__PGN__</div>
 </div>
 </section>
 <aside class="panel" id="panel" aria-label="Board and moves">
@@ -1642,6 +1642,21 @@ def chapter_heading(ch):
     return f"{label}, {sub}" if sub and label != sub else (label or ch["title"])
 
 
+def pgn_button(games, waiting):
+    """The download icon at the right of the top bar; what the file holds is
+    its tooltip."""
+    if not games:
+        tip = "Download PGN: no line of this chapter is decoded yet"
+        return (f'<button class="ib" id="pgnbtn" disabled aria-label="{tip}" title="{tip}">'
+                f'{style.icon("download")}</button>')
+    tip = f"Download PGN: the {_plural(games, 'decoded line')} of this chapter"
+    if waiting:
+        tip += (f", without the {_plural(waiting, 'line')} that "
+                f"{'waits' if waiting == 1 else 'wait'} for board reading")
+    return (f'<button class="ib" id="pgnbtn" aria-label="{html.escape(tip)}" '
+            f'title="{html.escape(tip)}">{style.icon("download")}</button>')
+
+
 def pgn_block(games, waiting):
     """The PGN link under the book page, with one sentence about it."""
     if not games:
@@ -1673,7 +1688,7 @@ def chapter_html(book, ch, images, pgn_text, pgn_info):
         # "Whole book" names no chapter of the book: shown only in reading mode
         "__H1CLASS__": ' class="generic"' if ch.get("title") == "Whole book" else "",
         "__CHNAV__": "".join(nav),
-        "__PGN__": pgn_block(games, waiting),
+        "__PGNBTN__": pgn_button(games, waiting),
         "__STYLE__": style.page_css(),
         "__CHAPTER_CSS__": CHAPTER_CSS,
         "__ICON_START__": style.icon("start"),
