@@ -1661,8 +1661,9 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             st.in_seq, st.prev = False, "result"
             i += 1
             continue
-        if w in "([{)]}":
-            other(s, e)
+        if w in "([{)]}" or (len(w) == 1 and w.isalpha() and text[e:e + 1] == ")"
+                             and (s == 0 or text[s - 1] in " \n(")):
+            other(s, e)                          # a label of a list of lines: "A) 8.Be4"
             i += 1
             continue
         r = _scan_number(text, pieces, i, st, dotless)

@@ -395,3 +395,298 @@ def test_driver_applies_a_correction(garbled, monkeypatch):
     # reading the book again with the saved corrections gives the same book
     fresh = _fresh(tmp, pdf, saved)
     assert _comparable(driver.STATE["book"]) == _comparable(fresh)
+
+
+# ------------------------------------------------------------------ styles of the move font
+
+def _mixed(b, parts, x=None):
+    """One printed line made of (text, font) parts: "tiro" notes, "tibo" main
+    moves, "tiit" moves in italic."""
+    import pymupdf
+    x = 50 if x is None else x
+    for text, font in parts:
+        b.pg.insert_text((x, b.y), text, fontname=font, fontsize=10)
+        x += pymupdf.get_text_length(text + " ", font, 10)
+    b.y += 14
+
+
+def _italic_book():
+    """A game in bold whose notes name lines in italic, as books do that set
+    the main moves and the moves of the notes in two styles of one family.
+    Each note names deeper moves than the game has reached."""
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(2)
+    b.line("1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4", bold=True)
+    _mixed(b, [("A sharper try is", "tiro"), ("6.d4 exd4 7.e5 Ne4 8.Nxd4", "tiit"),
+               ("with play.", "tiro")])
+    _mixed(b, [("Also", "tiro"), ("6.Qe2 b5 7.Bb3 d6 8.c3 O-O", "tiit"), ("is known.", "tiro")])
+    b.prose(1)
+    b.line("4...Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 d6 8.c3 O-O 9.h3 Bb7", bold=True)
+    b.prose(2)
+    return b
+
+
+def test_italic_moves_are_notes_not_the_main_line(tmp_path):
+    """The italic move font is told from the bold one: its moves are notes,
+    so they neither break the game with a gap nor continue it."""
+    from chessbook import pdftext as pt
+    pdf = _italic_book().save(tmp_path / "italic.pdf")
+    fonts = pt.book_fonts(pdf)
+    assert [f["font"] for f in fonts["moves"]] == ["Times-Bold"]
+    assert [f["font"] for f in fonts["note_moves"]] == ["Times-Italic"]
+    book = build_book(pdf, output_dir=tmp_path / "out", books_dir=tmp_path / "books",
+                      diagram_fens={})
+    game = _line_with(book, "Ba4")
+    assert _sans(book, game) == RUY + ["Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3",
+                                       "O-O", "h3", "Bb7"]
+    main = [book["nodes"][n] for n in _main_line(book, game)]
+    assert all(n["status"] == "ok" for n in main)
+
+
+# ------------------------------------------------------------------ list labels
+
+def test_list_label_is_not_a_move():
+    """"A)" or "b)" opening a list of lines is no move of the run before it."""
+    (seq,) = find_sequences("7.Nxd7 A) ")
+    assert [t.raw for t in seq.tokens if t.kind == "move"] == ["Nxd7"]
+    seqs = find_sequences("8.O-O g6 b) 9.c4 Nb6")
+    assert [[t.raw for t in s.tokens if t.kind == "move"] for s in seqs] == [["O-O", "g6"],
+                                                                             ["c4", "Nb6"]]
+
+
+# ------------------------------------------------------------------ long notation in sentences
+
+QGD = ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "cxd5", "exd5", "Bg5", "Be7", "e3", "O-O"]
+
+
+def _long_book(notes):
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(1)
+    b.line("1.d4 d5 2.c4 e6 3.Nc3 Nf6 4.cxd5 exd5 5.Bg5 Be7 6.e3 O-O", bold=True)
+    for n in notes:
+        b.line(n)
+    b.prose(1)
+    b.line("7.Bd3 Nbd7 8.Qc2 Re8", bold=True)
+    b.prose(2)
+    return b
+
+
+def _long_marks(book, raw):
+    return [m for p in book["pages"] for m in p["marks"] if m["raw"].rstrip(".,") == raw]
+
+
+def test_long_move_alone_in_prose_stays_text(tmp_path):
+    """A move in long notation named in a sentence ("the potential to gain
+    space with f2-f4") is no variation and stands in no line: it is text."""
+    book = _build(tmp_path, _long_book([
+        "White has the potential to gain space with f2-f4 later on.",
+        "It is a deterrence against White advancing e3-e4 at once."]))
+    game = _line_with(book, "Bg5")
+    assert _sans(book, game) == QGD + ["Bd3", "Nbd7", "Qc2", "Re8"]
+    assert not _long_marks(book, "f2-f4") and not _long_marks(book, "e3-e4")
+    assert not [u for u in book["unattached"] if "-" in u["text"]]
+
+
+def test_long_move_after_a_cue_is_a_variation(tmp_path):
+    """"Instead e3-e4" gives another move: a variation where the line stands."""
+    book = _build(tmp_path, _long_book(["Instead e3-e4 would lose a pawn here."]))
+    (m,) = _long_marks(book, "e3-e4")
+    n = book["nodes"][m["node"]]
+    assert n["san"] == "e4" and not n["main"] and not m.get("ref")
+    assert book["nodes"][n["parent"]]["san"] == "O-O"
+
+
+def test_long_moves_forming_a_line_are_a_variation(tmp_path):
+    """Moves of both sides next to each other ("...c7-c5 and d4xc5") form a
+    line: the first is a variation where the line stands, the second its
+    reply."""
+    book = _build(tmp_path, _long_book(["The thrust ...c7-c5 and d4xc5 is not to be feared."]))
+    (c5,) = _long_marks(book, "c7-c5")
+    n = book["nodes"][c5["node"]]
+    assert n["san"] == "c5" and not n["main"] and book["nodes"][n["parent"]]["san"] == "e3"
+    (dxc5,) = _long_marks(book, "d4xc5")
+    assert book["nodes"][dxc5["node"]]["san"] == "dxc5"
+    assert book["nodes"][dxc5["node"]]["parent"] == c5["node"]
+    game = _line_with(book, "Bg5")
+    assert _sans(book, game) == QGD + ["Bd3", "Nbd7", "Qc2", "Re8"]
+
+
+def test_long_move_refers_to_the_move_played(tmp_path):
+    """"The early c2-c4" names the move 2.c4 of the line: a link to it."""
+    book = _build(tmp_path, _long_book(["The early c2-c4 fights for the centre."]))
+    (m,) = _long_marks(book, "c2-c4")
+    assert m.get("ref") and book["nodes"][m["node"]]["san"] == "c4"
+    assert book["nodes"][m["node"]]["number"] == 2
+
+
+def test_long_move_from_another_square_is_no_reference(tmp_path):
+    """The line played c3-c4, not c2-c4: "c2-c4" names a move it did not
+    play, and stays text."""
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(1)
+    b.line("1.d4 d5 2.Nf3 Nf6 3.c3 e6 4.Bf4 Bd6 5.c4 O-O", bold=True)
+    b.line("The plan with c2-c4 at once was simpler.")
+    b.line("The move c3-c4 costs a tempo.")
+    b.prose(1)
+    book = _build(tmp_path, b)
+    assert not _long_marks(book, "c2-c4")
+    (m,) = _long_marks(book, "c3-c4")
+    assert m.get("ref") and book["nodes"][m["node"]]["number"] == 5
+
+
+def test_long_move_after_and_then_goes_on_with_the_variation(tmp_path):
+    """"7.Bh4 and then ...b7-b6" goes on with the variation of the note; a
+    move of the same side ("8.Bd3 and then Ng1-e2") is a plan inside the
+    variation, and never a move of the main line."""
+    book = _build(tmp_path, _long_book([
+        "If 6...h6 7.Bh4 and then ...b7-b6, Black is solid.",
+        "If 6...c6 7.Bd3 and then Ng1-e2, White is fine."]))
+    (b6,) = _long_marks(book, "b7-b6")
+    n = book["nodes"][b6["node"]]
+    assert n["san"] == "b6" and not n["main"]
+    assert book["nodes"][n["parent"]]["san"] == "Bh4"
+    assert not _long_marks(book, "Ng1-e2")
+    game = _line_with(book, "Bg5")
+    assert _sans(book, game) == QGD + ["Bd3", "Nbd7", "Qc2", "Re8"]
+
+
+# ------------------------------------------------------------------ game boundaries
+
+def _colour_headers(b, white, black, place):
+    for text in (f"White: {white}", f"Black: {black}", place):
+        b.line(text, x=120)
+
+
+def test_headers_one_player_a_line_start_a_game(tmp_path):
+    """"White: ..." over "Black: ..." over the place and year is a game
+    header: the moves under it are a new game, and a run under it that
+    continues the numbering of the game before does not resume that game."""
+    b = _Book()
+    _front(b)
+    b.page()
+    _colour_headers(b, "A. Smith", "B. Jones", "London 1990")
+    b.prose(1)
+    b.line("1.e4 e5 2.Nf3 Nc6 3.Bb5", bold=True)
+    b.prose(2)
+    _colour_headers(b, "C. Brown", "D. Green", "Paris 1 991")
+    b.prose(1)
+    b.line("3...a6 4.Ba4 Nf6", bold=True)
+    b.prose(1)
+    b.line("1.d4 d5 2.c4 e6 3.Nc3 Nf6", bold=True)
+    b.prose(1)
+    book = _build(tmp_path, b)
+    first = _line_with(book, "Bb5")
+    assert first["title"] == "A. Smith - B. Jones, London 1990"
+    assert first["header"]["white"] == "A. Smith" and first["header"]["year"] == "1990"
+    assert _sans(book, first) == ["e4", "e5", "Nf3", "Nc6", "Bb5"]
+    second = _line_with(book, "c4")
+    assert second["title"] == "C. Brown - D. Green, Paris 1991" and second["kind"] == "game"
+
+
+def test_colour_header_lines():
+    from chessbook import pdftext as pt
+    from chessbook.assemble import colour_header_merge
+    assert pt.colour_header("White: V. Kramnik") == ("white", "V. Kramnik")
+    assert pt.colour_header("Black: D.Sadvakasov") == ("black", "D.Sadvakasov")
+    assert pt.colour_header("White: to play and win the game") is None
+    assert pt.colour_header("White to move") is None
+    h = colour_header_merge(None, "White: P.Nikolic")
+    h = colour_header_merge(h, "Black: Y.Seirawan")
+    h = colour_header_merge(h, "Skelleftea 1 989")
+    assert (h["white"], h["black"], h["site"], h["year"]) == ("P.Nikolic", "Y.Seirawan",
+                                                               "Skelleftea", "1989")
+    assert h["text"] == "P.Nikolic - Y.Seirawan, Skelleftea 1989"
+    assert colour_header_merge(h, "Astana 200]")["year"] == "2001"
+
+
+def test_a_first_move_read_on_another_square_is_misplaced():
+    """A first move read only by moving it to another square ("Qf1" for a
+    printed "Bb2" whose bishop already stands there) does not fit the
+    diagram: the diagram may show the position after it (choose_start)."""
+    from types import SimpleNamespace as NS
+    from chessbook.assemble import _misplaced
+    assert _misplaced([NS(status="guessed", san="Qf1", raw=".il.b2")])
+    assert not _misplaced([NS(status="guessed", san="Bb2", raw=".il.b2")])
+    assert not _misplaced([NS(status="ok", san="Qf1", raw=".il.b2")])
+    assert not _misplaced([NS(status="guessed", san="e5", raw="eS")])
+
+
+def test_lost_game_takes_up_again_from_a_diagram(tmp_path):
+    """A game whose moves stopped reading (here the text lacks move 5, so the
+    position after it is unknown) does not swallow the moves printed after a
+    diagram as unread moves, even when the printed run of moves goes on past
+    the diagram: the moves after it start from the position it shows."""
+    import pymupdf
+    b = _Book()
+    _front(b)
+    b.page()
+    b.line("A. Smith - B. Jones, London 1990", x=120)
+    b.prose(1)
+    b.line("1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 6.Re1 b5", bold=True)
+    # a board beside the text, between two lines of the same run of moves
+    b.pg.insert_image(pymupdf.Rect(300, b.y - 11, 400, b.y + 89), pixmap=b.board)
+    b.line("7.Rd7 Kh7 8.Rxf7 Kg6 9.Rb7", bold=True)
+    b.y += 90
+    b.prose(2)
+    ending = ENDING.replace(" 0 1", " 0 7")
+    book = _build(tmp_path, b, {"p3-1": ending})
+    game = _line_with(book, "Ba4")
+    assert _sans(book, game)[:8] == RUY + ["Nf6"]
+    rest = _line_with(book, "Rxf7")
+    assert rest["id"] != game["id"] and rest["diagram"] == "p3-1"
+    assert _sans(book, rest) == ["Rd7", "Kh7", "Rxf7", "Kg6", "Rb7"]
+
+
+def test_a_note_does_not_take_the_game_header(tmp_path):
+    """A line that the notes start before the game's own moves (from a
+    diagram printed under the header) leaves the header to the game."""
+    b = _Book()
+    _front(b)
+    b.page()
+    _colour_headers(b, "A. Smith", "B. Jones", "London 1990")
+    b.pictures("Diagram 1")
+    b.line("Here 1.Rd8+ Kh7 2.Rd7 would win at once.")
+    b.prose(1)
+    b.pictures("Diagram 2")
+    b.line("1.Rd7 Kh7 2.Rxf7 Kg6 3.Rb7", bold=True)
+    b.prose(1)
+    book = _build(tmp_path, b, {"p3-1": ENDING, "p3-2": ENDING})
+    game = _line_with(book, "Rxf7")
+    assert game["title"] == "A. Smith - B. Jones, London 1990" and game["kind"] == "game"
+    note = _line_with(book, "Rd8+")
+    assert note["id"] != game["id"] and note["title"] == "Diagram 1"
+
+
+def test_a_reference_names_the_same_kind_of_piece():
+    """"b3-b4" (a pawn) does not name the king's move Kb3-b4."""
+    from chessbook.assemble import _Builder
+    assert _Builder.same_kind({"san": "b4"}, "P")
+    assert not _Builder.same_kind({"san": "Kb4"}, "P")
+    assert _Builder.same_kind({"san": "Nc3"}, "N")
+    assert _Builder.same_kind({"san": "Nc3"}, None)
+
+
+def test_unreadable_moves_before_a_run_are_not_skipped(tmp_path):
+    """"14 0 exO 15 gxO h5" printed (and misread) between a diagram and "16
+    Rd7": the diagram shows the position before move 14, so the line does
+    not start with 16.Rd7 as if the diagram stood at move 16."""
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(1)
+    b.pictures("Diagram 1")
+    b.line("The game was soon agreed drawn:")
+    b.line("14 0 exO 15 gxO h5")
+    b.line("16.Rd7 Kh7 17.Rxf7 Kg6", bold=True)
+    b.prose(2)
+    book = _build(tmp_path, b, {"p3-1": ENDING})
+    line = next(L for L in book["lines"] if L["diagram"] == "p3-1")
+    first = book["nodes"][_main_line(book, line)[0]]
+    assert first["status"] == "failed" and "move 14" in first["reason"]
+    assert line["start_fen"].endswith(" w - - 0 14")

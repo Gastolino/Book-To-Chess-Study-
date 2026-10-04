@@ -132,11 +132,30 @@ When a page opens in the middle of a line, the reader lists that line first
 under "On this page" and shows its position at the top of the page.
 
 Moves printed in long notation ("e2-e4", "Ng1-f3", "Bf1–b5", "d2xd3")
-are read strictly: the piece must stand on the square the text names. Such
-a move without a move number in a sentence ("once Black has played
-...e7-e6") names the move of the line it repeats, and a tap on it shows that
-position; otherwise it is a variation where it is legal, stays text when the
-sentence gives it as a plan, or stands in no line with the reason.
+are read strictly: the piece must stand on the square the text names. The
+structure of the sentence decides what such a move without a move number
+is. Right after numbered moves of a note and joined to them by "and then",
+"followed by", "then", "with" or "and" ("8.Rd1 and then Nb1–c3"), it goes on
+with that variation when it is legal there, and otherwise stays text in it.
+Introduced by "Or", "Instead", "If", "after", "then" or a bracket with other
+moves, or printed next to a move of the other side ("...d5xe4 and d3xe4"),
+it is a variation where the line stands, or stands in no line with the
+reason. Alone in a sentence ("the potential to gain space with f2-f4"), it
+is text. A move that the line played ("once Black has played ...e7-e6")
+names that move, and a tap on it shows that position: the move must leave
+the same square for the same square, and be the most recent such move of
+the main line or of a variation of the same note.
+
+Games are told apart by their headers, whether on one line ("Alekhine -
+N.N., New York 1924") or on one line a player ("White: V. Kramnik" over
+"Black: D. Sadvakasov"); after a header, no line of the game before gives
+the starting position of the moves. Books that set the main moves in one
+style of a type and the moves of the notes in another (bold and italic of
+one family) have their italic moves read as notes, never as moves of the
+game. A line whose moves stop reading (the text lacks a move, or two moves
+in a row cannot be read) takes up again at the next diagram printed among
+its moves: the moves after the diagram start from the position it shows, as
+a line of their own, instead of standing unread in the line before.
 
 ## Running it from the command line
 

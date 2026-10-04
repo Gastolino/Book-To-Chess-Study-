@@ -65,7 +65,10 @@ at once (live.py) with the result of a fresh build.
 How the text is read
 --------------------
 Main-line moves are set in a move font that pdftext.book_fonts learns from
-the book; notes are set in the body font. Every word is classed by the font
+the book; notes are set in the body font. A second style of the move font
+(italic where the main line is upright, another weight or a smaller size:
+pdftext "note_moves") sets moves named in the notes, and its words are
+notes. Every word is classed by the font
 of its characters (a book without a distinct move font falls back to the
 line roles). Each chapter becomes three aligned text buffers: the original
 text, the main-font words only and the note words only, the other words
@@ -77,7 +80,9 @@ body text ("should White play 1.g6+, ...") count as notes.
 
 How lines are formed
 --------------------
-A game starts at a game header, or at a main-font run that begins at move 1
+A game starts at a game header (one line, "Alekhine - N.N., New York 1924",
+or one line a player, "White: V. Kramnik" over "Black: D. Sadvakasov" and
+the place and year), or at a main-font run that begins at move 1
 with White and reads as play from the initial position: cleanly over two
 moves each at least (a shorter run counts the runs that continue its
 numbering after a diagram, "1 e4 e6 2 d3" / "2...d5 3 Nd2"), with no printed piece glyph or capture mark dropped to
@@ -115,13 +120,28 @@ continues the last line of the chapter before, with no heading, game header
 or diagram before it, continues that line too (chapter_join): the book's
 structure then took a page inside the text for the start of a chapter.
 
+A line whose main line stopped reading (a gap, or its last two moves
+failed: _Builder.lost) does not take the moves printed after a diagram as
+more unread moves: a run that continues its numbering after a diagram, or
+the part after a diagram of a run that goes on past one (split_lost), starts
+from the diagram instead (on_main, "resync").
+
 Moves in long notation ("e2-e4", "Ng1-f3", "d2xd3") name the square the
 piece leaves, and only a move from that square reads them. Such a move
 without a move number inside a sentence (_LONG_TEXT_RE; ranges such as "the
-a1-h8 diagonal" stay prose) is placed by do_long: it refers to the move of
-the line it repeats (a mark linked to that move), or is a variation where the
-line stands when it is legal there, or stays text when the sentence gives it
-as a plan, or stands in no line with the reason.
+a1-h8 diagonal" stay prose) is placed by do_long, by the structure of its
+sentence (long_cue), not by its words: right after a numbered move of the
+notes, joined by "and then", "followed by", "then", "with" or "and", it goes
+on with that variation ("8.Rd1 and then Nb1-c3"), or stays text when it is
+not legal there; introduced by "Or", "Instead", "If", "after", "then" or a
+bracket that holds other moves, or next to a move of the other side ("...
+d5xe4 and d3xe4"), it is a variation where the line stands; alone in the
+prose ("the potential to gain space with f2-f4"), it is no variation. In
+every case but the first, a move the line played refers to that move (a
+mark linked to it): the most recent move of the main line, or of a
+variation of the same note, from the same square to the same square, unless
+a piece of that kind came to the square since (long_reference). Anything
+else stays text, and only a variation that is not legal stands in no line.
 
 Note runs become variations. A note run whose first move has the number of a
 move in the line becomes an alternative to that move; a run that continues a
@@ -247,10 +267,6 @@ _LONG_TEXT_RE = re.compile(r"(?<![^\s(\[“\"‘'])((?:\.\.\.|…)\s?)?((?![(\[�
                            r"(?![\w\-–—])")
 _RANGE_AFTER_RE = re.compile(r"^\W{0,2}(?:diagonals?|files?|ranks?|lines?|squares?|direction|sector|"
                              r"wing|side|axis|pawns?)\b", re.I)
-_PLAN_RE = re.compile(r"\b(?:idea|plans?|intend\w*|aim\w*|manoeuvre\w*|maneuver\w*|regroup\w*|"
-                      r"transfer\w*|reroute\w*|route|prepar\w*|going to|wants? to|hope\w* to|"
-                      r"purpose|in order to|so as to|clear\w* the way|would|could|might|potential|"
-                      r"deterr\w*)\b", re.I)
 # A square range named after a word such as "diagonal": "the short diagonal (a6-c8)".
 _RANGE_BEFORE_RE = re.compile(r"\b(?:diagonals?|files?|ranks?|lines?)\W{0,3}"
                               r"(?:[a-h][1-8]\s?[-–—]\s?[a-h][1-8]\W{0,2}\s(?:and|or)\s)?$", re.I)
@@ -258,6 +274,21 @@ _RANGE_BEFORE_RE = re.compile(r"\b(?:diagonals?|files?|ranks?|lines?)\W{0,3}"
 # the resumed line: "Or 4...d5", "Instead 4...d5", "If 4...d5", "After 4...d5".
 _ALT_LEAD_RE = re.compile(r"\b(?:or|instead|if|after|alternatively|otherwise)\b[^.;:!?]*$", re.I)
 _FOLLOW_RE = re.compile(r"\b(?:followed by|and then|then)\s*$", re.I)
+# What joins a move in long notation to the numbered moves of the notes just
+# before it, so that it goes on with their variation: "8.Rd1 and then Nb1-c3".
+_LONG_FOLLOW_RE = re.compile(r"^[\s,]*(?:and\s+then|followed\s+by|then|with|and)[\s,:]*$", re.I)
+# What may stand between two moves that form a line: "...d5xe4 and d3xe4".
+_LONG_JOIN_RE = re.compile(r"^[\s,;]*(?:(?:and\s+then|followed\s+by|then|and)[\s,]*)?$", re.I)
+# A word that introduces a move in long notation as a move of a line of
+# analysis ("Instead d2-d4", "If Black ever plays ...g7-g5", "after b2-b4",
+# and at the start of a clause "Or ...e7-e5", "and then f2-f4"), or a bracket
+# ("(e2-e4 ..."). An "or" inside a list ("...Bd7-c6 or ...e7-e6") is none.
+_LONG_ALT_RE = re.compile(
+    r"(?:(?:^|(?<=[\s(\[]))(?:instead(?:\s+of)?|if|after)\b"
+    r"|(?:^|[,;:(]\s*|\b(?:and|but)\s+)(?:or|then)\b|\()"
+    r"(?:[\s,]*(?:white|black|he|she|we|one|you|now|first|ever|already|at\s+once|"
+    r"immediately|plays?|played|playing|continues?|continued|tries|tried|answers?|"
+    r"answered|repl(?:y|ies|ied)|the\s+move|\.\.\.|…))*[\s,]*$", re.I)
 # "Diagram 430", "Position 262", "Diag. 12": the text names a diagram.
 _DIAGRAM_REF_RE = re.compile(r"\b(?:[DO][il1]a?gr[ae](?:m|rn|in)s?|Diag\.|Position|Pos\.)\s*"
                              r"([0-9lIOSB]{1,3}[a-d]?)\b")
@@ -376,6 +407,17 @@ _PLAIN_MOVE_RE = re.compile(r"^(?:[KQRBN]?[a-h]?[1-8]?[x:]?[a-h][1-8](?:=?[QRBN]
                             r"0-0(?:-0)?)[+#!?t]*$")
 
 
+def _misplaced(decs):
+    """True when the first decoded move goes to another square than the one
+    printed: it was read only by changing the square ("Qf1" for ".il.b2")."""
+    if not decs or decs[0].status == "ok" or not decs[0].san:
+        return False
+    sq = _SQUARE_RE.search(_norm_raw(decs[0].raw) or "")
+    dest = re.findall(r"[a-h][1-8]", decs[0].san)
+    norm = str.maketrans({"£": "f", "l": "1", "I": "1", "B": "8", "S": "5"})
+    return bool(sq and dest) and sq.group(0).translate(norm) != dest[-1]
+
+
 def _plain_move(raw):
     """True for a move printed in plain letters that any reader can parse."""
     return bool(_PLAIN_MOVE_RE.match(_norm_raw(raw) or ""))
@@ -492,6 +534,29 @@ def parse_game_header(text):
     ev = event + (" " + year if year and year not in event else "")
     return {"white": white, "black": black, "event": ev.strip(), "site": site,
             "year": year, "text": text.strip()}
+
+
+def colour_header_merge(header, text):
+    """A game header set one player a line ("White: V. Kramnik", "Black:
+    D. Sadvakasov", then "Astana 2001"): header (None for the first line)
+    with the line's player or place and year added, in the fields of
+    parse_game_header."""
+    h = dict(header or {"white": "", "black": "", "event": "", "site": "", "year": None,
+                        "text": "", "by_colour": True})
+    c = pt.colour_header(text)
+    if c is not None:
+        h[c[0]] = c[1]
+    else:
+        place = pt.join_year(text.strip())
+        m = re.search(r"((?:1[5-9]|20)\d)([\dlI\]])\W{0,2}$", place)
+        if m:
+            h["year"] = m.group(1) + m.group(2).translate(str.maketrans("lI]", "111"))
+            place = place[:m.start()].strip(" ,;.")
+        h["site"] = place
+        h["event"] = " ".join(x for x in (place, h["year"]) if x)
+    h["text"] = " - ".join(x for x in (h["white"], h["black"]) if x) + (
+        f", {h['event']}" if h["event"] else "")
+    return h
 
 
 def _stage1_current(folder, page_count):
@@ -917,7 +982,9 @@ class _Builder:
             return [c] * len(words)
         roles = []
         for s in ln["spans"]:
-            r = "m" if s["role"] == "moves" else "n" if s["role"] == "text" else None
+            # moves set in a second style of the move font (italic where the
+            # main line is upright) are named in the notes (pdftext "note_moves")
+            r = "m" if s["role"] == "moves" else "n" if s["role"] in ("text", "note_moves") else None
             roles.extend(r for ch in s["text"] if ch not in pt._SPACE_SET)
         if len(roles) != sum(len(w) for w in words):
             c = "m" if ln["role"] == "moves" else "n"
@@ -1290,6 +1357,8 @@ class _Builder:
         self.prev_heading = None
         self.last_closed = None
         self.suspended = None           # (line, offset): a line a heading interrupted
+        self.deferred = None            # (offset, run): the rest of a run cut at a diagram
+        self.held_header = None         # the pending header, while a note starts a line
         # the last line of the chapter before, when it ends on its last pages
         prev = next((M for M in reversed(self.lines) if M.chapter < ci), None)
         last = self.nodes[prev.main_nodes[-1]] if prev is not None and prev.main_nodes else None
@@ -1326,6 +1395,12 @@ class _Builder:
                 self.cut = self.structural = off
                 self.pending_header = self.pending_number = self.exercise = None
             elif kind == "game_header" and prev_kind == "game_header" and \
+                    self.pending_header is not None and self.pending_header.get("by_colour") \
+                    and not (pt.colour_header(x["text"]) and self.pending_header[
+                        pt.colour_header(x["text"])[0]]):
+                # "White: V. Kramnik" / "Black: D. Sadvakasov" / "Astana 2001"
+                self.pending_header = colour_header_merge(self.pending_header, x["text"])
+            elif kind == "game_header" and prev_kind == "game_header" and \
                     self.pending_header is not None and not self.pending_header.get("year") \
                     and not pt.GAME_HEADER_RE.match(x["text"]):
                 # the second line of a header ("Flohr - Horowitz, USSR - USA" /
@@ -1337,7 +1412,9 @@ class _Builder:
                     self.pending_header = merged
             elif kind == "game_header":
                 self.close(off)
-                self.pending_header = parse_game_header(x["text"]) or {
+                self.pending_header = (
+                    colour_header_merge(None, x["text"]) if pt.colour_header(x["text"]) else
+                    parse_game_header(x["text"])) or {
                     "text": x["text"], "white": "", "black": "", "event": "", "site": "",
                     "year": None}
                 self.pending_header["page"] = x["page"]
@@ -1388,6 +1465,11 @@ class _Builder:
                     self.on_note(x)
             if kind != "page":
                 prev_kind = kind
+            if kind == "diagram" and self.deferred is not None and self.deferred[0] <= off:
+                # the moves after a diagram that a lost line's run held
+                rest, self.deferred = self.deferred[1], None
+                self.now = rest.start
+                self.on_main(rest)
         self.close(st.pos)
         self.flush_pre_notes()
 
@@ -1698,7 +1780,16 @@ class _Builder:
 
     def from_diagram(self, run, born, kind=None, title=None, did=None):
         """Start a line at a run that needs a diagram's position: the diagram
-        the sentence names, or else the diagram before the run."""
+        the sentence names, or else the diagram before the run. A line from
+        the notes does not take the game header that waits for the game's
+        moves."""
+        if born == "note" and self.pending_header is not None:
+            held, self.pending_header = self.pending_header, None
+            self.held_header = held
+            try:
+                return self.from_diagram(run, born, kind, title, did)
+            finally:
+                self.pending_header, self.held_header = held, None
         if did is None:
             ref = self.referenced_diagram(run)
             if ref and ref[1]:
@@ -1744,14 +1835,67 @@ class _Builder:
         kind = kind or ("game" if header else "fragment")
         title = title or self.title_for(run, did)
         fen = pick["fen"] if pick is not None else self.diagram_fen(did, run)
+        unread = self.unread_numbers(run) if (fen is not None and born == "main"
+                                              and (pick is None or pick.get("did") == did)) else None
+        if unread is not None:
+            # the moves printed between the diagram and the run cannot be read
+            # ("14 0 exO 15 gxO h5 16 Bb2"): the diagram shows the position
+            # before the first of them, not the position the run starts from
+            b = chess.Board(fen)
+            b.turn, b.ep_square, b.fullmove_number = chess.WHITE, None, unread
+            fen = b.fen()
         L = self.start_line(run, kind, title, fen is None, did, born, header, fen)
         if pick is not None:
             L.start_note = pick["note"]
+        if unread is not None:
+            self.gap(L, run, run.ply, follow=False)
         self.pending_header = None
         if fen is None:
             self.waiting.append({"page": L.page, "chapter": self.ci, "text": self.run_text(run),
                                  "reason": WAIT_REASON, "line": L.id, "diagram": did})
         return L
+
+    def unread_numbers(self, run):
+        """The number of White's move that stands, with unreadable moves after
+        it, right before a run in its sentence or at the start of its
+        paragraph ("drawn: 14 0 exO 15 gxO h5" before "16 Bb2"), or None.
+        Such moves are part of the line: the run does not start where its own
+        number says."""
+        if run.ply is None or run.ply < 2:
+            return None
+        want = run.ply // 2 + 1
+        para = self.para_start_of(run.start)
+        if not self.st.orig_text[para:run.start].strip() and para >= 2:
+            para = self.para_start_of(para - 2)     # the run opens its paragraph
+        lead = self.st.orig_text[max(para, run.start - 60):run.start]
+        # the numbers stand after a word of the sentence, or open the paragraph
+        words = lead.split()
+        found, sentence = [], para >= run.start - 60
+
+        def prose(w):
+            return len(w) > 6 or bool(re.fullmatch(r"(?:[A-Z]?[a-z]{2,}|[a-z]{3,})[,.:;!?]?", w)
+                                      and re.search(r"[aeiouy]", w.lower()))
+        for i in range(len(words) - 1, -1, -1):
+            w = words[i]
+            if re.fullmatch(r"\d{1,3}\.?", w):
+                # a move number with the (unreadable) move after it
+                n = int(w.rstrip("."))
+                nxt = words[i + 1].rstrip(".") if i + 1 < len(words) else None
+                if nxt is not None and not (nxt.isdigit() and int(nxt) == n + 1):
+                    found.append(n)
+            elif prose(w):
+                sentence = True             # a word of the sentence
+                break
+        found = [n for n in found if want - 3 <= n < want]
+        if not found or not sentence:
+            return None
+        # moves that read stand in a run of their own, and moves in the move
+        # font belong to the main line's own runs: these are neither
+        lo = run.start - len(lead)
+        if any(r is not run and lo < r.end <= run.start for r in self.all_runs) \
+                or any(ch.isalnum() for ch in self.st.main_text[lo:run.start]):
+            return None
+        return min(found)
 
     # -------------------------------------------------------- choosing the start
     def lookahead(self, run, limit=16):
@@ -1788,15 +1932,24 @@ class _Builder:
         ok = [d.cost for d in decs if d.status != "failed"]
         return (prefix, failed, sum(ok) / len(ok) if ok else 9.0), decs
 
+    def firm_header(self):
+        """True when a game header is pending that surely starts another game:
+        one line a player ("White: ..."), or a line that does not end like a
+        sentence (a sentence of the notes that names a game ends with a stop)."""
+        h = self.pending_header or getattr(self, "held_header", None)
+        return h is not None and (bool(h.get("by_colour"))
+                                  or not h.get("text", "").rstrip().endswith((".", ")")))
+
     def diagram_window(self, run, limit=4):
         """The diagrams printed before the run since the last heading and the
         last moves of another line, nearest first (at most limit): those the
         run may start from."""
         out = []
+        head = (self.pending_header or self.held_header)["offset"] if self.firm_header() else 0
         for doff, did in reversed(self.diagram_events):
             if doff > run.start:
                 continue
-            if doff < max(self.cut, self.last_token_end) or len(out) >= limit:
+            if doff < max(self.cut, self.last_token_end, head) or len(out) >= limit:
                 break
             out.append(did)
         return out
@@ -1875,8 +2028,11 @@ class _Builder:
             fen = self.diagram_fen(did, run)
             if fen:
                 cands.append((k + 1, did, None, fen))
+        # a game header starts another game: no position of a line before it
+        # is a start for its moves
         recent = [M for M in reversed(self.lines) if M.chapter == self.ci
-                  and M.end_offset is not None and M is not self.active][:2]
+                  and M.end_offset is not None and M is not self.active][:2] \
+            if not self.firm_header() else []
         for k, prev in enumerate(recent):
             if prev.waiting or prev.broken or len(prev.main_nodes) <= 1:
                 continue
@@ -1948,7 +2104,8 @@ class _Builder:
             if fixed is not None:
                 best, extra = fixed
                 note = (note + " " + extra).strip()
-        if best is not None and best["score"][0] == 0 and base is not None \
+        if best is not None and base is not None and (
+                best["score"][0] == 0 or (best is base and _misplaced(best["decs"][:1]))) \
                 and self.shows_reached(run, toks, default):
             return {"skip": True}
         if best is None or (best is base and not note):
@@ -2138,11 +2295,17 @@ class _Builder:
             self.release_pre_notes(None if accept else did)
             self.adopt_pre_notes(self.start_from_initial(run, "main"))
             return
-        if L is not None and P == L.next_ply:
+        # a line whose own moves stopped reading (the position after them is
+        # a guess) takes up its numbering again after a diagram: the diagram
+        # gives the position, and a new fragment starts from it
+        resync = (L is not None and P is not None and P == L.next_ply and not L.waiting
+                  and self.lost(L)
+                  and any(L.last_token_end <= off <= run.start for off, _ in self.diagram_events))
+        if L is not None and P == L.next_ply and not resync:
             if self.pending_header and L.header is None:
                 L.header, L.kind, L.title = self.pending_header, "game", self.pending_header["text"]
                 self.pending_header = None
-            self.extend(L, run)
+            self.extend_or_defer(L, run)
             return
         # (an earlier move of the open line that the run names makes it an
         # alternative within that line, not a resumption)
@@ -2157,7 +2320,7 @@ class _Builder:
             self.extend(R, run)
             self.adopt_pre_notes(R)
             return
-        between = L is not None and self.diagram_between(L, run)
+        between = L is not None and (self.diagram_between(L, run) or resync)
         if L is not None and P is not None and not between:
             # The numbering does not continue the line, but nothing stands
             # between: moves missing from the text, moves the book leaves out
@@ -2165,7 +2328,7 @@ class _Builder:
             # in the main font.
             if L.waiting or L.broken:
                 if P > L.next_ply:
-                    self.extend(L, run)
+                    self.extend_or_defer(L, run)
                     return
             elif P > L.next_ply:
                 if P - L.next_ply <= GAP_MAX:
@@ -2204,6 +2367,52 @@ class _Builder:
             self.active = L2
             self.extend(L2, run)
             self.adopt_pre_notes(L2)
+
+    def lost(self, L):
+        """True when the line's main line no longer reads: a gap in the text,
+        or its last two moves failed (the position after them is a guess)."""
+        if L.broken:
+            return True
+        last = [self.nodes.get(n) for n in L.main_nodes[1:][-2:]]
+        return len(last) == 2 and all(n is not None and n.get("status") == "failed" for n in last)
+
+    def split_lost(self, L, run):
+        """A run that a lost line would take in whole, cut at the first
+        diagram printed among its moves: (head, tail) when the line is lost
+        by the end of head (see lost), so that the moves after the diagram
+        start from the position it shows (on_main, resync), else None."""
+        if L.waiting or self.replaying:
+            return None
+        cuts = [off for off, _, kind, did in self.st.events
+                if kind == "diagram" and run.start < off < run.end and self.diagram_selected(did)]
+        if not cuts:
+            return None
+        off = cuts[0]
+        head = [t for t in run.tokens if t.end <= off]
+        tail = [t for t in run.tokens if t.start >= off]
+        hm = [t for t in head if t.kind == "move"]
+        tm = [t for t in tail if t.kind == "move"]
+        if not hm or not tm or _ply(tm[0]) is None:
+            return None
+        if not L.broken:
+            decs = self.dec.run(L.last_fen, head) if L.last_fen else []
+            if len(decs) < 2 or not all(d.status == "failed" for d in decs[-2:]):
+                return None
+        a = replace(run, tokens=head, moves=hm, end=head[-1].end, result=None, text="")
+        b = replace(run, tokens=tail, moves=tm, start=tail[0].start, ply=_ply(tm[0]), text="")
+        return a, b, off
+
+    def extend_or_defer(self, L, run):
+        """Extend L with the run, or with its moves up to a diagram printed
+        among them when the line is lost there (split_lost): the rest of the
+        run is taken up once the diagram is reached (chapter, "diagram")."""
+        cut = self.split_lost(L, run)
+        if cut is None:
+            self.extend(L, run)
+            return
+        head, tail, off = cut
+        self.extend(L, head)
+        self.deferred = (off, tail)
 
     def misnumbered(self, L, run):
         """The run renumbered to continue L when its printed number differs from
@@ -2249,7 +2458,7 @@ class _Builder:
         L.ply_node[L.next_ply] = nid
         L.next_ply = P
         if follow and not self.replaying:
-            self.extend(L, run)
+            self.extend_or_defer(L, run)
 
     def diagram_between(self, L, run):
         return any(L.last_token_end < off < run.start for off, _ in self.diagram_events)
@@ -2453,10 +2662,12 @@ class _Builder:
             # that line (see do_long)
             L = self.last_closed if (self.last_closed is not None
                                      and self.last_closed.chapter == self.ci) else None
+            cue = self.long_cue(run)
             if L is None:
-                self.unplaced(run, "no line stands where it is printed")
-                return
-            op = ("long", run, self.long_cue(run))
+                if cue not in (None, "plan"):
+                    self.unplaced(run, "no line stands where it is printed")
+                return                  # a move named in the prose stays text
+            op = ("long", run, cue)
             L.ops.append(op)
             self.do_long(L, op)
             return
@@ -2482,7 +2693,7 @@ class _Builder:
             if self.is_long(run):
                 op = ("long", run, self.long_cue(run))
                 L.ops.append(op)
-                self.do_long(L, op)
+                self.do_long(L, op, state)
                 continue
             if self.is_threat(run):
                 op = ("unplaced", run, "the text gives these moves as a threat or a plan, not as "
@@ -2513,23 +2724,155 @@ class _Builder:
                                       and bool(_LONG_RAW_RE.search(run.moves[0].raw)))
 
     def long_cue(self, run):
-        """"plan" when the text gives the move as a plan or a threat, else None."""
-        if len(_SQUARES_RE.findall(run.moves[0].raw)) > 2:
+        """How the text gives a move printed in long notation without a move
+        number (see do_long), from the structure of its sentence alone:
+
+        "plan"      a manoeuvre over several squares ("Nf3-d2-c4");
+        ("follow", start)
+                    it comes right after a numbered run of the notes (which
+                    starts at start), joined by "and then", "followed by",
+                    "then", "with" or "and": it goes on with that variation;
+        "alt"       a word such as "Or", "Instead", "If", "after" or "then",
+                    or a bracket that holds other moves, introduces it;
+        "line"      a move of the other side stands right before or after it
+                    ("... d5xe4 and d3xe4"): the moves form a line;
+        None        a move named in the prose, alone: it refers to a move of
+                    the line, or stays text.
+        """
+        mv = run.moves[0]
+        if len(_SQUARES_RE.findall(mv.raw)) > 2:
             return "plan"               # a manoeuvre: "Nf3-d2-c4"
+        text = self.st.orig_text
+        k = bisect.bisect_left(self.run_starts, run.start)
+        prev = next((r for r in reversed(self.all_runs[:k]) if r.end <= run.start), None)
+        nxt = next((r for r in self.all_runs[k:] if r.start >= run.end and r is not run), None)
+        before = text[prev.end:run.start] if prev is not None else None
+        if (prev is not None and prev.kind == "note" and prev.ply is not None
+                and len(before) <= 24 and _LONG_FOLLOW_RE.match(before)):
+            return ("follow", prev.start)
+        side = self.long_side(run)
+        if (prev is not None and self.is_long(prev) and len(before) <= 16
+                and _LONG_JOIN_RE.match(before)
+                and self.move_side(prev, prev.moves[-1]) not in (None, side)):
+            return ("follow", prev.start)   # "...d5xe4 and d3xe4": the reply
         lead = self.lead_text(run.start, 80)
-        # the rest of its sentence ("... Nc3-e2 comes into White's plans")
-        tail = re.split(r"[.;!?]\s", self.st.orig_text[run.end:run.end + 80] + " ", maxsplit=1)[0]
-        if _THREAT_RE.search(lead) or _PLAN_RE.search(lead) or _PLAN_RE.search(tail):
-            return "plan"
+        hit = _LONG_ALT_RE.search(lead)
+        if hit:
+            if not hit.group(0).strip().startswith("("):
+                return "alt"
+            # a bracket that holds other moves: "(b2-b4 and 12.Nd2)"
+            inner = text[run.end:run.end + 80].split(")", 1)[0]
+            if nxt is not None and nxt.start < run.end + len(inner):
+                return "alt"
+        if (prev is not None and before is not None and len(before) <= 16
+                and _LONG_JOIN_RE.match(before)):
+            other = self.move_side(prev, prev.moves[-1])
+            if other is not None and other != side:
+                return "line"
+        if nxt is not None and nxt.start - run.end <= 16 \
+                and _LONG_JOIN_RE.match(text[run.end:nxt.start]):
+            other = self.move_side(nxt, nxt.moves[0])
+            if other is not None and other != side:
+                return "line"
         return None
 
-    def do_long(self, L, op):
-        """Place a move printed in long notation that has no move number:
-        (a) when the line already played it, it refers to that move (a mark
-        linked to the move); (b) else, unless the text gives it as a plan,
-        it is a variation from the place where the line stands, when it is
-        legal there; (c) a plan stays in the text; (d) anything else stands
-        in no line, with the reason."""
+    def long_side(self, run):
+        """True for Black: the side that plays a move printed in long notation,
+        from its dots ("...e7-e6"), the direction of a pawn's step, or else
+        White, as books mark Black's moves in the prose with dots."""
+        return self.move_side(run, run.moves[0])
+
+    @staticmethod
+    def move_side(run, tok):
+        """True for Black, False for White, None when the text does not say:
+        the move number or dots before the move, or the squares of a move in
+        long notation."""
+        if tok.number is not None or tok.side_known:
+            return bool(tok.black)
+        if tok is run.moves[0] and run.tokens and run.tokens[0].kind == "number":
+            return bool(run.tokens[0].black) if run.tokens[0].side_known else None
+        m = re.search(r"([a-h])([1-8])\s?[-–—x:×]\s?([a-h])([1-8])", tok.raw)
+        if m is None:
+            return None
+        pawn = not re.search(r"[KQRBN]", tok.raw[:m.start()]) and not m.start()
+        if pawn and m.group(2) != m.group(4):
+            return m.group(4) < m.group(2)
+        return False
+
+    def long_reference(self, L, run, uci, kind=None):
+        """The move of L that a move in long notation names: the most recent
+        move printed before its sentence, in the line's main line or in a
+        variation of the same note, that goes from the same square to
+        the same square; or else the line's next move, when it is that move.
+        None when there is no such move, or when after it a piece of the same
+        kind and side went to that square from another square, or a piece
+        came to the square it leaves (then the text names another move)."""
+        # variations count from the note the sentence stands in: the text
+        # after the last move of the main line before it
+        para = max((s_ for s_, _, _ in L.main_tok if s_ < run.start), default=0)
+        main = {nid for _, _, nid in L.main_tok}
+        seen = []
+        for page in self.line_pages.get(L.id, ()):
+            for m in self.marks.get(page, ()):
+                nid = m["node"]
+                if (m["line"] == L.id and nid is not None and not m.get("ref")
+                        and m["_o"] < run.start and nid in self.nodes
+                        and (nid in main or m["_o"] >= para)):
+                    seen.append((m["_o"], nid))
+        seen.sort(key=lambda x: -x[0])
+        for _, nid in seen:
+            n = self.nodes[nid]
+            u = n.get("uci")
+            if not u:
+                continue
+            if u[:4] == uci and self.same_kind(n, kind):
+                return nid
+            if u[2:4] == uci[2:4] and n.get("san") and self.same_mover(n, uci, kind):
+                break                   # the same piece came there from elsewhere since
+            if u[2:4] == uci[:2]:
+                break                   # a piece came to the square it leaves since
+        nxt = next((nid for s_, _, nid in L.main_tok if s_ > run.start and nid in self.nodes), None)
+        if nxt is not None and (self.nodes[nxt].get("uci") or "")[:4] == uci \
+                and self.same_kind(self.nodes[nxt], kind):
+            return nxt
+        return None
+
+    @staticmethod
+    def same_kind(node, kind):
+        """True when the move of node is made by the kind of piece that a move
+        in long notation prints (kind: its letter, "P" for none, None when a
+        glyph that cannot be read stands there)."""
+        san = node.get("san") or ""
+        if kind is None or not san or san.startswith("O-O"):
+            return kind is None
+        return (san[0] if san[0] in "KQRBN" else "P") == kind
+
+    def same_mover(self, node, uci, kind=None):
+        """True when the move of node was made by the side and kind of piece
+        that would make the move uci (kind: the piece letter printed, "P"
+        for none, None when unknown) in the position before node."""
+        parent = self.nodes.get(node["parent"]) if node.get("parent") else None
+        if not parent or not parent.get("fen"):
+            return False
+        b = chess.Board(parent["fen"])
+        mover = b.piece_at(chess.parse_square(node["uci"][:2]))
+        named = b.piece_at(chess.parse_square(uci[:2]))
+        if mover is None:
+            return False
+        if named is not None:
+            return named == mover
+        return kind is not None and mover.color == b.turn and mover.symbol().upper() == kind
+
+    def do_long(self, L, op, state=None):
+        """Place a move printed in long notation that has no move number (cue
+        from long_cue): (a) a move that goes on with the variation before it
+        ("8.Rd1 and then Nb1-c3") continues it when it is legal there, and
+        stays text otherwise; (b) a move the line played refers to that move
+        (a mark linked to it, see long_reference); (c) a move that a word such
+        as "Or" or "If" introduces, or that forms a line with the moves next
+        to it, is a variation where the line stands when it is legal there,
+        and stands in no line with the reason otherwise; (d) anything else
+        (a move named in the prose, a plan) stays text."""
         _, run, cue = op
         tok = run.moves[0]
         sq = _SQUARES_RE.findall(tok.raw)
@@ -2538,16 +2881,34 @@ class _Builder:
         uci = sq[0] + sq[1]
         saved, self.ci = self.ci, run.ci
         try:
-            # the move the line played that it names: the last such move before it
-            before = [nid for s_, _, nid in L.main_tok if s_ < run.start and nid in self.nodes]
-            hits = [nid for nid in before if self.nodes[nid].get("uci")
-                    and self.nodes[nid]["uci"][:4] == uci]
-            if hits:
-                nid = hits[-1]
+            if isinstance(cue, tuple):
+                st_ = state or {}
+                last = (st_.get("last") if st_.get("last_start") == cue[1] else
+                        st_.get("long_last") if st_.get("long_start") == cue[1] else None)
+                if last is not None and not L.waiting:
+                    run = self.forced(run) if self.replaying else run
+                    fen = self.nodes[last["last"]]["fen"]
+                    decs = self.dec.run(fen, run.tokens) if fen else None
+                    if decs and decs[0].status != "failed" and _fit(decs)[0] == 0:
+                        nodes = self.insert_decoded(L, last["last"], run, decs)
+                        last["last"] = nodes[-1]
+                        if last["next"] is not None:
+                            last["plies"][last["next"]] = nodes[-1]
+                            last["next"] += 1
+                        if state is not None:
+                            state["long_last"], state["long_start"] = last, run.start
+                return                      # a plan within the variation: text
+            m = re.match(r"(?:\.\.\.|…)?\s?([KQRBN])?[a-h][1-8]", tok.raw)
+            kind = (m.group(1) or "P") if m else None
+            nid = self.long_reference(L, run, uci, kind)
+            if nid is not None:
                 page, box = self.mark(None, tok, nid, self.nodes[nid]["status"], L.id)
                 if page is not None:
                     self.marks[page][-1]["ref"] = True
                 return
+            if cue is None:
+                return                      # a move named in the prose
+            before = [nid for s_, _, nid in L.main_tok if s_ < run.start and nid in self.nodes]
             at = before[-1] if before else (L.main_nodes[-1] if L.main_nodes else None)
             if at is not None and not L.waiting:
                 run = self.forced(run) if self.replaying else run
@@ -2557,8 +2918,13 @@ class _Builder:
                         continue
                     decs = self.dec.run(fen, run.tokens)
                     if decs and decs[0].status != "failed" and _fit(decs)[0] == 0:
-                        self.insert_decoded(L, parent, run, decs)
+                        nodes = self.insert_decoded(L, parent, run, decs)
                         L.variations += 1
+                        if state is not None:
+                            # a reply in long notation may go on from it
+                            state["long_last"] = {"depth": run.depth, "plies": {},
+                                                  "last": nodes[-1], "next": None}
+                            state["long_start"] = run.start
                         return
             self.unplaced(run, f"the move it names is not legal where the line \"{L.title}\" "
                                "stands, and the line did not play it", src=L)
@@ -2575,7 +2941,7 @@ class _Builder:
             self.unplaced(op[1], None, src=L, dismiss=op[2])
             return False
         if op[0] == "long":
-            self.do_long(L, op)
+            self.do_long(L, op, state)
             return False
         _, run, as_main, block, cue, side = op
         if self.replaying:
@@ -2586,6 +2952,7 @@ class _Builder:
         if placed is True:
             L.variations += 1
             state["last"] = state["vars"][block][-1]
+            state["last_start"] = run.start
             return True
         if side is None and base:
             # an opening sequence inside a line that starts later: its own fragment
