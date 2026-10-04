@@ -1227,6 +1227,9 @@ def _prose_word(w: str) -> bool:
     is never an unreadable move nor a glyph split from its square."""
     if re.fullmatch(r"[A-Za-z]{2,}['’]s[:.,;]*", w):
         return True
+    if re.fullmatch(r"[A-Z]?(?=[a-z]*[aeiouy])[a-z]{4,}:", w):
+        return True                  # "Answer:", "Question:": no move has four small letters
+
     return bool(re.fullmatch(r"[A-Z]?(?=[a-z]*[aeiouy])[a-z]{3,}[:.,;]*|[A-Z][A-Z]{3,}[:.,;]*", w)) \
         and not _shape(w) and not _PIECE_WORD_RE.match(w)
 
@@ -1508,8 +1511,15 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
         if (w.isdigit() and j > 0 and pieces[j - 1] == (s, e) and j < len(pieces)
                 and _shape(text[pieces[j][0]:pieces[j][1]])):
             return j - 1                         # "6 ••• 7 g4": the move is missing, 7 is a number
+        if w.endswith(":") and _prose_word(w) and j < len(pieces) \
+                and _shape(text[pieces[j][0]:pieces[j][1]]):
+            # "11 Answer: d4": a label of the book's question-and-answer
+            # layout between a move number and its move
+            other(s, e, layout=True)
+            return after_number(pieces[j][0], pieces[j][1], j + 1)
         if (w in ("A", "I") and j < len(pieces) and _prose_word(text[pieces[j][0]:pieces[j][1]])) \
-                or re.fullmatch(r"[A-Za-z]{2,}['’]s[:.,;]*", w):
+                or re.fullmatch(r"[A-Za-z]{2,}['’]s[:.,;]*", w) \
+                or (w.endswith(":") and _prose_word(w)):
             other(s, e)                          # "1. A pawn ...", "4. White's": a numbered list
             return j
         if _shape(w) or (_parse_raw(w).parses and not w[:1].isupper()
@@ -1737,6 +1747,8 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
                          and _DOTS_ONLY_RE.match(text[pieces[i + 2][0]:pieces[i + 2][1]]))):
             # (digits spaced out like a folio, "1 6 5", are no move)
             shp = _shape(w)
+            if w.endswith(":") and _prose_word(w):
+                shp = None                       # "Answer:" after a move is no move
             if shp == "strong" or (shp == "weak" and (
                     next_is_boundary(i + 1) or next_is_strong(i + 1) or _move_like(w)
                     or (i + 1 < len(pieces) and text[pieces[i + 1][0]] == "("))):
