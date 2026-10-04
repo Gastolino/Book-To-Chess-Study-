@@ -416,14 +416,15 @@ def test_primer_counts(pbook):
     st = pbook["stats"]
     print(json.dumps({k: st[k] for k in ("lines", "games", "fragments", "line_status", "moves",
                                          "variations", "unattached", "waiting", "seconds")}))
-    assert st["lines"] > 400 and st["waiting"] > 300
+    # board reading (Stage 3) gives most diagram lines their starting position
+    assert st["lines"] > 400 and st["waiting"] < 60
     decoded = st["lines"] - st["line_status"].get("waiting", 0)
-    assert decoded >= 50
+    assert decoded >= 600 and st["line_status"]["ok"] >= 350
     m = st["moves"]
     read = m["ok"] + m["guessed"] + m["ambiguous"]
-    assert read >= 1500 and m["failed"] <= 0.03 * read
+    assert read >= 9000 and m["failed"] <= 0.06 * read
     assert st["variations"] > 1000
-    assert st["seconds"] < 150
+    assert st["seconds"] < 240
     # the book's figurine junk was learnt: the knight's "\x18" among others
     learnt = {(g["junk"], g["piece"]) for g in pbook["glyphs"]}
     assert ("\x18", "N") in learnt and ("\x1b", "Q") in learnt
@@ -446,8 +447,10 @@ def test_primer_short_game(pbook):
 def test_primer_page_250(pbook):
     lines = {x["title"]: x for x in pbook["lines"] if x["page"] == 250}
     fy = lines["Fine -Yudovich, Moscow 1937"]
-    assert (fy["status"], fy["diagram"], fy["kind"]) == ("waiting", "p250-1", "game")
-    assert any(w["line"] == fy["id"] and w["reason"] == WAIT_REASON for w in pbook["waiting"])
+    assert (fy["diagram"], fy["kind"]) == ("p250-1", "game")
+    # the diagram's position was read, so the game no longer waits for it
+    assert fy["status"] != "waiting" and fy["start_fen"]
+    assert not any(w["line"] == fy["id"] for w in pbook["waiting"])
     frag = next(x for x in lines.values() if x["start_fen"] == chess.STARTING_FEN)
     ids = main_line(pbook, frag)
     assert sans(pbook, ids) == ["e4", "e5", "Nf3", "Nc6", "Bb5", "Nf6", "d3", "Ne7", "Nxe5", "c6"]
@@ -728,6 +731,9 @@ def test_primer_pgn_keeps_notes_out_of_the_score(pbook, tmp_path):
         last = board.san(mv)
         board.push(mv)
     assert last == "Ne6"             # 11...Kxe6 12.Qd5+ is a note, not the game
-    cap = next(g for g in games if g.headers["White"] == "Capablanca")
-    assert cap.headers["Result"] == "*" and "lacks" in cap.end().comment
+    # a Capablanca game whose text lacks moves ends where the text stops
+    # (board reading lets other Capablanca games of the chapter start from
+    # their diagrams, so the chapter holds several)
+    caps = [g for g in games if g.headers["White"] == "Capablanca"]
+    assert any(g.headers["Result"] == "*" and "lacks" in g.end().comment for g in caps)
     assert all(g.headers["BookPage"] != g.headers["PDFPage"] for g in games)

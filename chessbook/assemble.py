@@ -8,7 +8,7 @@ It writes output/<stem>/book.json and returns the same dict:
     {"title", "pdf", "page_count", "folio_offset", "glyphs",
      "pages": [{"page", "folio", "width", "height", "chapter", "selected",
                 "diagrams": [{"id", "rect", "label", "kind", "selected", "fen",
-                              "status", "after_node", "lines"}],
+                              "status", "reading"?, "after_node", "lines"}],
                 "marks": [{"bbox", "node", "status", "raw", "line", "reason"?}]}],
      "chapters": [{..book_structure chapter.., "index", "file", "counts"}],
      "lines": [{"id", "title", "kind", "chapter", "page", "end_page", "start_fen",
@@ -20,6 +20,13 @@ It writes output/<stem>/book.json and returns the same dict:
      "unattached": [{"page", "chapter", "text", "reason"}],
      "waiting": [{"page", "chapter", "text", "reason", "line", "diagram"}],
      "stats": {...}}
+
+A diagram's "fen" is the position lines start from, read from its picture by
+Stage 3 (boards.py) unless build_book was given FENs; "status" is "read",
+"doubtful" (read, with squares the reader is unsure of), "partial" (the
+picture shows part of a board only) or "unread"; "reading" holds Stage 3's
+reading itself: its FEN, confidence, doubtful squares, side to move and
+whether the book shows the board from Black's side.
 
 "folio" is the page number printed in the book (PDF page minus the
 "folio_offset" learnt from the running heads; None where the book prints
@@ -2245,13 +2252,45 @@ def _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagra
     return b, dec
 
 
+def read_boards(doc, diagrams, known=None, say=None):
+    """Stage 3's readings of the book's boards ({id: reading}), or {} when
+    the board reader cannot run (OpenCV missing)."""
+    try:
+        from . import boards
+    except ImportError as exc:          # pragma: no cover - depends on the platform
+        (say or (lambda *_: None))(f"board reading skipped: {exc}")
+        return {}
+    t = time.perf_counter()
+    out = boards.read_book_boards(doc, diagrams, known=known, progress=say)
+    if say:
+        n = sum(1 for r in out.values() if r.get("fen"))
+        say(f"boards read in {time.perf_counter() - t:.1f} s: {n} positions")
+    return out
+
+
+def usable_fens(readings):
+    """The FENs of readings that make a position with one king of each colour."""
+    out = {}
+    for did, r in readings.items():
+        fen = r.get("fen")
+        if not fen:
+            continue
+        b = chess.Board(fen)
+        if len(b.pieces(chess.KING, chess.WHITE)) == 1 and len(b.pieces(chess.KING, chess.BLACK)) == 1:
+            out[did] = fen
+    return out
+
+
 def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3,
-               diagram_fens=None, write=True, progress=None):
+               diagram_fens=None, write=True, progress=None, boards=True):
     """Assemble the whole book and write output/<stem>/book.json.
 
     letters names a movetext.LETTER_SETS entry (default English; figurines are
     always read). diagram_fens maps diagram ids to FENs read by Stage 3; lines
-    that start from those diagrams are then decoded instead of waiting.
+    that start from those diagrams are then decoded instead of waiting. When
+    it is not given and boards is true, Stage 3 (boards.py) reads the board
+    pictures after the first pass, using the positions that the first pass
+    decoded at diagrams as known examples, and the later passes use its FENs.
     passes is the number of assembly passes (the glyph model of each pass is
     learnt from the runs the previous pass decoded cleanly).
     """
@@ -2267,8 +2306,11 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     # Diagrams printed as text in a chess font carry their position already.
     text_fens = {did: d["fen"] for did, d in zip(sel.diagram_ids(diagrams), diagrams)
                  if d.get("fen")}
-    if text_fens:
-        diagram_fens = {**text_fens, **(diagram_fens or {})}
+    # Stage 3 reads the pictures unless the caller supplied the positions;
+    # positions printed as text always win, since they are exact.
+    read_now = diagram_fens is None and boards
+    if text_fens or diagram_fens is not None:
+        diagram_fens = {**(diagram_fens or {}), **text_fens}
     chapters = book_chapters(structure, doc.page_count)
     selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
     numbering = book_numbering(doc)
@@ -2276,12 +2318,24 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
         f"{'without' if numbering['dotless'] else 'with'} dots")
     glyphs = GlyphModel()
     timings = []
+    readings = {}
+    if read_now and passes <= 1:
+        readings = read_boards(doc, diagrams, say=say)
+        diagram_fens = {**usable_fens(readings), **text_fens}
+        read_now = False
     figmap, learnt = {}, {}
     fig_cands = figurines.candidates(
         (pt._raw_page(doc, i) for i in range(doc.page_count)),
         {f["font"] for f in fonts.get("figurines") or []})
     k = 0
     while k < max(1, passes):
+        if read_now and k == 1:
+            # positions the first pass reached at diagrams teach the reader
+            known = {did: builder.nodes[nid]["fen"] for did, nid in builder.after_node.items()
+                     if builder.nodes.get(nid, {}).get("fen")}
+            readings = read_boards(doc, diagrams, known=known, say=say)
+            diagram_fens = {**usable_fens(readings), **text_fens}
+            read_now = False
         t1 = time.perf_counter()
         builder, dec = _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters,
                                  diagram_fens, dotless=numbering["dotless"])
@@ -2315,7 +2369,8 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
                 k = 0
                 continue
         k += 1
-    book = _book_dict(pdf_path, doc, chapters, diagrams, selection, builder, glyphs, structure)
+    book = _book_dict(pdf_path, doc, chapters, diagrams, selection, builder, glyphs, structure,
+                      readings)
     book["numbering"] = numbering
     book["figurines"] = [{"font": f, "code": f"U+{ord(ch):04X}", "piece": p,
                           "learnt": (f, ch) in learnt}
@@ -2349,7 +2404,24 @@ def _book_title(doc, structure, pdf_path):
     return pdf_path.stem
 
 
-def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structure):
+def _diagram_reading(did, fen, reading):
+    """The fields of a diagram in book.json that describe its position:
+    status "read" (a position is in use), "doubtful" (in use, with doubtful
+    squares), "partial" (the picture shows part of a board only) or
+    "unread"."""
+    reading = reading or {}
+    out = {"fen": fen or None, "status": "unread"}
+    if fen:
+        out["status"] = "doubtful" if reading.get("doubtful") else "read"
+    elif reading.get("status") == "partial":
+        out["status"] = "partial"
+    if reading.get("fen"):
+        out["reading"] = {k: reading.get(k) for k in ("fen", "confidence", "doubtful", "turn",
+                                                        "turn_from", "flipped")}
+    return out
+
+
+def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structure, readings=None):
     ids = sel.diagram_ids(diagrams)
     kinds = b.kinds
     chapter_of = {}
@@ -2377,8 +2449,7 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
             "chapter": chapter_of.get(p), "selected": b.selection.page_selected(p),
             "diagrams": [{"id": did, "rect": d["rect"], "label": d.get("label"),
                           "kind": kinds.get(did), "selected": b.selection.diagram_selected(did),
-                          "fen": (b.diagram_fens.get(did) or None),
-                          "status": "read" if b.diagram_fens.get(did) else "unread",
+                          **_diagram_reading(did, b.diagram_fens.get(did), (readings or {}).get(did)),
                           "after_node": b.after_node.get(did), "lines": diagram_lines.get(did, [])}
                          for did, d in by_page.get(p, [])],
             "marks": marks})
