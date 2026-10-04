@@ -18,6 +18,7 @@ build_book applies them through the same replay.
 """
 from __future__ import annotations
 
+import json
 import time
 from collections import Counter
 
@@ -142,6 +143,14 @@ def _recount(book, b, fix):
     book["stats"] = stats
 
 
+def snapshot(data):
+    """A copy of a chapter reader's data (reader.chapter_data) that shares no
+    object with the book: apply() changes the book's diagrams in place, and a
+    data dict that shares them would never see them change. JSON keys are
+    strings, as the reader receives them."""
+    return json.loads(json.dumps(data))
+
+
 def chapter_patch(book, ch, old, with_pgn=True):
     """(patch, new data): what changed in the chapter reader's data since old
     (reader.chapter_data as the reader holds it). The patch holds the nodes
@@ -150,7 +159,7 @@ def chapter_patch(book, ch, old, with_pgn=True):
     view reads. renamed maps a removed node to the node that now holds the
     same printed move, so that the reader keeps its place."""
     pgn = pgnout.chapter_pgn(book, ch["index"])[0] if with_pgn else (old or {}).get("pgn", "")
-    new = reader.chapter_data(book, ch, pgn)
+    new = snapshot(reader.chapter_data(book, ch, pgn))
     old = old or {}
     on, nn = old.get("nodes", {}), new["nodes"]
     changed = {k: v for k, v in nn.items() if on.get(k) != v}

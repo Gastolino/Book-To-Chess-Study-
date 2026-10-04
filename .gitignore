@@ -3,3 +3,4 @@ output/
 __pycache__/
 corpus/
 .claude/worktrees/
+local/

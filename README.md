@@ -66,6 +66,10 @@ on a desktop browser; each chapter then opens in about two seconds.
 
 The workflow in `.github/workflows/pages.yml` rebuilds and publishes the site
 whenever `main` changes. `python3 tools/build_web.py --help` builds it by hand.
+`tests/test_app_e2e.py` runs the whole app in Chromium (`tests/app_e2e.js`)
+with a local Pyodide folder (`CHESSBOOK_PYODIDE`) and the PyMuPDF and
+python-chess wheels for Pyodide (`CHESSBOOK_WHEELS`); `CHESSBOOK_APP_BOOK`
+names another book to read than the generated test book.
 
 ## Correcting what the program could not read
 
@@ -109,8 +113,10 @@ the lines it touches and sends the open chapter its changes, so the board,
 the move list, the outlines on the page and the Review list change while the
 page and the chosen move stay put. A piece symbol reaches the open chapter
 first and then the other chapters, one at a time, while the reader goes on
-reading. Read again is needed only after a change of the selection (pages
-and diagrams included or left out). The browser keeps the corrections for
+reading; a chapter opened before its turn gets the piece first. A chapter
+that opens with corrections stored in the browser that the book does not
+hold yet sends them at once. Read again is needed only after a change of the
+selection (pages and diagrams included or left out). The browser keeps the corrections for
 each book, and reading the book again applies them with the same result.
 
 In a reader built from the command line, the contents page's "Copy

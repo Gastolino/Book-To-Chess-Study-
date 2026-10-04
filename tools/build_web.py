@@ -112,8 +112,12 @@ function working(on) {
   $("bar").classList.toggle("on", on);
   $("topbar").classList.toggle("on", on);
 }
+// The flag goes first in the head, so that the page's own script sees it
+// while it starts (the stored corrections it sends, the words it chooses).
+const FLAG = "<script>window.CHESSBOOK_APP=true;<" + "/script>";
 function show(name, hash, htmlText) {
-  const blob = new Blob([htmlText.replace("</body>", NAV + "</body>")], { type: "text/html" });
+  const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</body>", NAV + "</body>");
+  const blob = new Blob([page], { type: "text/html" });
   if (current) URL.revokeObjectURL(current);
   current = URL.createObjectURL(blob);
   $("view").src = current + (hash || "");
@@ -127,7 +131,8 @@ worker.onmessage = (e) => {
   else if (m.type === "ready") {
     ready = true;
     $("bar").classList.remove("on");
-    status("Ready. Choose a book.");
+    status(m.boards === false ? "Ready. Choose a book. This browser could not load board reading, so " +
+      "the program reads only the diagrams that the book prints in a chess font." : "Ready. Choose a book.");
   } else if (m.type === "index") {
     busy = false;
     $("bar").classList.remove("on");
@@ -141,8 +146,16 @@ worker.onmessage = (e) => {
     openChapter = m.name;
     show(m.name, m.hash, m.html);
   } else if (m.type === "error") {
-    busy = false;
     working(false);
+    if (m.during === "correct" || m.during === "correct-more") {
+      // the reader says so too, instead of waiting for a patch that does not come
+      if (m.during === "correct-more") { moreBusy = false; more = []; }
+      const text = "Your correction could not be applied: " + m.text;
+      status(text, true);
+      toView({ failed: text });
+      return;
+    }
+    busy = false;
     status("Something went wrong: " + m.text, true);
   }
 };
@@ -156,21 +169,29 @@ worker.onerror = (e) => {
 };
 // Corrections made in a chapter reader are applied at once by the worker,
 // which answers with a patch for the open page. A changed piece symbol
-// reaches the other chapters afterwards, one chapter at a time.
-let more = [], moreTotal = 0, openChapter = "";
+// reaches the other chapters afterwards, one chapter at a time. One request
+// for them is on its way at a time: a correction made meanwhile (which
+// answers with the chapters still pending) does not start a second chain.
+let more = [], moreDone = 0, moreBusy = false, openChapter = "";
 function toView(msg) { if ($("view").contentWindow) $("view").contentWindow.postMessage(msg, "*"); }
 function patched(m) {
   const r = m.result || {};
   if (r.patch && m.chapter === openChapter) toView({ patch: r.patch });
-  more = (r.pending || []).slice();
-  if (!m.more) moreTotal = more.length;
+  if (m.more) moreBusy = false;
+  const pend = (r.pending || []).slice(), had = more.length;
+  if (!had) moreDone = 0;
+  moreDone += more.filter((c) => pend.indexOf(c) < 0).length;
+  more = pend;
   if (more.length) {
     // a chapter stays pending until all its pages are done, ten pages at a time
-    const done = Math.min(moreTotal, moreTotal - more.length + 1);
-    const text = "Applying your piece choice to the other chapters: " + done + " of " + moreTotal + ".";
+    const text = "Applying your piece choice to the other chapters: " + (moreDone + 1) + " of " +
+      (moreDone + more.length) + ".";
     status(text); toView({ progress: text });
-    worker.postMessage({ type: "correct-more", chapters: [more[0]], chapter: openChapter });
-  } else if (m.more) {
+    if (!moreBusy) {
+      moreBusy = true;
+      worker.postMessage({ type: "correct-more", chapters: [more[0]], chapter: openChapter });
+    }
+  } else if (m.more || had) {
     status("Your piece choice is applied to the whole book.");
     toView({ progress: "Your piece choice is applied to the whole book." });
   } else status("");

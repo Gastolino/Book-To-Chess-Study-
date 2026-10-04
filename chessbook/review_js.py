@@ -1006,6 +1006,10 @@ function initPencil(){
 function initReview(){
   $("reviewbtn").addEventListener("click", () => setReview(!RV.on));
   initPencil();
+  // corrections stored in this browser that the book does not hold yet (made
+  // while the worker was busy elsewhere, or that never reached it) are applied
+  // now, without reading the book again
+  if (inApp() && FIX.anyPending()) liveApply();
   $("revlist").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-item]");
     if (b) openItem(parseInt(b.dataset.item, 10));
