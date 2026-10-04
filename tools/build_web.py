@@ -24,6 +24,8 @@ from chessbook import style  # noqa: E402
 
 PYODIDE_VERSION = "0.29.5"
 PYODIDE_CDN = f"https://cdn.jsdelivr.net/pyodide/v{PYODIDE_VERSION}/full/"
+# Packages of the Pyodide distribution itself that board reading needs.
+PYODIDE_PACKAGES = ["numpy", "opencv-python"]
 PYMUPDF_WHEEL = "pymupdf-1.28.2-cp313-abi3-pyemscripten_2025_0_wasm32.whl"
 
 SHELL = """<!doctype html>
@@ -248,7 +250,8 @@ def main(argv=None):
     # Wheel paths are made absolute against the site, because the worker
     # resolves them from its own location.
     cfg = ("{indexURL: new URL(%r, location.href).href, appZip: new URL('app.zip', location.href).href, "
-           "wheels: %s.map(w => new URL(w, location.href).href)}") % (index_url, wheels)
+           "wheels: %s.map(w => new URL(w, location.href).href), packages: %s}") % (
+               index_url, wheels, PYODIDE_PACKAGES)
     text = SHELL.replace("__CSS__", style.page_css()).replace("__CFG__", cfg)
     (out / "index.html").write_text(text, encoding="utf-8")
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())

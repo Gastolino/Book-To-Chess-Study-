@@ -309,6 +309,7 @@ padding:16px 24px;min-width:0;display:flex;flex-direction:column}
 svg.board .sl{fill:var(--board-light)}
 svg.board .sd{fill:var(--board-dark)}
 svg.board .lm{fill:none;stroke:var(--accent);stroke-width:1.5px;vector-effect:non-scaling-stroke}
+svg.board .dq{fill:none;stroke:var(--doubt);stroke-width:1.5px;stroke-dasharray:4 3;vector-effect:non-scaling-stroke}
 svg.board .bo{fill:none;stroke:var(--line);stroke-width:1px}
 svg.board .co{fill:var(--muted);font-family:"DM Sans",system-ui,sans-serif}
 canvas.pic{display:block;width:100%;height:auto;outline:1px solid var(--line)}
@@ -379,11 +380,12 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
 #mboard[aria-pressed="true"]{color:var(--accent)}
-.mini.on{display:block;flex:none;width:144px}
+.mini.on{display:block;flex:none;width:188px}
 .mbar.withboard{align-items:stretch}
 .mbar.withboard .mside{flex-direction:column;align-items:stretch;justify-content:space-between}
 .mbar.withboard .mtxt{flex:none;padding-top:4px}
-.mbar.withboard .mbtns{justify-content:flex-start;margin-left:-6px}
+.mbar.withboard .mbtns{justify-content:flex-start;margin-left:-6px;flex-wrap:wrap;gap:0 12px}
+.mbar.withboard .mside{min-width:0}
 .mini svg,.mini canvas{display:block;width:100%;height:auto}
 .mini .co{display:none}}
 """
@@ -667,13 +669,37 @@ function highlightMark(scroll){
   for (const el of document.querySelectorAll(".mark[data-node='" + S.node + "']")) {
     el.classList.add("current"); if (!first) first = el;
   }
-  if (first && scroll) first.scrollIntoView({block: "nearest", inline: "nearest"});
+  if (first && scroll) revealMark(first);
+}
+
+// Keep the current move in the part of the screen that is free: above the
+// board bar on a phone, and inside the enlarged page when it scrolls
+// sideways. The page moves only when the move leaves the middle of that
+// space, so stepping through a line does not make it jump.
+function revealMark(el){
+  const bar = $("mbar");
+  const barH = bar && getComputedStyle(bar).display !== "none" ? bar.offsetHeight : 0;
+  if (!barH) { el.scrollIntoView({block: "nearest", inline: "nearest"}); return; }
+  const r = el.getBoundingClientRect();
+  const free = window.innerHeight - barH;
+  const cy = r.top + r.height / 2;
+  if (cy < free * 0.2 || cy > free * 0.8) {
+    window.scrollBy({top: cy - free * 0.45, behavior: "smooth"});
+  }
+  const ps = $("pagescroll");
+  if (ps && ps.scrollWidth > ps.clientWidth) {
+    const p = ps.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    if (cx < p.left + p.width * 0.2 || cx > p.right - p.width * 0.2) {
+      ps.scrollBy({left: cx - (p.left + p.width / 2), behavior: "smooth"});
+    }
+  }
 }
 
 /* ---------------------------------------------------------------- board */
 const SQ = 45, M = 14, TOP = 1, BW = M + 8 * SQ + 1;
 const EMPTY = "8/8/8/8/8/8/8/8 w - - 0 1";
-function boardSvg(fen, flip, uci){
+function boardSvg(fen, flip, uci, doubt){
   const rows = fen.split(" ")[0].split("/");
   const W = BW, H = TOP + 8 * SQ + M;
   let s = "<svg class='board' xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' " +
@@ -704,6 +730,14 @@ function boardSvg(fen, flip, uci){
       f += 1;
     }
   });
+  // squares the board reading is unsure of: a dashed outline inside the square
+  for (const sq of (doubt || [])) {
+    const f = "abcdefgh".indexOf(sq[0]), rank = parseInt(sq[1], 10) - 1;
+    if (f < 0 || !(rank >= 0 && rank < 8)) continue;
+    const x = M + (flip ? 7 - f : f) * SQ, y = TOP + (flip ? rank : 7 - rank) * SQ;
+    s += "<rect class='dq' x='" + (x + 2.5) + "' y='" + (y + 2.5) + "' width='" + (SQ - 5) + "' height='" +
+      (SQ - 5) + "'/>";
+  }
   // the last move: an outline inside each of its two squares, like the current move on the page
   for (const [x, y] of hl)
     s += "<rect class='lm' x='" + (x + 1.5) + "' y='" + (y + 1.5) + "' width='" + (SQ - 3) + "' height='" +
@@ -760,7 +794,7 @@ function boardFor(){
   const L = S.line ? D.lines[S.line] : null;
   if (n && n.reason) return ["empty", null, n.reason];
   if (L && L.diagram) return ["crop", L.diagram, "This line starts from " + diagramLabel(L.diagram) +
-    ". Board reading (Stage 3) has not run yet, so the picture from the book stands in for the board."];
+    ". Board reading (Stage 3) could not read that diagram, so the picture from the book stands in for the board."];
   // a line chosen but no move yet: the line's starting position
   if (!n && L && nodeFen(L.root)) return ["svg", boardSvg(nodeFen(L.root), S.flip, null), ""];
   return ["empty", null, "The board shows a position once you choose a move on the page."];
@@ -889,6 +923,7 @@ function lineMeta(L){
   if (parts.length) s += (parts.length > 1 ? ", " + parts[0] + " and " + parts[1] : " and " + parts[0]);
   s += ".";
   if (L.event && L.title.indexOf(L.event) < 0) s = "The book names the event as " + esc(L.event) + ". " + s;
+  if (L.start_note) s += " " + esc(L.start_note);
   return s;
 }
 function renderTree(){
@@ -1052,7 +1087,10 @@ function showDiagram(id){
   renderBoard(); renderInfo(); highlightMark(false);
   $("board").innerHTML = "";  // the diagram view takes the board's place
   const box = $("dpanel");
-  let h = PIC;
+  const R = d.reading || null;
+  // the position read from the picture, drawn as the book draws it, above the picture itself
+  let h = d.fen ? "<div class=boardwrap>" + boardSvg(d.fen, !!(R && R.flipped), null, R && R.doubtful) +
+    "</div>" + PIC : PIC;
   h += "<div class=dhead><h3>" + esc((d.label ? "Diagram " + d.label : "Unnumbered diagram") + ", " +
     pageName(p)) + "</h3><button class=tb id=dclose>Close</button></div>";
   const lines = [];
@@ -1061,12 +1099,13 @@ function showDiagram(id){
   else {
     if (d.kind !== "board" && D.kindWords[d.kind])
       lines.push("The program takes this picture for " + esc(D.kindWords[d.kind]) + ".");
-    lines.push(d.fen ? "Board reading (Stage 3) read this position as <code>" + esc(d.fen) + "</code>." :
-      "Board reading (Stage 3) has not run yet, so the program does not know this position.");
+    lines.push(diagramReading(d));
   }
   if (!d.selected) lines.push("The program left this diagram out when it read the book.");
   if (d.after_node && D.nodes[d.after_node])
-    lines.push("The program places this diagram after <a href='#node=" + esc(d.after_node) + "' data-goto='" +
+    lines.push((d.checked ? "The line reaches the position of this diagram after "
+                          : "The program places this diagram after ") +
+      "<a href='#node=" + esc(d.after_node) + "' data-goto='" +
       esc(d.after_node) + "' class=n>" + moveHtml(d.after_node, true) + "</a>.");
   lines.push("<span id=dpageoff></span>");
   h += "<div class='small muted'>" + lines.map(x => "<p>" + x + "</p>").join("") + "</div>";
@@ -1085,6 +1124,7 @@ function showDiagram(id){
   box.hidden = false;
   $("boardarea").classList.add("diagram");
   cropInto(box.querySelector("canvas"), id);
+  sizeCoords(box);
   diagramState(id);
   $("dclose").addEventListener("click", () => { closeDiagram(); renderBoard(); layoutPanel(false); });
   $("usediag").addEventListener("change", (e) => {
@@ -1097,6 +1137,28 @@ function showDiagram(id){
     b.addEventListener("click", (e) => { e.preventDefault(); selectNode(b.dataset.goto, {scrollPage: true}); });
   layoutPanel(false);
   setState();
+}
+function squareList(sqs){
+  const a = sqs.map(x => "<span class=num>" + esc(x) + "</span>");
+  return a.length === 1 ? a[0] : a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
+}
+function diagramReading(d){
+  // what board reading (Stage 3) made of the picture, in words
+  const R = d.reading || null;
+  if (d.fen) {
+    let t = "Board reading (Stage 3) read this position from the picture as <code>" + esc(d.fen) + "</code>.";
+    const dq = (R && R.doubtful) || [];
+    if (dq.length)
+      t += " The program is unsure of " + (dq.length === 1 ? "the square " : "the squares ") + squareList(dq) +
+        ", which " + (dq.length === 1 ? "carries" : "carry") + " a dashed outline on the board above.";
+    if (R && R.flipped) t += " The book shows this board from Black's side, and so does the board above.";
+    if (R && R.turn_from === "caption") t += " The caption gives the side to move.";
+    return t;
+  }
+  if (d.status === "partial") return "The picture shows part of a board only, so board reading (Stage 3) does not read it.";
+  if (R && R.fen) return "Board reading (Stage 3) read <code>" + esc(R.fen) + "</code> from the picture, " +
+    "but that position does not hold one king of each side, so no line starts from it.";
+  return "Board reading (Stage 3) could not read this picture, so the program does not know this position.";
 }
 function diagramState(id){
   const [p] = diagramInfo(id);
@@ -1356,6 +1418,7 @@ def chapter_data(book, ch, pgn_text):
                                                 "start_fen", "root", "status", "diagram",
                                                 "section", "result", "moves")}
             lines[L["id"]]["event"] = (L.get("header") or {}).get("event")
+            lines[L["id"]]["start_note"] = L.get("start_note") or ""
             order.append(L["id"])
     nodes = {}
     for nid, n in book["nodes"].items():

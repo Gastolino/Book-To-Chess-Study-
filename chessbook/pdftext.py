@@ -66,6 +66,8 @@ except ImportError:  # the package was imported from outside the project root
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import stage1_inspect as _s1
 
+from chessbook import textdiagram  # noqa: E402
+
 LABEL_RE, DIGIT_FIX, RESULTS, CIRCLE_RE = _s1.LABEL_RE, _s1.DIGIT_FIX, _s1.RESULTS, _s1.CIRCLE_RE
 label_for, between_boards, FULL_PAGE = _s1.label_for, _s1.between_boards, _s1.FULL_PAGE
 continues_as_move = _s1.continues_as_move
@@ -199,11 +201,36 @@ def _cache(doc):
     return c
 
 
+def set_figurine_map(doc, mapping):
+    """Read piece figurines given as private codes as piece letters.
+
+    mapping: {(font name, character): piece letter} (see figurines.py). Every
+    later page_lines, book_fonts and book_structure call on doc gives the
+    letter in place of the code, in line text, spans and words alike. The
+    document's caches are cleared when the mapping changes."""
+    doc = _as_doc(doc)
+    c = _cache(doc)
+    mapping = dict(mapping or {})
+    if c.get("figmap", {}) == mapping:
+        return
+    c.clear()
+    c["raw"] = {}
+    if mapping:
+        c["figmap"] = mapping
+
+
+def figurine_map(doc):
+    """The mapping set by set_figurine_map ({} when none)."""
+    return dict(_cache(_as_doc(doc)).get("figmap") or {})
+
+
 # ---------------------------------------------------------------- raw pages
 
-def _pictures(page):
+def _pictures(page, text_diagrams=()):
     """Board-picture rectangles in Stage 1 order (same filter and sort as
-    stage1_inspect.page_pictures, but without the slow image-rect lookup)."""
+    stage1_inspect.page_pictures, but without the slow image-rect lookup).
+    Diagrams printed as text in a chess font (text_diagrams, their rects)
+    count as pictures, as in Stage 1."""
     area = abs(page.rect)
     out = []
     for info in page.get_image_info():
@@ -212,6 +239,7 @@ def _pictures(page):
             continue
         if r.width > 20 and r.height > 20:
             out.append(r)
+    out += [pymupdf.Rect(r) for r in text_diagrams]
     mid = page.rect.width / 2
     out.sort(key=lambda r: ((r.x0 + r.x1) / 2 > mid, r.y0))
     return out
@@ -223,11 +251,13 @@ def _raw_page(doc, i):
         return cache[i]
     page = doc[i]
     d = page.get_text("rawdict", flags=_FLAGS)
-    lines = []
+    fig = _cache(doc).get("figmap")
+    lines, whole = [], []
     for b in d["blocks"]:
         if b.get("type", 0) != 0:
             continue
         for ln in b["lines"]:
+            whole.append(("".join(c["c"] for s in ln["spans"] for c in s["chars"]), ln["bbox"]))
             spans, chars = [], []
             for s in ln["spans"]:
                 size, base = s["size"], s["origin"][1]
@@ -242,12 +272,15 @@ def _raw_page(doc, i):
                 si = len(spans)
                 spans.append({"font": s["font"], "size": size, "y0": y0, "y1": y1, "base": base})
                 for c in s["chars"]:
-                    chars.append((c["c"], c["bbox"][0], c["bbox"][2], si))
+                    ch = fig.get((s["font"], c["c"]), c["c"]) if fig else c["c"]
+                    chars.append((ch, c["bbox"][0], c["bbox"][2], si))
             for group in _split_gaps(chars, spans):
                 rl = _make_line(group, spans, ln["bbox"])
                 if rl:
                     lines.append(rl)
-    raw = {"w": page.rect.width, "h": page.rect.height, "lines": lines, "pics": _pictures(page)}
+    tds = [pymupdf.Rect(t.rect) for t in textdiagram.find_text_diagrams(whole)]
+    raw = {"w": page.rect.width, "h": page.rect.height, "lines": lines,
+           "pics": _pictures(page, tds), "text_diagrams": tds}
     cache[i] = raw
     return raw
 
@@ -878,6 +911,16 @@ def page_lines(doc, page_index, fonts=None):
         if (top or bot) and not _heading_like_big(feats[k], ctx):
             role[k] = "head"
 
+    # The lines of a diagram printed as text in a chess font (ranks, frame)
+    # are board furniture, never moves or notes.
+    for t in raw.get("text_diagrams") or ():
+        j = next(j for j, pc in enumerate(pics) if pc == t)
+        area = t + (-1, -1, 1, 1)
+        for k, rl in enumerate(rls):
+            x0, y0, x1, y1 = rl["bbox"]
+            if not role[k] and pymupdf.Point((x0 + x1) / 2, (y0 + y1) / 2) in area:
+                role[k], diag[k] = "coord", f"p{p}-{j + 1}"
+
     # Diagram labels, exactly as Stage 1 finds them.
     head_y = H * 0.06
     labels = []
@@ -996,6 +1039,25 @@ def page_lines(doc, page_index, fonts=None):
             role[k] = "text"
         else:
             role[k] = "blank"
+
+    # Without a moves font, a line that opens with an unnumbered move right
+    # under a sentence that breaks off mid-way ("... well placed after 22.Ne2"
+    # over "Qe5 23.f4 Qf6 or 23...Qc5.") continues that sentence.
+    if not ctx.moves:
+        for k, rl in enumerate(rls):
+            if role[k] != "moves" or _MOVE_NO_RE.match(rl["words"][0]["text"]):
+                continue
+            x0, y0, x1, _ = rl["bbox"]
+            above = None
+            for j, rj in enumerate(rls):
+                bj = rj["bbox"]
+                if (j != k and -0.3 * bs <= y0 - bj[3] <= 0.8 * bs
+                        and min(x1, bj[2]) - max(x0, bj[0]) > 0
+                        and (above is None or bj[3] > rls[above]["bbox"][3])):
+                    above = j
+            if (above is not None and role[above] == "text"
+                    and not rls[above]["text"].rstrip().endswith((".", "!", "?", ":", ";", ")", "]"))):
+                role[k] = "text"
 
     # A short capital word printed on the row of a heading belongs to it
     # ("SOLUTIONS" "TO" "STUDIES" can come out as three PDF lines).

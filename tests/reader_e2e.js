@@ -248,7 +248,7 @@ async function openChapterOf(page, p) {
     check("the diagram picture replaces the board and appears once",
           panel.board === 0 && panel.pictures === 1, { board: panel.board, pictures: panel.pictures });
     check("the panel names the diagram", /Diagram|Unnumbered diagram/.test(panel.text), panel.text.slice(0, 80));
-    check("the panel says that board reading has not run", /Stage 3/.test(panel.text));
+    check("the panel says what board reading made of the diagram", /Stage 3/.test(panel.text));
     check("the panel offers to use or leave out the diagram", panel.use);
     out.diagram = did;
     await page.evaluate(() => window.scrollTo(0, 0));
