@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -63,3 +65,87 @@ def test_driver_applies_the_corrections(tmp_path, monkeypatch):
     driver.process(str(pdf), lambda *_: None, None, None)
     assert not (tmp_path / "cfg" / "little" / "corrections.json").exists()
     assert driver.STATE["book"]["pages"][4]["diagrams"][0]["status"] == "unread"
+
+
+def test_the_app_flag_comes_before_the_page_script(tmp_path):
+    """The reader's script reads window.CHESSBOOK_APP while it starts (to send
+    corrections stored in the browser that the book does not hold yet), so
+    the app puts the flag at the top of the head, not after the script."""
+    page = build(tmp_path)
+    assert 'htmlText.replace("<head>", "<head>" + FLAG)' in page
+    assert 'const FLAG = "<script>window.CHESSBOOK_APP=true;<" + "/script>";' in page
+
+
+def test_one_chain_of_symbol_batches(tmp_path):
+    page = build(tmp_path)
+    assert "if (!moreBusy) {" in page and "moreBusy = true;" in page
+    worker = (ROOT / "web" / "worker.js").read_text(encoding="utf-8")
+    assert "during: msg.type" in worker and "py.loadedPackages" in worker
+
+
+def _driver(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "web"))
+    sys.path.insert(0, str(ROOT / "tests"))
+    import driver
+    monkeypatch.setattr(driver, "OUT", tmp_path / "out")
+    monkeypatch.setattr(driver, "CFG", tmp_path / "cfg")
+    return driver
+
+
+def test_a_diagram_correction_reaches_the_open_chapter(tmp_path, monkeypatch):
+    """The patch holds the corrected diagram even when no move of its page
+    changes: the chapter data the driver keeps shares no object with the book."""
+    import json
+    driver = _driver(tmp_path, monkeypatch)
+    from test_assemble import ENDING_FEN, make_book
+    pdf = make_book(tmp_path / "little.pdf")
+    driver.process(str(pdf), lambda *_: None)
+    name = next(c["file"] for c in driver.STATE["book"]["chapters"] if c["start"] <= 6 <= c["end"])
+    driver.chapter(name, lambda *_: None)
+    fix = json.dumps({"version": 1, "diagrams": {"p6-1": {"fen": ENDING_FEN}}})
+    out = json.loads(driver.correct(fix, name))
+    d = next(x for x in out["patch"]["pages"]["6"]["diagrams"] if x["id"] == "p6-1")
+    assert d["corrected"] and d["fen"] == ENDING_FEN
+    # the same corrections again: nothing of the page changes
+    out = json.loads(driver.correct(fix, name))
+    assert "6" not in out["patch"]["pages"]
+
+
+GPA = ROOT / "corpus" / "gpa.pdf"
+
+
+@pytest.mark.skipif(not GPA.exists(), reason="corpus/gpa.pdf is not in the project folder")
+def test_a_pending_chapter_gets_the_piece_symbol_when_it_opens(tmp_path, monkeypatch):
+    """A piece symbol named in one chapter reaches the others in batches; a
+    chapter opened before its batch replays its lines first, so it opens
+    corrected and no batch is needed for it afterwards."""
+    import json
+    driver = _driver(tmp_path, monkeypatch)
+    driver.process(str(GPA), lambda *_: None)
+    say = lambda *_: None
+    driver.chapter("ch02.html", say)
+    nodes = driver.STATE["data"]["ch02.html"]["nodes"]
+    sym = next(n["symbol"] for n in nodes.values() if n.get("symbol") and n.get("key"))
+    out = json.loads(driver.correct(json.dumps({"version": 1, "glyphs": {sym: "N"}}), "ch02.html"))
+    later = [k for k in out["pending"]]
+    assert later
+    k = later[-1]
+    name = f"ch{k:02d}.html"
+    driver.chapter(name, say)
+    assert k not in driver.STATE["pending"]
+    out = json.loads(driver.correct_more(json.dumps([k]), name))
+    assert out["patch"] is None or not out["patch"]["nodes"]
+
+
+def test_read_again_drops_a_selection_the_browser_no_longer_holds(tmp_path, monkeypatch):
+    import json
+    driver = _driver(tmp_path, monkeypatch)
+    from chessbook import selection
+    from test_assemble import make_book
+    pdf = make_book(tmp_path / "little.pdf")
+    sel = {"pages": {"exclude": [5]}, "diagrams": {"exclude": [], "include": []}}
+    driver.process(str(pdf), lambda *_: None, json.dumps(sel))
+    assert selection.selection_path(pdf, tmp_path / "cfg").exists()
+    driver.process(str(pdf), lambda *_: None, None)
+    assert not selection.selection_path(pdf, tmp_path / "cfg").exists()
