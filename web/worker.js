@@ -42,6 +42,14 @@ onmessage = async (event) => {
     } else if (msg.type === "chapter") {
       const html = driver.chapter(msg.name, say, !!msg.small);
       postMessage({ type: "page", name: msg.name, hash: msg.hash || "", html });
+    } else if (msg.type === "correct") {
+      // a correction made in the open chapter: applied to the book at once
+      const out = driver.correct(msg.corrections, msg.chapter);
+      postMessage({ type: "patch", chapter: msg.chapter, result: JSON.parse(out) });
+    } else if (msg.type === "correct-more") {
+      // a piece-symbol correction reaching the other chapters, a few at a time
+      const out = driver.correct_more(JSON.stringify(msg.chapters), msg.chapter || "");
+      postMessage({ type: "patch", chapter: msg.chapter, more: true, result: JSON.parse(out) });
     } else if (msg.type === "index") {
       postMessage({ type: "page", name: "index.html", hash: msg.hash || "", html: driver.index() });
     }

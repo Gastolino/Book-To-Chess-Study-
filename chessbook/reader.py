@@ -35,6 +35,7 @@ import chess.svg
 import pymupdf
 
 from . import corrections, pgnout, style
+from .chess_js import CHESS_JS
 from .review_js import CORRECTIONS_JS, EYE_SVG, REVIEW_CSS, REVIEW_JS
 from .movetext import LETTER_SETS, junk_prefix
 from .selection import EXCLUDED_KINDS
@@ -599,6 +600,7 @@ function showPage(p){
     t += ": " + lcfirst(m.corrected || (n && n.corrected) ? D.words.corrected : (D.words[m.status] || m.status));
     if (m.reason) t += ", because " + m.reason;
     t += ".";
+    if (m.ref && n) t = "“" + shown(m.raw) + "” names " + moveText(m.node, true) + ", a move the line has played.";
     b.title = t;
     b.setAttribute("aria-label", t);
     ov.appendChild(b);
@@ -666,7 +668,8 @@ function renderChips(){
     const b = document.createElement("button");
     b.className = "tl" + (S.line === id ? " on" : "");
     b.dataset.line = id;
-    b.textContent = title(D.lines[id].title);
+    const L = D.lines[id];
+    b.textContent = title(L.title) + (L.page < S.page ? ", from " + pageName(L.page) : "");
     if (S.line === id) b.setAttribute("aria-current", "true");
     box.appendChild(b);
   }
@@ -1000,6 +1003,8 @@ function statusLines(n){
   if (n.corrected) {
     const why = n.corrected === "move" ? "You gave this move." :
       n.corrected === "placed" ? "You placed this variation here." :
+      n.corrected === "connected" ? "You joined these moves to the line here." :
+      n.corrected === "split" ? "You started a new line with this move." :
       "You named its piece symbol “<span class=n>" + shownHtml(n.symbol || "") + "</span>”.";
     return ["corrected", esc(D.words.corrected), (n.raw ? ["The text recognition read “<span class=n>" +
       shownHtml(n.raw) + "</span>”."] : []).concat([why], out)];
@@ -1033,7 +1038,7 @@ function renderInfo(){
       const [st, lab, more] = statusLines(n);
       h += "<div class='status small muted'><p><i class='dot st-" + esc(st) + "'></i>" + lab + "</p>" +
         more.map(x => "<p>" + x + "</p>").join("") + "</div>";
-      if (n.legal && n.key && !(RV.edit && RV.edit.node === S.node))
+      if (n.key && beforeFen(n) && !(RV.edit && RV.edit.node === S.node))
         h += "<p class=small><button class=tb id=fixthis>Correct this move</button></p>";
     }
   }
@@ -1094,8 +1099,34 @@ function toEnd(dir){
   while ((c = nextMove(id))) id = c;
   selectNode(id, {scrollPage: true});
 }
+function governing(){
+  // a line that began on an earlier page and goes on here: [line, its last move before this page]
+  for (const id of linesHere()) {
+    const L = D.lines[id];
+    if (L.page >= S.page) continue;
+    let last = null, nid = L.root;
+    for (;;) {
+      const c = cont(nid);
+      if (!c) break;
+      const pg = D.nodes[c].page;
+      if (pg && pg >= S.page) break;
+      nid = c;
+      if (pg) last = c;
+    }
+    if (last) return [id, last];
+  }
+  return null;
+}
 function defaultView(){
-  // no move chosen: the first line on the page, at its starting position
+  // no move chosen: the line that goes on from an earlier page, at the position at the top of the
+  // page, or else the first line on the page, at its starting position
+  const g = governing();
+  if (g) {
+    selectNode(g[1], {fromPage: true});
+    say("The line “" + title(D.lines[g[0]].title) + "” begins on " + pageName(D.lines[g[0]].page) +
+      " and goes on here. The board shows its position at the top of this page.");
+    return;
+  }
   S.node = null;
   S.line = linesHere()[0] || null;
   renderChips(); renderTree(); renderBoard(); renderInfo(); layoutPanel(false); highlightMark(false);
@@ -1215,8 +1246,10 @@ function closeDiagram(){
   setState();
 }
 function selNote(){
-  $("selnote").textContent = SEL.stored() ?
-    "You have changed the selection. The contents page shows the change and copies it for the chat." : "";
+  $("selnote").textContent = SEL.stored() ? (window.CHESSBOOK_APP ?
+    "You have changed the selection. Read again at the top of the page reads the book with it." :
+    "You have changed the selection. The contents page shows the change and copies it for the chat.") : "";
+  if (window.CHESSBOOK_APP && SEL.stored()) parent.postMessage({selectionChanged: true}, "*");
 }
 function setReading(on){
   document.body.classList.toggle("reading", on);
@@ -1240,6 +1273,7 @@ function init(){
   $("ov").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
+    if (penClick(b)) return;
     if (b.dataset.eye) { openSymMenu(b); return; }
     if (RV.edit && RV.edit.kind === "seq" && b.dataset.node) {
       const n = D.nodes[b.dataset.node];
@@ -1267,6 +1301,7 @@ function init(){
   });
   $("tree").addEventListener("click", (e) => {
     const t = e.target.closest(".mv");
+    if (t && t.dataset.node && PEN.connect) { finishConnect(t.dataset.node); return; }
     if (t && t.dataset.node) selectNode(t.dataset.node, {scrollTree: false, scrollPage: true});
   });
   $("bstart").addEventListener("click", () => toEnd(-1));
@@ -1366,6 +1401,7 @@ CHAPTER_HTML = """<!doctype html>
 <span class="pnav"><button class="ib" id="prevpage" aria-label="Previous page" title="Previous page (Page Up)">__ICON_BACK__</button>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number">
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
+<button class="ib" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
 <button class="tb" id="reviewbtn" aria-pressed="false">Review</button>
 <button class="tb" id="showread" aria-pressed="false">Show reading</button>
 <a class="nav" href="index.html">Contents</a>
@@ -1386,6 +1422,7 @@ CHAPTER_HTML = """<!doctype html>
 <span><i class="k wait"></i><i class="u"></i>Waits for board reading (Stage 3)</span>
 <span><i class="k unatt"></i>Placed in no line</span>
 <span><i class="k fixed"></i>Corrected by you</span>
+<span class="penk"><i class="k pen"></i>Pencil on: a tap corrects the move, diagram or sequence</span>
 <span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
 </div>
@@ -1433,7 +1470,8 @@ CHAPTER_HTML = """<!doctype html>
 <div class="mbar" id="mbar" aria-label="Current move">
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
 <div class="mside"><span class="mtxt" id="mtxt"></span>
-<span class="mbtns"><button class="ib" id="mback" aria-label="Previous move">__ICON_BACK__</button>
+<span class="mbtns"><button class="ib" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
+<button class="ib" id="mback" aria-label="Previous move">__ICON_BACK__</button>
 <button class="ib" id="mfwd" aria-label="Next move">__ICON_FWD__</button>
 <button class="tb" id="mboard" aria-pressed="false">Board</button>
 <button class="tb" id="mmoves">Moves</button></span></div>
@@ -1442,6 +1480,7 @@ CHAPTER_HTML = """<!doctype html>
 <script type="application/json" id="images">__IMAGES__</script>
 <script>__SELJS__</script>
 <script>__CORRJS__</script>
+<script>__CHESSJS__</script>
 <script>__JS__</script>
 </body>
 </html>
@@ -1467,17 +1506,20 @@ def chapter_data(book, ch, pgn_text):
                 "folio": pg.get("folio"),
                 "diagrams": pg["diagrams"],
                 "marks": [{k: m[k] for k in ("bbox", "node", "status", "raw", "line", "reason",
-                                             "key", "seq", "symbol", "corrected")
+                                             "key", "seq", "symbol", "corrected", "ref")
                            if k in m} for m in pg["marks"]]}
     lines = {}
     order = []
     for L in book["lines"]:
-        if L["chapter"] == idx:
+        # the chapter's own lines, and lines of other chapters that run onto its pages
+        # (a line the reader joined to one of another chapter)
+        if L["chapter"] == idx or (L["page"] <= ch["end"] and L["end_page"] >= ch["start"]):
             lines[L["id"]] = {k: L[k] for k in ("id", "title", "kind", "page", "end_page",
                                                 "start_fen", "root", "status", "diagram",
                                                 "section", "result", "moves")}
             lines[L["id"]]["event"] = (L.get("header") or {}).get("event")
             lines[L["id"]]["start_note"] = L.get("start_note") or ""
+            lines[L["id"]]["chapter"] = L["chapter"]
             order.append(L["id"])
     nodes = {}
     for nid, n in book["nodes"].items():
@@ -1580,10 +1622,12 @@ def chapter_html(book, ch, images, pgn_text, pgn_info):
         "__ICON_FWD__": style.icon("forward"),
         "__ICON_END__": style.icon("end"),
         "__ICON_FLIP__": style.icon("flip"),
+        "__ICON_PENCIL__": style.icon("pencil"),
         "__PIECES__": _pieces_defs(),
         "__EYE__": EYE_SVG,
         "__SELJS__": SELECTION_JS,
         "__CORRJS__": CORRECTIONS_JS,
+        "__CHESSJS__": CHESS_JS,
         "__JS__": CHAPTER_JS,
         # the data last, so that no placeholder inside the book's text is replaced
         "__DATA__": _json_script(data),
@@ -1696,6 +1740,7 @@ function defaultMsg(){
     "The selection is the one the program used for this run.";
 }
 function refresh(){
+  if (window.CHESSBOOK_APP && SEL.stored()) parent.postMessage({selectionChanged: true}, "*");
   for (const el of document.querySelectorAll(".pg")) {
     const p = parseInt(el.dataset.page, 10), on = SEL.pageOn(p);
     el.classList.toggle("off", !on);
@@ -1769,7 +1814,7 @@ function fixNote(){
   $("fixnote").textContent = !n ? "You have made no corrections. The Review button of a chapter lists " +
     "what the program could not read with certainty, and lets you correct it." :
     (FIX.anyPending() ? "You have corrections that this run did not use yet. " + (D.app ?
-      "Read again at the top of the page applies them." :
+      "Opening a chapter applies them." :
       "Copy corrections puts them on the clipboard, to paste into the chat for the next run.") :
       "This run used all your corrections.");
 }
@@ -1823,6 +1868,7 @@ __CHAPTERS__
 <script type="application/json" id="data">__DATA__</script>
 <script>__SELJS__</script>
 <script>__CORRJS__</script>
+<script>__CHESSJS__</script>
 <script>__JS__</script>
 </body>
 </html>
@@ -1866,7 +1912,9 @@ def _corrected_sentence(c):
     parts = []
     for key, one, many in (("moves", "move", "moves"), ("diagrams", "diagram", "diagrams"),
                            ("sequences", "sequence placed in no line", "sequences placed in no line"),
-                           ("symbols", "piece symbol", "piece symbols")):
+                           ("symbols", "piece symbol", "piece symbols"),
+                           ("connections", "line joined to another", "lines joined to others"),
+                           ("splits", "line started anew", "lines started anew")):
         k = c.get(key, 0)
         if k:
             parts.append(f"{_n(k)} {one if k == 1 else many}")
@@ -1975,6 +2023,7 @@ def index_html(book, thumbs, sizes, app=False):
         "__INDEX_CSS__": INDEX_CSS,
         "__SELJS__": SELECTION_JS,
         "__CORRJS__": CORRECTIONS_JS,
+        "__CHESSJS__": CHESS_JS,
         "__JS__": INDEX_JS,
         "__DATA__": _json_script(data),
     }

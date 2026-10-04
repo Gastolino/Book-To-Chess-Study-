@@ -66,10 +66,11 @@ body{margin:0;display:flex;flex-direction:column}
 #top button{font:inherit;color:var(--fg);background:none;border:0;padding:0;cursor:pointer}
 #top button:hover{text-decoration:underline}
 #top .gap{flex:1}
+#top button[hidden]{display:none}
 </style></head>
 <body>
 <div id="top"><b id="bookname"></b><span id="took"></span><span class="gap"></span>
-<button id="again" type="button">Read again</button>
+<button id="again" type="button" hidden>Read again</button>
 <button id="another" type="button">Open another book</button>
 <span id="note" role="status"></span><div id="topbar"><i></i></div></div>
 <main id="start">
@@ -132,9 +133,12 @@ worker.onmessage = (e) => {
     $("bar").classList.remove("on");
     $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
     show("index.html", "", m.html);
+  } else if (m.type === "patch") {
+    patched(m);
   } else if (m.type === "page") {
     working(false);
     $("note").textContent = "";
+    openChapter = m.name;
     show(m.name, m.hash, m.html);
   } else if (m.type === "error") {
     busy = false;
@@ -150,7 +154,33 @@ worker.onerror = (e) => {
   status("The reader stopped: " + (e.message || "the browser ran out of memory") +
     ". Closing other tabs or using a computer can help.", true);
 };
+// Corrections made in a chapter reader are applied at once by the worker,
+// which answers with a patch for the open page. A changed piece symbol
+// reaches the other chapters afterwards, one chapter at a time.
+let more = [], moreTotal = 0, openChapter = "";
+function toView(msg) { if ($("view").contentWindow) $("view").contentWindow.postMessage(msg, "*"); }
+function patched(m) {
+  const r = m.result || {};
+  if (r.patch && m.chapter === openChapter) toView({ patch: r.patch });
+  more = (r.pending || []).slice();
+  if (!m.more) moreTotal = more.length;
+  if (more.length) {
+    const done = moreTotal - more.length + 1;
+    const text = "Applying your piece choice to the other chapters: " + done + " of " + moreTotal + ".";
+    status(text); toView({ progress: text });
+    worker.postMessage({ type: "correct-more", chapters: [more[0]], chapter: openChapter });
+  } else if (m.more) {
+    status("Your piece choice is applied to the whole book.");
+    toView({ progress: "Your piece choice is applied to the whole book." });
+  } else status("");
+}
 window.addEventListener("message", (e) => {
+  if (e.data && e.data.correct) {
+    openChapter = e.data.chapter;
+    worker.postMessage({ type: "correct", corrections: e.data.correct, chapter: e.data.chapter });
+    return;
+  }
+  if (e.data && e.data.selectionChanged) { $("again").hidden = false; return; }
   if (!e.data || !e.data.open) return;
   working(true);
   status(e.data.open === "index.html" ? "Opening the contents." :
@@ -167,6 +197,7 @@ async function take(file) {
   if (!ready) { status("The reader is still starting. Try again in a moment."); return; }
   busy = true;
   lastFile = file;
+  $("again").hidden = true;
   $("bookname").textContent = file.name.replace(/\\.pdf$/i, "");
   $("bar").classList.add("on");
   status("Reading " + file.name);

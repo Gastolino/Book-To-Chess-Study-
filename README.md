@@ -82,19 +82,61 @@ shows it on the page and on the board, with the choices to correct it:
   king of each colour;
 - a move: one of the readings the program considered, or a move typed in the
   book's letters, which the program accepts only when it is legal there;
-- a sequence placed in no line: the move of the line it replaces, or "Not a
-  variation";
+- a sequence placed in no line: the move of the line it replaces, "Not a
+  variation", or "Continue a line…";
 - a piece symbol: one of the six pieces. The choice applies to every move of
   the book printed with that symbol (the eye on the page opens the same
   choice).
 
-The browser keeps the corrections for each book. In the app, Read again
-applies them. From the command line, the contents page's "Copy corrections"
-button copies them; `python3 make_reader.py book.pdf --corrections FILE`
-saves the pasted text as `books/<book>/corrections.json`, which every later
-run applies (`chessbook/corrections.py` describes the format). A corrected
-item shows in the colour of a decoded move, with the words "Corrected by
-you", and the contents page counts the corrections a run used.
+The pencil in the reader's top bar (and in the bar at the foot of a phone
+screen) corrects anything on the page, not only what the program doubts.
+With the pencil on, a tap on a move, a diagram or a sequence opens its
+corrector. The corrector of a move also changes the line it belongs to:
+
+- "Start a new line here" starts a separate line with this move, from the
+  position before it; "Start a new line here from a diagram" starts it from a
+  diagram of this page or the page before;
+- "Not part of this line" takes the moves from this one to the end of the
+  line out of the line, so that they stand in no line;
+- "Continue the line…" joins the line (from its first move) to another line:
+  a tap on the move after which it follows, on this page, another page or in
+  the move list, completes the join. The moves continue that line when the
+  move ends it, and form a variation from it otherwise. The program refuses
+  a join whose first move is not legal there and says why.
+
+In the browser app every correction applies at once: the worker replays only
+the lines it touches and sends the open chapter its changes, so the board,
+the move list, the outlines on the page and the Review list change while the
+page and the chosen move stay put. A piece symbol reaches the open chapter
+first and then the other chapters, one at a time, while the reader goes on
+reading. Read again is needed only after a change of the selection (pages
+and diagrams included or left out). The browser keeps the corrections for
+each book, and reading the book again applies them with the same result.
+
+In a reader built from the command line, the contents page's "Copy
+corrections" button copies the corrections; `python3 make_reader.py book.pdf
+--corrections FILE` saves the pasted text as `books/<book>/corrections.json`,
+which every later run applies (`chessbook/corrections.py` describes the
+format). A corrected item shows in the colour of a decoded move, with the
+words "Corrected by you", and the contents page counts the corrections a run
+used.
+
+## Lines that go on
+
+A line stays one line across columns, pages and chapter files while its
+moves go on: a run that continues the numbering of a line that stopped
+earlier ("4… e4" after a digression with other moves or a diagram) and reads
+as legal play from where it stopped continues it, unless a word such as
+"Or", "Instead", "If" or "After", or a bracket, makes it an alternative.
+When a page opens in the middle of a line, the reader lists that line first
+under "On this page" and shows its position at the top of the page.
+
+Moves printed in long notation ("e2-e4", "Ng1-f3", "Bf1–b5", "d2xd3")
+are read strictly: the piece must stand on the square the text names. Such
+a move without a move number in a sentence ("once Black has played
+...e7-e6") names the move of the line it repeats, and a tap on it shows that
+position; otherwise it is a variation where it is legal, stays text when the
+sentence gives it as a plan, or stands in no line with the reason.
 
 ## Running it from the command line
 

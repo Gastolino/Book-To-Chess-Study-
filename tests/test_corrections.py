@@ -62,7 +62,8 @@ def test_the_garbled_book_needs_corrections(garbled):
     (u,) = book["unattached"]
     assert u["text"] == "12.Qh5+ g6" and u["key"].endswith(":Qh5+")
     assert book["stats"]["corrected"] == {"moves": 0, "symbol_moves": 0, "diagrams": 0,
-                                          "sequences": 0, "symbols": 0}
+                                          "sequences": 0, "symbols": 0, "connections": 0,
+                                          "splits": 0}
 
 
 def test_corrected_move_decodes_and_the_line_goes_on(garbled):
@@ -170,7 +171,8 @@ def test_schema_and_pasted_text():
         "{\"4:258,68:Qh5+\": {\"attach_to\": \"dismiss\"}}, \"glyphs\": {\"tLl\": \"n\"},}\n```")
     assert data["glyphs"] == {"tLl": "N"} and data["moves"]["4:116,496:Zq9"] == {"san": "Nxd5"}
     assert data["unattached"]["4:258,68:Qh5+"] == {"attach_to": "dismiss"}
-    assert fixes.count(data) == {"diagrams": 1, "moves": 1, "unattached": 1, "glyphs": 1}
+    assert fixes.count(data) == {"diagrams": 1, "moves": 1, "unattached": 1, "glyphs": 1,
+                                 "connect": 0, "disconnect": 0}
     for bad in ({"diagrams": {"p5-1": {"fen": "8/8/8/8/8/8/8/8 w - - 0 1"}}},
                 {"diagrams": {"page five": {"fen": ENDING_FEN}}},
                 {"moves": {"Zq9": {"san": "Nxd5"}}},

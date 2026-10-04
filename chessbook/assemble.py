@@ -48,8 +48,19 @@ of the sequence placed in no line that it belongs to, and its "symbol" the
 piece symbol the text recognition could not name. A node's or mark's
 "corrected" says what the reader corrected: "move" (the token reads as the
 move given), "symbol" (its piece symbol), or "placed" (the first move of a
-sequence the reader placed). "symbols" counts every such piece symbol in
-the book, for the reader's Review view.
+sequence the reader placed), "connected" (the first move of a run the reader
+joined to a line) or "split" (the first move of a line the reader started
+there). "symbols" counts every such piece symbol in the book, for the
+reader's Review view.
+
+The corrections are not used while the book is assembled. Each line keeps
+the steps that built it (its ops); _Builder.finalize keeps the assembled
+lines as the base and replays them with the corrections: corrected moves,
+piece symbols and diagram positions are decoded again, sequences go where
+the reader tied them, and lines are split or joined where the reader said
+(_Builder.derive). _Builder.apply_fix replays only the lines that a changed
+set of corrections touches, which lets the browser app apply a correction
+at once (live.py) with the result of a fresh build.
 
 How the text is read
 --------------------
@@ -92,6 +103,25 @@ diagram's position is read by Stage 3, so until then the line has status
 "waiting" and keeps its raw move text. A numbered solution ("5. S. Loyd,
 1878: 1.Qa1!!", "20. 2...Rh3+!") is matched to the diagram with the same
 number among the exercises before it.
+
+A line that stopped resumes where the text takes it up again: a main run
+that continues the numbering of a line closed earlier in the chapter (after
+a digression, a box or a sidebar: "4… e4" after White's fourth move) and
+reads as legal play from its last position continues that line rather than
+starting a new one (_Builder.resumable, and choose_start when a diagram
+stands between), unless a word such as "Or", "Instead", "If" or "After", or
+a bracket, makes it an alternative. The first main run of a chapter that
+continues the last line of the chapter before, with no heading, game header
+or diagram before it, continues that line too (chapter_join): the book's
+structure then took a page inside the text for the start of a chapter.
+
+Moves in long notation ("e2-e4", "Ng1-f3", "d2xd3") name the square the
+piece leaves, and only a move from that square reads them. Such a move
+without a move number inside a sentence (_LONG_TEXT_RE; ranges such as "the
+a1-h8 diagonal" stay prose) is placed by do_long: it refers to the move of
+the line it repeats (a mark linked to that move), or is a variation where the
+line stands when it is legal there, or stays text when the sentence gives it
+as a plan, or stands in no line with the reason.
 
 Note runs become variations. A note run whose first move has the number of a
 move in the line becomes an alternative to that move; a run that continues a
@@ -172,7 +202,7 @@ from . import corrections as fixes
 from . import figurines
 from . import pdftext as pt
 from . import selection as sel
-from .movetext import GlyphModel, clean_run, decode, find_sequences, numbering_counts
+from .movetext import GlyphModel, Token, clean_run, decode, find_sequences, numbering_counts
 from .movetext import DOTLESS_MIN, DOTLESS_SHARE
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
 from .movetext import _ocr_digit_slip, junk_prefix
@@ -206,6 +236,22 @@ _CONNECT_WORDS = {"and", "then", "followed", "by", "or", "with", "of", "the", "a
 # Words that tie a run without a move number to the move it replaces.
 _ALT_CUE_RE = re.compile(r"\b(?:instead|better|stronger|weaker|preferable|worse|"
                          r"alternatively|or)\b", re.I)
+# A move in long notation: the square the piece leaves, a separator, the square
+# it goes to ("e7-e6", "Ng1-f3", "d2xd3", "Bf1–b5").
+_LONG_RAW_RE = re.compile(r"[a-h][1-8]\s?[-–—x:×]\s?[a-h][1-8]")
+_SQUARES_RE = re.compile(r"[a-h][1-8]")
+# The same in running text, with the dots of a Black move and a piece letter or
+# glyph before it, and the words after it that make it a range, not a move.
+_LONG_TEXT_RE = re.compile(r"(?<![^\s(\[“\"‘'])((?:\.\.\.|…)\s?)?((?![(\[“\"‘'])\S{0,4}?)"
+                           r"([a-h][1-8](?:\s?[-–—x:×]\s?[a-h][1-8])+(?:=?[QRBN])?[+#t]?[!?]{0,2})"
+                           r"(?![\w\-–—])")
+_RANGE_AFTER_RE = re.compile(r"^\W{0,2}(?:diagonals?|files?|ranks?|lines?|squares?|direction|sector|"
+                             r"wing|side|axis|pawns?)\b", re.I)
+_PLAN_RE = re.compile(r"\b(?:idea|plans?|intend\w*|aim\w*|manoeuvre\w*|maneuver\w*|regroup\w*|"
+                      r"transfer\w*|reroute\w*|route|prepar\w*|going to|wants? to|hope\w* to)\b", re.I)
+# Words before a run that make it an alternative or a supposition rather than
+# the resumed line: "Or 4...d5", "Instead 4...d5", "If 4...d5", "After 4...d5".
+_ALT_LEAD_RE = re.compile(r"\b(?:or|instead|if|after|alternatively|otherwise)\b[^.;:!?]*$", re.I)
 _FOLLOW_RE = re.compile(r"\b(?:followed by|and then|then)\s*$", re.I)
 # "Diagram 430", "Position 262", "Diag. 12": the text names a diagram.
 _DIAGRAM_REF_RE = re.compile(r"\b(?:[DO][il1]a?gr[ae](?:m|rn|in)s?|Diag\.|Position|Pos\.)\s*"
@@ -253,8 +299,16 @@ def _renumbered(run, ply):
     toks = list(run.tokens)
     _relabel(toks, n, black)
     moves = [t for t in toks if t.kind == "move"]
-    return _Run(run.kind, toks, moves, run.start, run.end, run.depth, _ply(moves[0]), run.result,
-                run.home, run.context)
+    return replace(run, tokens=toks, moves=moves, ply=_ply(moves[0]))
+
+
+def _tokens_text(tokens):
+    """The text of a run's tokens: "6.Nxf7 Kxf7 7.Qf3+"."""
+    out = ""
+    for t in tokens:
+        glue = out.endswith((".", "…")) and t.kind == "move"
+        out += ("" if glue or not out else " ") + t.raw.strip()
+    return out
 
 
 def _first_moves(tokens, n):
@@ -547,6 +601,8 @@ class _Run:
     result: Optional[str]
     home: Optional[str] = None  # the diagram a held note would start from
     context: Optional[tuple] = None  # the solution context it was held in
+    ci: int = -1                # the chapter whose text holds the run
+    text: str = ""              # the run's text, for messages
 
 
 class _Stream:
@@ -671,6 +727,10 @@ class _Line:
     broken: bool = False        # a gap in the text ended the decoded part of the line
     hold: Optional[int] = None  # a diagram that may end the line (see _Builder.hold)
     start_note: str = ""        # how the starting position was chosen, in plain words
+    spec: dict = field(default_factory=dict)          # where the line starts (see _Builder.replay_line)
+    ops: list = field(default_factory=list)           # how the line was built, for replaying it
+    base_result: Optional[str] = None
+    nseq: int = 0               # node ids handed out by replay_line
 
 
 class _Decoder:
@@ -754,15 +814,23 @@ class _Builder:
         self.moves_font = bool(fonts.get("moves"))
         self.bs = (fonts.get("body") or {}).get("size") or 10.0
         self.folio_offset = (fonts.get("layout") or {}).get("folio_offset")
-        # the reader's corrections (corrections.py)
-        fix = fix or {}
-        self.fix_moves = fixes.TokenIndex(fix.get("moves"))
-        self.fix_unattached = fixes.TokenIndex(fix.get("unattached"))
-        self.fix_glyphs = dict(fix.get("glyphs") or {})
+        # The reader's corrections (corrections.py) are not used while the
+        # book is assembled: finalize() applies them afterwards by replaying
+        # the lines they touch, so that one correction can be applied to the
+        # assembled book alone (live, in the browser app) with the same result.
+        self.fix = fixes.empty()
+        self.fix_moves = fixes.TokenIndex({})
+        self.fix_glyphs = {}
+        self.fix_diagrams = {}
         self.node_by_key = {}           # token key -> node id
-        self.pending_attach = []        # sequences the reader tied to a move: (run, target, ...)
         self.dismissed = []             # sequences the reader dismissed as no variation
         self.attached = []              # sequences placed where the reader said
+        self.places = {}                # (chapter, start, end) -> (page, bbox) of a token
+        self.replaying = False
+        self.unplaced_runs = []         # (entry, run): sequences placed in no line
+        self.by_line = defaultdict(list)        # line id -> its node ids
+        self.line_pages = defaultdict(set)      # line id -> pages holding its marks
+        self.base = None                # the lines as assembled, before corrections
 
     def page_label(self, page):
         """The page number printed in the book (the PDF page when unknown)."""
@@ -772,24 +840,43 @@ class _Builder:
 
     # -------------------------------------------------------- nodes and marks
     def new_node(self, line, **kw):
-        nid = f"n{len(self.nodes) + 1}"
+        if self.replaying:
+            line.nseq += 1
+            nid = f"{line.id}.{line.nseq}"
+        else:
+            nid = f"n{len(self.nodes) + 1}"
         node = {"san": None, "fen": None, "parent": None, "children": [], "number": None,
                 "black": None, "page": None, "bbox": None, "status": "ok", "raw": "",
                 "comment": "", "main": False, "assumed": None, "uci": None, "line": line.id}
         node.update(kw)
         self.nodes[nid] = node
+        self.by_line[line.id].append(nid)
         if node["parent"] is not None:
             self.nodes[node["parent"]]["children"].append(nid)
         return nid
 
+    def place_of(self, tok, ci=None):
+        """(page, bbox) of a token of chapter ci (the current one by default)."""
+        k = (self.ci if ci is None else ci, tok.start, tok.end)
+        hit = self.places.get(k)
+        if hit is None:
+            hit = self.places[k] = self.st.locate(tok.start, tok.end)
+        return hit
+
+    def key_of(self, tok, ci=None):
+        page, box = self.place_of(tok, ci)
+        return fixes.token_key(page, box, tok.raw) if box is not None else None
+
     def mark(self, stream, tok, node, status, line_id=None, reason=None):
-        page, box = stream.locate(tok.start, tok.end)
+        page, box = self.place_of(tok)
         if page is None:
             return None, None
         m = {"bbox": box, "node": node, "status": status, "raw": tok.raw, "line": line_id,
              "_o": tok.start, "key": fixes.token_key(page, box, tok.raw)}
         if reason:
             m["reason"] = reason
+        if line_id:
+            self.line_pages[line_id].add(page)
         if node is not None:
             self.node_by_key.setdefault(m["key"], node)
             n = self.nodes[node]
@@ -798,25 +885,24 @@ class _Builder:
         self.marks[page].append(m)
         return page, box
 
-    def token_place(self, tok):
-        """(page, bbox) of a token of the current chapter's text."""
-        return self.st.locate(tok.start, tok.end)
-
-    def force(self, st, toks):
-        """Move tokens that the reader corrected carry the move they gave."""
+    def forced(self, run):
+        """The run with the moves the reader corrected carrying the move they
+        gave (corrections.py "moves")."""
         if not self.fix_moves:
-            return toks
+            return run
         pages = self.fix_moves.pages()
-        out = []
-        for t in toks:
-            if t.kind == "move" and st.page_at(t.start) in pages:
-                page, box = st.locate(t.start, t.end)
-                if box is not None:
+        toks, changed = [], False
+        for t in run.tokens:
+            if t.kind == "move":
+                page, box = self.place_of(t, run.ci)
+                if page in pages and box is not None:
                     _, v = self.fix_moves.find(page, box, t.raw)
-                    if v:
-                        t = replace(t, forced=v["san"])
-            out.append(t)
-        return out
+                    if v and v["san"] != t.forced:
+                        t, changed = replace(t, forced=v["san"]), True
+            toks.append(t)
+        if not changed:
+            return run
+        return replace(run, tokens=toks, moves=[t for t in toks if t.kind == "move"])
 
     # -------------------------------------------------------- stream building
     def word_classes(self, ln):
@@ -1094,7 +1180,6 @@ class _Builder:
                 for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font,
                                         dotless=self.dotless):
                     toks = [replace(t, start=t.start + a, end=t.end + a) for t in s.tokens]
-                    toks = self.force(st, toks)
                     parts = _split_at_diagrams(toks, diagrams)
                     if kind == "main" and self.moves_font:
                         parts = [q for part in parts for q in self.split_inline(st, part)]
@@ -1166,7 +1251,14 @@ class _Builder:
     # -------------------------------------------------------- chapter
     def chapter(self, ci, ch):
         st = self.build_stream(ch)
+        self.st, self.ci = st, ci
         runs = self.runs(st)
+        runs = sorted(runs + self.long_runs(st, runs), key=lambda r: (r.start, r.kind))
+        for r in runs:
+            r.ci = ci
+            r.text = re.sub(r"[ \n\r]+", " ", st.orig_text[r.start:r.end]).strip()
+            for t in r.tokens:
+                self.place_of(t)
         self.all_runs = runs
         self.run_starts = [r.start for r in runs]
         items = [(off, 0, order, kind, payload) for off, order, kind, payload in st.events]
@@ -1193,6 +1285,11 @@ class _Builder:
         self.prev_heading = None
         self.last_closed = None
         self.suspended = None           # (line, offset): a line a heading interrupted
+        # the last line of the chapter before, when it ends on its last pages
+        prev = next((M for M in reversed(self.lines) if M.chapter < ci), None)
+        last = self.nodes[prev.main_nodes[-1]] if prev is not None and prev.main_nodes else None
+        self.prev_chapter_line = prev if (last and last.get("page")
+                                          and last["page"] >= ch["start"] - 1) else None
         prev_kind = None
         self.now = 0
         for off, _, _, kind, x in items:
@@ -1288,7 +1385,46 @@ class _Builder:
                 prev_kind = kind
         self.close(st.pos)
         self.flush_pre_notes()
-        self.attach_pending()
+
+    def long_runs(self, st, runs):
+        """Moves in long notation that stand in the text outside any run
+        ("after Black has committed himself with ...e7-e6"): each becomes a
+        run of kind "long" (see do_long). Ranges in prose ("the a1-h8
+        diagonal") stay prose."""
+        taken = sorted((t.start, t.end) for r in runs for t in r.tokens)
+        starts = [a for a, _ in taken]
+        out = []
+        text = st.orig_text
+        for m in _LONG_TEXT_RE.finditer(text):
+            a, b = m.start(2), m.end(3)
+            k = bisect.bisect_right(starts, b) - 1
+            if k >= 0 and taken[k][1] > a:
+                continue                        # part of a run already
+            if _RANGE_AFTER_RE.match(text[b:b + 20]):
+                continue
+            sq = _SQUARES_RE.findall(m.group(3))
+            if len(set(sq)) < len(sq) or not (m.group(2) or m.group(1) or self.square_move(sq[0], sq[1])):
+                continue
+            raw = text[a:b]
+            if "\n" in raw:
+                continue
+            black = bool(m.group(1))
+            toks = []
+            if m.group(1):
+                toks.append(Token("number", m.group(1).strip(), m.start(1), m.start(1) + len(m.group(1).strip()),
+                                  None, True))
+            mv = Token("move", raw, a, b, None, black, side_known=black)
+            toks.append(mv)
+            out.append(_Run("long", toks, [mv], toks[0].start, b, 0, None, None))
+        return out
+
+    @staticmethod
+    def square_move(a, b):
+        """True when a piece can go from square a to square b in one move on an
+        empty board (a line, a diagonal or a knight's jump)."""
+        fa, ra, fb, rb = ord(a[0]), int(a[1]), ord(b[0]), int(b[1])
+        df, dr = abs(fa - fb), abs(ra - rb)
+        return df == 0 or dr == 0 or df == dr or {df, dr} == {1, 2}
 
     def flush_pre_notes(self):
         """Note runs held back while no line was open: the context they belong
@@ -1523,6 +1659,7 @@ class _Builder:
                   display_title(self.section), header, self.line_start_offset(run.start),
                   start_ply, fen, born)
         L.first_offset = run.start
+        L.spec = {"fen": fen, "diagram": diagram, "ply": start_ply}
         root = self.new_node(L, fen=fen, status="waiting" if waiting else "root", main=True,
                              page=page)
         L.root = root
@@ -1573,6 +1710,13 @@ class _Builder:
         if pick is not None and pick.get("line") is not None:
             # the run goes on from a position of the line before it
             prev = pick["line"]
+            if (prev.end_offset is not None and prev is not self.active and prev.main_nodes
+                    and self.nodes[prev.main_nodes[-1]]["fen"] == pick["fen"]
+                    and self.pending_header is None and run.depth == 0
+                    and not _ALT_LEAD_RE.search(self.lead_text(run.start, 60))):
+                # it goes on from where that line stopped: the same line resumes
+                # ("10...Qf6" after a digression, a diagram or a box between)
+                return self.reopen(prev, run)
             header = self.pending_header
             title = title or (header["text"] if header else
                               f"{prev.title} (from move {_ply_label(run.ply)})")
@@ -1725,17 +1869,20 @@ class _Builder:
             fen = self.diagram_fen(did, run)
             if fen:
                 cands.append((k + 1, did, None, fen))
-        prev = self.last_closed
-        if prev is not None and prev.chapter == self.ci and not prev.waiting \
-                and not prev.broken and len(prev.main_nodes) > 1:
-            # the run goes on where the line before it stopped (a diagram,
-            # a heading or a box of text between them closed that line), or
-            # replaces one of its last two moves (a move taken from the notes)
-            for nid in reversed(prev.main_nodes[1:][-3:]):
+        recent = [M for M in reversed(self.lines) if M.chapter == self.ci
+                  and M.end_offset is not None and M is not self.active][:4]
+        for k, prev in enumerate(recent):
+            if prev.waiting or prev.broken or len(prev.main_nodes) <= 1:
+                continue
+            # the run goes on where a line before it stopped (a diagram, a
+            # heading or a box of text between them closed that line), or
+            # replaces one of the last two moves of the line just before it
+            # (a move taken from the notes)
+            for nid in reversed(prev.main_nodes[1:][-3:] if k == 0 else prev.main_nodes[-1:]):
                 node = self.nodes[nid]
                 if node["fen"] and node["status"] != "failed" \
                         and _board_ply(node["fen"]) == run.ply:
-                    cands.append((9, None, prev, node["fen"]))
+                    cands.append((9 + k, None, prev, node["fen"]))
                     break
         if not cands:
             return None
@@ -1904,73 +2051,38 @@ class _Builder:
         return b.fen()
 
     def run_text(self, run):
+        if run.text:
+            return run.text
         return re.sub(r"[ \n\r]+", " ", self.st.orig_text[run.start:run.end]).strip()
 
-    def unplaced(self, run, reason):
-        page, box = self.st.locate(run.moves[0].start, run.moves[0].end) if run.moves else (None, None)
+    def unplaced(self, run, reason, src=None, dismiss=None):
+        """A sequence placed in no line, with the reason in words. src is the
+        line whose notes held it; dismiss holds the entry fields of a
+        sequence the reader dismissed as no variation."""
+        ci = run.ci if run.ci >= 0 else self.ci
+        page, box = self.place_of(run.moves[0], ci) if run.moves else (None, None)
         key = fixes.token_key(page, box, run.moves[0].raw) if box is not None else None
-        if key is not None and self.fix_unattached:
-            k, v = self.fix_unattached.find(page, box, run.moves[0].raw)
-            if v is not None:
-                entry = {"page": page, "chapter": self.ci, "text": self.run_text(run),
-                         "reason": reason, "key": key, "bbox": box}
-                if v["attach_to"] == "dismiss":
-                    self.dismissed.append(entry)
-                    return
-                self.pending_attach.append((run, v["attach_to"], entry))
-                return
-        self.unattached.append({"page": page or self.st.page_at(run.start), "chapter": self.ci,
-                                "text": self.run_text(run), "reason": reason, "key": key,
-                                "bbox": box})
+        entry = {"page": page or self.place_of(run.tokens[0], ci)[0], "chapter": ci,
+                 "text": self.run_text(run), "reason": reason, "key": key, "bbox": box,
+                 "_src": src.id if src is not None else None}
+        if dismiss is not None:
+            entry.update(dismiss)
+            self.dismissed.append(entry)
+            return
+        self.unattached.append(entry)
+        if src is None and not self.replaying:
+            self.unplaced_runs.append((entry, run))
+        saved, self.ci = self.ci, ci
         for t in run.moves:
-            m_page, _ = self.mark(self.st, t, None, "unattached", reason=reason)
-            if m_page is not None and key:
-                self.marks[m_page][-1]["seq"] = key
-
-    def attach_pending(self):
-        """Place the sequences the reader tied to a move of a line: as an
-        alternative to that move, or else as the moves that follow it,
-        whichever reads legally (and better)."""
-        pending, self.pending_attach = self.pending_attach, []
-        by_id = {L.id: L for L in self.lines}
-        for run, target, entry in pending:
-            nid = self.node_by_key.get(target)
-            if nid is None:
-                t_page, t_x, t_y, t_raw = fixes.parse_key(target)
-                for k, n in self.node_by_key.items():
-                    p2, x2, y2, r2 = fixes.parse_key(k)
-                    if p2 == t_page and max(abs(x2 - t_x), abs(y2 - t_y)) <= fixes.TOLERANCE:
-                        nid = n
-                        break
-            L = by_id.get(self.nodes[nid]["line"]) if nid is not None else None
-            best = None
-            if L is not None and not L.waiting:
-                node = self.nodes[nid]
-                for parent in (node["parent"], nid):
-                    if parent is None or not self.nodes[parent]["fen"]:
-                        continue
-                    decs = self.dec.run(self.nodes[parent]["fen"], run.tokens)
-                    f = _fit(decs)
-                    if f[0] <= 1 and (best is None or f < best[0]):
-                        best = (f, parent, decs)
-            if best is None:
-                why = ("you tied it to a move that the program no longer finds" if L is None else
-                       "its moves are not legal at the move you tied it to")
-                self.unattached.append({**entry, "reason": why})
-                for t in run.moves:
-                    m_page, _ = self.mark(self.st, t, None, "unattached", reason=why)
-                    if m_page is not None:
-                        self.marks[m_page][-1]["seq"] = entry["key"]
-                continue
-            _, parent, decs = best
-            nodes = self.insert_decoded(L, parent, run, decs)
-            L.variations += 1
-            if nodes:
-                self.nodes[nodes[0]]["corrected"] = "placed"
-                for m in self.marks.get(self.nodes[nodes[0]]["page"], []):
-                    if m["node"] == nodes[0]:
-                        m["corrected"] = "placed"
-            self.attached.append({**entry, "node": nodes[0] if nodes else None})
+            m_page, _ = self.mark(None, t, None, "unattached", reason=reason)
+            if m_page is not None:
+                m = self.marks[m_page][-1]
+                m["_src"] = entry["_src"]
+                if src is not None:
+                    self.line_pages[src.id].add(m_page)
+                if key:
+                    m["seq"] = key
+        self.ci = saved
 
     # -------------------------------------------------------- main runs
     def on_main(self, run):
@@ -2026,6 +2138,19 @@ class _Builder:
                 self.pending_header = None
             self.extend(L, run)
             return
+        # (an earlier move of the open line that the run names makes it an
+        # alternative within that line, not a resumption)
+        R = (self.resumable(run, L) if P is not None and P > 0
+             and (L is None or L.waiting or P > L.next_ply) else None)
+        if R is not None:
+            # the run resumes an earlier line of the chapter where it stopped,
+            # after a digression ("4...Nf6" after other moves or a diagram)
+            if L is not None:
+                self.close(run.start)
+            self.active = self.reopen(R, run)
+            self.extend(R, run)
+            self.adopt_pre_notes(R)
+            return
         between = L is not None and self.diagram_between(L, run)
         if L is not None and P is not None and not between:
             # The numbering does not continue the line, but nothing stands
@@ -2068,7 +2193,7 @@ class _Builder:
                 self.unplaced(run, "its first move carries no move number")
                 return
             self.release_pre_notes(self.usable_diagram(run.start))
-            L2 = self.from_diagram(run, "main")
+            L2 = self.chapter_join(run) or self.from_diagram(run, "main")
         if L2 is not None:
             self.active = L2
             self.extend(L2, run)
@@ -2092,8 +2217,7 @@ class _Builder:
         if _fit(self.dec.run(L.last_fen, toks))[0] != 0:
             return None
         moves = [t for t in toks if t.kind == "move"]
-        return _Run(run.kind, toks, moves, run.start, run.end, run.depth, _ply(moves[0]),
-                    run.result, run.home, run.context)
+        return replace(run, tokens=toks, moves=moves, ply=_ply(moves[0]))
 
     def gap(self, L, run, P, follow=True):
         """The numbering skips moves that the text does not show (P is the ply
@@ -2101,6 +2225,8 @@ class _Builder:
         of the line ends with a node that marks the gap, and with follow the
         run's moves come after it as unread text, since the position there is
         unknown."""
+        if not self.replaying:
+            L.ops.append(("gap", run, P, follow))
         missing = P - L.next_ply
         what = _ply_words(L.next_ply)
         if missing > 1:
@@ -2110,13 +2236,13 @@ class _Builder:
                   f"The book's text lacks {what}; the line goes on from the diagram after it.")
         nid = self.new_node(L, parent=L.main_nodes[-1], number=L.next_ply // 2 + 1,
                             black=bool(L.next_ply % 2), status="failed", raw="", main=True,
-                            page=self.st.page_at(run.start), reason=reason)
+                            page=self.place_of(run.tokens[0], run.ci)[0], reason=reason)
         L.main_nodes.append(nid)
         L.broken = True
         L.last_fen = None
         L.ply_node[L.next_ply] = nid
         L.next_ply = P
-        if follow:
+        if follow and not self.replaying:
             self.extend(L, run)
 
     def diagram_between(self, L, run):
@@ -2189,6 +2315,10 @@ class _Builder:
 
     def extend(self, L, run, decs=None):
         """Append a run to the main line of L."""
+        if not self.replaying:
+            L.ops.append(("main", run))
+        else:
+            run, decs = self.forced(run), None
         if not (L.waiting or L.broken) and decs is None:
             decs = self.dec.run(L.last_fen, run.tokens)
         parent = L.main_nodes[-1]
@@ -2201,7 +2331,8 @@ class _Builder:
                 L.next_ply = ply + 1
                 L.main_tok.append((t.start, t.end, parent))
         else:
-            self.dec.accepted.append(decs)
+            if not self.replaying:
+                self.dec.accepted.append(decs)
             for t, d in zip(run.moves, decs):
                 new, _ = self.add_decoded(L, parent, t, d, True)
                 for nid in new:
@@ -2217,6 +2348,10 @@ class _Builder:
                 L.next_ply = _board_ply(fen) if fen else ply + 1
                 L.main_tok.append((t.start, t.end, parent))
             L.last_fen = self.nodes[parent]["fen"] or L.last_fen
+        if self.replaying:
+            if run.result:
+                L.result = run.result
+            return
         for t in run.tokens:
             L.consumed.append((t.start, t.end))
         L.last_token_end = max(L.last_token_end, run.end)
@@ -2307,6 +2442,18 @@ class _Builder:
         if L is not None:
             L.notes.append((run, False))
             return
+        if self.is_long(run):
+            # a move in long notation in the text after a line: it refers to
+            # that line (see do_long)
+            L = self.last_closed if (self.last_closed is not None
+                                     and self.last_closed.chapter == self.ci) else None
+            if L is None:
+                self.unplaced(run, "no line stands where it is printed")
+                return
+            op = ("long", run, self.long_cue(run))
+            L.ops.append(op)
+            self.do_long(L, op)
+            return
         # A note with no line open either tells how the position arose
         # ("after the opening moves 1.e4 e5 ...": a line from the initial
         # position) or discusses the position before its main line begins
@@ -2319,41 +2466,130 @@ class _Builder:
         self.pre_notes.append(run)
 
     def attach_notes(self, L):
+        """Place the line's note runs, recording each decision as an op of the
+        line (see replay_line): the text decides what may be placed, the
+        moves decide where."""
         blocks = [s for s, _, _ in L.main_tok]
-        variations = defaultdict(list)          # block -> [variation records]
-        last_var = None
+        L.ops.append(("notes",))
+        state = {"vars": defaultdict(list), "last": None}
         for run, as_main in L.notes:
-            if self.is_threat(run):
-                self.unplaced(run, "the text gives these moves as a threat or a plan, not as "
-                                   "moves played")
-                self.tidy(L, run)
+            if self.is_long(run):
+                op = ("long", run, self.long_cue(run))
+                L.ops.append(op)
+                self.do_long(L, op)
                 continue
-            ref = self.referenced_diagram(run)
-            if ref and ref[1] and ref[1] != L.diagram:
+            if self.is_threat(run):
+                op = ("unplaced", run, "the text gives these moves as a threat or a plan, not as "
+                                       "moves played")
+                self.tidy(L, run)
+            elif (lambda ref: ref and ref[1] and ref[1] != L.diagram)(self.referenced_diagram(run)):
+                ref = self.referenced_diagram(run)
                 self.detached_line(run, ref[1], ref[0])
                 continue
-            if run.ply is None and not _ALT_CUE_RE.search(self.lead_text(run.start, 60)):
-                self.unplaced(run, "its first move carries no move number, and no word such as "
-                                   "\"instead\" or \"better\" ties it to a move of the line")
+            elif run.ply is None and not _ALT_CUE_RE.search(self.lead_text(run.start, 60)):
+                op = ("unplaced", run, "its first move carries no move number, and no word such as "
+                                       "\"instead\" or \"better\" ties it to a move of the line")
                 self.tidy(L, run)
-                continue
-            block = bisect.bisect_left(blocks, run.start)
-            follows = last_var is not None and bool(_FOLLOW_RE.search(
-                self.lead_text(run.start, 40)))
-            placed = self.place(L, run, block, variations[block],
-                                only=last_var if follows else None)
-            if placed is True:
-                L.variations += 1
-                last_var = variations[block][-1]
-                continue
-            if run.ply == 0 and not as_main and (L.waiting or 0 not in L.ply_node):
-                # an opening sequence inside a line that starts later: its own fragment
-                decs = self.dec.run(chess.STARTING_FEN, run.tokens)
-                if self.side_ok(run, decs):
-                    self.side_fragment(run, decs, L)
-                    continue
-            self.unplaced(run, self.why_not(L, run, placed, follows))
+            else:
+                cue = bool(_FOLLOW_RE.search(self.lead_text(run.start, 40)))
+                op = ["note", run, as_main, bisect.bisect_left(blocks, run.start), cue, False]
+                if run.ply == 0 and not as_main and (L.waiting or 0 not in L.ply_node):
+                    op[5] = None            # may be a sequence of its own (see note_op)
+                op = tuple(op)
+            L.ops.append(op)
+            self.do_note(L, op, state, base=True)
+
+    @staticmethod
+    def is_long(run):
+        """A run found as long notation in the text ("...e7-e6", "Ng1-f3")
+        without a move number to place it by."""
+        return run.kind == "long" or (run.ply is None and len(run.moves) == 1
+                                      and bool(_LONG_RAW_RE.search(run.moves[0].raw)))
+
+    def long_cue(self, run):
+        """"plan" when the text gives the move as a plan or a threat, else None."""
+        if len(_SQUARES_RE.findall(run.moves[0].raw)) > 2:
+            return "plan"               # a manoeuvre: "Nf3-d2-c4"
+        lead = self.lead_text(run.start, 80)
+        return "plan" if (_THREAT_RE.search(lead) or _PLAN_RE.search(lead)) else None
+
+    def do_long(self, L, op):
+        """Place a move printed in long notation that has no move number:
+        (a) when the line already played it, it refers to that move (a mark
+        linked to the move); (b) else, unless the text gives it as a plan,
+        it is a variation from the place where the line stands, when it is
+        legal there; (c) a plan stays in the text; (d) anything else stands
+        in no line, with the reason."""
+        _, run, cue = op
+        tok = run.moves[0]
+        sq = _SQUARES_RE.findall(tok.raw)
+        if cue == "plan":
+            return
+        uci = sq[0] + sq[1]
+        saved, self.ci = self.ci, run.ci
+        try:
+            # the move the line played that it names: the last such move before it
+            before = [nid for s_, _, nid in L.main_tok if s_ < run.start and nid in self.nodes]
+            hits = [nid for nid in before if self.nodes[nid].get("uci")
+                    and self.nodes[nid]["uci"][:4] == uci]
+            if hits:
+                nid = hits[-1]
+                page, box = self.mark(None, tok, nid, self.nodes[nid]["status"], L.id)
+                if page is not None:
+                    self.marks[page][-1]["ref"] = True
+                return
+            at = before[-1] if before else (L.main_nodes[-1] if L.main_nodes else None)
+            if at is not None and not L.waiting:
+                run = self.forced(run) if self.replaying else run
+                for parent in (at, self.nodes[at]["parent"]):
+                    fen = self.nodes[parent]["fen"] if parent is not None else None
+                    if not fen:
+                        continue
+                    decs = self.dec.run(fen, run.tokens)
+                    if decs and decs[0].status != "failed" and _fit(decs)[0] == 0:
+                        self.insert_decoded(L, parent, run, decs)
+                        L.variations += 1
+                        return
+            self.unplaced(run, f"the move it names is not legal where the line \"{L.title}\" "
+                               "stands, and the line did not play it", src=L)
+        finally:
+            self.ci = saved
+
+    def do_note(self, L, op, state, base=False):
+        """Carry out a recorded note op: place the run as a variation, or say
+        why it has no place."""
+        if op[0] == "unplaced":
+            self.unplaced(op[1], op[2], src=L)
+            return False
+        if op[0] == "dismiss":
+            self.unplaced(op[1], None, src=L, dismiss=op[2])
+            return False
+        if op[0] == "long":
+            self.do_long(L, op)
+            return False
+        _, run, as_main, block, cue, side = op
+        if self.replaying:
+            run = self.forced(run)
+        follows = state["last"] is not None and cue
+        placed = self.place(L, run, block, state["vars"][block],
+                            only=state["last"] if follows else None)
+        if placed is True:
+            L.variations += 1
+            state["last"] = state["vars"][block][-1]
+            return True
+        if side is None and base:
+            # an opening sequence inside a line that starts later: its own fragment
+            decs = self.dec.run(chess.STARTING_FEN, run.tokens)
+            if self.side_ok(run, decs):
+                self.side_fragment(run, decs, L)
+                L.ops[-1] = op[:5] + (True,)
+                return False
+        if side:
+            return False                # the sequence is a line of its own
+        self.unplaced(run, self.why_not(L, run, placed, follows), src=L)
+        if base:
             self.tidy(L, run)
+        return False
 
     def side_ok(self, run, decs):
         """Whether a note run from move 1 inside another line reads as its own
@@ -2480,7 +2716,8 @@ class _Builder:
             if best is None:
                 return False, self.unread_reason(L, run, tried)
             _, parent, decs = best
-            self.dec.accepted.append(decs)
+            if not self.replaying:
+                self.dec.accepted.append(decs)
             nodes = self.insert_decoded(L, parent, run, decs)
         plies = {}
         for nid in nodes:
@@ -2543,6 +2780,8 @@ class _Builder:
         """Write the decoded moves of a placed note run into the comment text:
         move numbers are rewritten, and a move reads as SAN with its number
         before it when it is White's or the first of the run."""
+        if self.replaying:
+            return
         if decs is None:
             self.tidy(L, run)
             return
@@ -2568,6 +2807,8 @@ class _Builder:
         """Write a note run whose moves stay unread (unplaced, or waiting for a
         diagram) into the comment text in readable form where the junk can be
         read with certainty: "9.tLlxf6t" becomes "9.Nxf6+"."""
+        if self.replaying:
+            return
         for t in run.tokens:
             if t.kind == "number" and t.number is not None:
                 L.replace.append((t.start, t.end, f"{t.number}{'...' if t.black else '.'}"))
@@ -2674,6 +2915,73 @@ class _Builder:
             self.on_note(run)
             prev = run.start
 
+    def chapter_join(self, run):
+        """A line of the chapter before that goes on at the top of this chapter
+        (the text runs on across a page that the book's structure takes for
+        the start of a chapter): the first main run of the chapter, before
+        any heading, game header or diagram, continues its numbering and
+        reads as legal play from its last position. The run starts a line
+        that finalize() joins to that line (see derive)."""
+        prev = self.prev_chapter_line
+        if (prev is None or self.structural or self.diagram_events or self.pending_header
+                or any(M.chapter == self.ci for M in self.lines) or run.depth > 0):
+            return None
+        if prev.waiting or prev.broken or not prev.last_fen or prev.next_ply != run.ply:
+            return None
+        if _fit(self.dec.run(prev.last_fen, _first_moves(run.tokens, 4)))[0] != 0:
+            return None
+        L = self.start_line(run, "fragment", prev.title, False, None, "main", None, prev.last_fen)
+        L.joins = prev
+        L.start_note = (f"The moves go on from the line \"{prev.title}\" of the chapter before, "
+                        "so the line goes on there.")
+        return L
+
+    def resumable(self, run, active):
+        """An earlier line of the chapter that the run continues: its main line
+        ends just before the run's first move, the run reads cleanly from
+        there, and no word ("Or", "Instead", "If", "After") or bracket makes
+        it an alternative. When a diagram stands in between, the choice of
+        the starting position (choose_start) decides instead.""" 
+        if run.depth > 0 or self.pending_header is not None or run.ply is None:
+            return None
+        if _ALT_LEAD_RE.search(self.lead_text(run.start, 60)):
+            return None
+        seen = 0
+        for M in reversed(self.lines):
+            if M.chapter != self.ci or M is active or M.end_offset is None:
+                continue
+            seen += 1
+            if seen > 4:
+                break
+            if M.waiting or M.broken or not M.last_fen or M.next_ply != run.ply:
+                continue
+            toks = _first_moves(run.tokens, 4)
+            if _fit(self.dec.run(M.last_fen, toks))[0] != 0:
+                continue
+            # a diagram printed in between governs the moves after it (see
+            # choose_start, which weighs it against the line before)
+            last = max(M.last_token_end, self.last_token_end)
+            if any(last < doff < run.start and self.diagram_selected(did)
+                   and not self.not_a_board(did) for doff, did in self.diagram_events):
+                return None
+            return M
+        return None
+
+    def reopen(self, L, run):
+        """Open a closed line again for a run that continues its main line
+        after other text (see from_diagram). The text between its last move
+        and the run stays the comment of that move unless another line
+        stands between them."""
+        others = [M for M in self.lines if M is not L and M.chapter == L.chapter
+                  and L.last_token_end < M.first_offset < run.start]
+        if others:
+            L.consumed.append((L.end_offset or L.last_token_end, self.para_start_of(run.start)))
+        L.end_offset = None
+        L.notes = []
+        L.hold = L.close_at = None
+        self.last_closed = None
+        return L
+
     def finish_line(self, L):
         self.attach_notes(L)
         self.comments(L)
@@ -2769,12 +3077,633 @@ class _Builder:
 
         root = self.nodes[L.root]
         root["comment"] = extract(L.start_offset, main[0][0], last_para=True)
+        for _, _, nid in main:
+            self.nodes[nid]["comment"] = ""     # a reopened line gets its comments anew
         for (s, e, nid), nxt in zip(main, main[1:] + [None]):
             b = nxt[0] if nxt else (L.end_offset if L.end_offset is not None else e)
             c = extract(e, b, first_para=nxt is None)
             if c:
                 node = self.nodes[nid]
                 node["comment"] = (node["comment"] + " " + c).strip() if node["comment"] else c
+
+    # -------------------------------------------------------- the reader's corrections
+    #
+    # A line keeps the steps that built it as ops: ("main", run) appended a
+    # run to its main line, ("gap", run, P, follow) marked moves missing from
+    # the text, ("notes",) began placing its notes, ("note", run, as_main,
+    # block, cue, side) placed a note run as a variation, ("unplaced", run,
+    # reason) left a run in no line. The text decided these steps; the moves
+    # are decoded again whenever the line is replayed. finalize() keeps the
+    # assembled lines as the base, derives from it the lines that the
+    # reader's corrections ask for (a run placed elsewhere, a line split or
+    # joined) and replays them with the corrected moves, piece symbols and
+    # diagram positions. apply_fix() does the same for one changed set of
+    # corrections and replays only the lines whose ops or moves it touches,
+    # so that the result is always that of a fresh build.
+
+    def snapshot(self):
+        """Keep the assembled lines, before any correction, as the base."""
+        comments, roots = {}, {}
+        for n in self.nodes.values():
+            if n.get("key") and n["comment"]:
+                comments.setdefault(n["key"], n["comment"])
+        for L in self.lines:
+            roots[L.id] = self.nodes[L.root]["comment"]
+            L.base_result = L.result
+
+        def key(nid):
+            n = self.nodes.get(nid)
+            if n is None:
+                return None
+            return n.get("key") or ("root", n["line"]) if n["parent"] is None else n.get("key")
+        self.base = {
+            "lines": [(L, list(L.ops), dict(L.spec)) for L in self.lines],
+            "unplaced": list(self.unplaced_runs),
+            "comments": comments, "roots": roots,
+            "after": {did: key(nid) for did, nid in self.after_node.items()},
+            "checked": {did: key(nid) for did, nid in self.checked.items()},
+            "last_key": {L.id: self.nodes[L.main_nodes[-1]].get("key")
+                         for L in self.lines if len(L.main_nodes) > 1},
+        }
+        self.decoders = {(): self.dec}
+        self.derived = {}
+        self.split_lines = {}
+        self.stale = set()
+
+    def decoder_for(self, glyph_fix):
+        k = tuple(sorted(glyph_fix.items()))
+        dec = self.decoders.get(k)
+        if dec is None:
+            base = self.decoders[()]
+            dec = self.decoders[k] = _Decoder(base.glyphs, base.letters, dict(glyph_fix))
+        return dec
+
+    @staticmethod
+    def op_runs(op):
+        """The runs an op holds."""
+        if op[0] in ("main", "gap", "note", "unplaced", "dismiss", "attach", "long"):
+            return [op[1]]
+        if op[0] == "graft":
+            return [r for sub in op[2] for r in _Builder.op_runs(sub)]
+        return []
+
+    @staticmethod
+    def op_sig(op):
+        """What an op depends on, for telling whether a line changed."""
+        def rs(r):
+            return (r.ci, r.start, r.end, len(r.tokens))
+        if op[0] == "graft":
+            return ("graft", op[1], tuple(_Builder.op_sig(o) for o in op[2]))
+        return (op[0],) + tuple(rs(x) if isinstance(x, _Run) else
+                                (tuple(sorted(x.items())) if isinstance(x, dict) else x)
+                                for x in op[1:])
+
+    def find_token(self, key, runs):
+        """(index into runs, token index) of the move token that key names,
+        among runs (a list of _Run), or None. Tokens may move by a fraction
+        of a point between builds (corrections.TOLERANCE)."""
+        try:
+            page, x, y, raw = fixes.parse_key(key)
+        except ValueError:
+            return None
+        best = None
+        for i, r in enumerate(runs):
+            for j, t in enumerate(r.tokens):
+                if t.kind != "move":
+                    continue
+                pg, box = self.place_of(t, r.ci)
+                if pg != page or box is None:
+                    continue
+                d = max(abs(box[0] - x), abs(box[1] - y))
+                if d > fixes.TOLERANCE:
+                    continue
+                rank = (t.raw.replace(" ", "") != raw.replace(" ", ""), d)
+                if best is None or rank < best[0]:
+                    best = (rank, i, j)
+        return best and best[1:]
+
+    @staticmethod
+    def cut_run(run, j):
+        """(the part of run before token j, the part from token j on); either may be None."""
+        toks = run.tokens
+        # a move number printed before the move goes with it
+        k = j
+        while k > 0 and toks[k - 1].kind == "number":
+            k -= 1
+
+        def part(ts):
+            ms = [t for t in ts if t.kind == "move"]
+            if not ms:
+                return None
+            return replace(run, tokens=ts, moves=ms, start=ts[0].start, end=ts[-1].end,
+                           ply=_ply(ms[0]), result=run.result if ts[-1] is toks[-1] else None,
+                           text=_tokens_text(ts))
+        return part(toks[:k]), part(toks[k:])
+
+    def derive(self, fix):
+        """The lines as the corrections ask for them: [(line, ops)], and the
+        sequences placed in no line [(run, reason)] and dismissed
+        [(run, fields)]. A line split from another carries spec
+        {"after": line id} or the diagram it starts from."""
+        recs = []
+        for L, ops, spec in self.base["lines"]:
+            if L.spec is not spec:
+                L.spec = dict(spec)
+            recs.append([L, list(ops)])
+        glob = [[run, entry["reason"]] for entry, run in self.base["unplaced"]]
+        dismissed = []
+        moved = set()
+        # lines that go on from a line of the chapter before (chapter_join)
+        by_id = {rec[0].id: rec for rec in recs}
+        for rec in list(recs):
+            prev = getattr(rec[0], "joins", None)
+            target = by_id.get(prev.id) if prev is not None else None
+            if target is None or not target[0].main_nodes:
+                continue
+            key = self.base["last_key"].get(prev.id)
+            if key:
+                recs.remove(rec)
+                target[1].append(("graft", key, rec[1], None))
+
+        def where(key):
+            """("line", rec, op index, token index) or ("glob", index, token index)."""
+            cands = []
+            for rec in recs:
+                for oi, op in enumerate(rec[1]):
+                    if op[0] in ("main", "note", "unplaced", "long"):
+                        cands.append((("line", rec, oi), op[1]))
+            for gi, g in enumerate(glob):
+                if g is not None:
+                    cands.append((("glob", gi), g[0]))
+            hit = self.find_token(key, [r for _, r in cands])
+            if hit is None:
+                return None
+            (loc, _), j = cands[hit[0]], hit[1]
+            return loc + (j,)
+
+        # sequences placed in no line: dismissed, or tied to a move of a line
+        for key, v in sorted((fix.get("unattached") or {}).items()):
+            loc = where(key)
+            if loc is None:
+                continue
+            if loc[0] == "glob":
+                run = glob[loc[1]][0]
+                if run.moves[0] is not run.tokens[loc[2]]:
+                    continue
+                glob[loc[1]] = None
+            else:
+                rec, oi = loc[1], loc[2]
+                op = rec[1][oi]
+                if op[0] not in ("note", "unplaced") or op[1].moves[0] is not op[1].tokens[loc[3]]:
+                    continue
+                run = op[1]
+                rec[1][oi] = ("skip",)
+            if v["attach_to"] == "dismiss":
+                dismissed.append((run, {"_fix": key}))
+                continue
+            tgt = where(v["attach_to"])
+            if tgt is None or tgt[0] != "line":
+                glob.append([run, "you tied it to a move that the program no longer finds"])
+                continue
+            tgt[1][1].append(("attach", run, v["attach_to"]))
+        # lines split at a move, and runs taken out of a line
+        n_split = defaultdict(int)
+        for key, v in sorted((fix.get("disconnect") or {}).items()):
+            loc = where(key)
+            if loc is None or loc[0] != "line":
+                continue
+            rec, oi, j = loc[1], loc[2], loc[3]
+            L, ops = rec
+            op = ops[oi]
+            if op[0] in ("note", "unplaced"):
+                if v.get("remove"):
+                    ops[oi] = ("unplaced", op[1], "you marked these moves as not part of the line")
+                continue
+            if op[0] != "main":
+                continue
+            head, tail = self.cut_run(op[1], j)
+            rest_main = [o for o in ops[oi + 1:] if o[0] in ("main", "gap")]
+            later = [o for o in ops[oi + 1:] if o[0] not in ("main", "gap")]
+            keep = ops[:oi] + ([("main", head)] if head is not None else [])
+            if v.get("remove"):
+                toks = list(tail.tokens) + [t for o in rest_main if o[0] == "main"
+                                            and o[1].ci == tail.ci for t in o[1].tokens]
+                ms = [t for t in toks if t.kind == "move"]
+                gone = replace(tail, tokens=toks, moves=ms, end=toks[-1].end,
+                               text=_tokens_text(toks))
+                rec[1] = keep + later
+                glob.append([gone, "you marked these moves as not part of the line"])
+                continue
+            # a new line from this move on, with the notes printed after it
+            n_split[L.id] += 1
+            new_id = f"{L.id}-{n_split[L.id]}"
+            def before(o):
+                rs = self.op_runs(o)
+                return bool(rs) and (rs[0].ci, rs[0].start) < (tail.ci, tail.start)
+            mine = [o for o in later if o[0] == "notes" or before(o)]
+            theirs = [o for o in later if o[0] == "notes" or not before(o)]
+            rec[1] = keep + mine
+            label = (f"{tail.moves[0].number}{'...' if tail.moves[0].black else '.'}"
+                     if tail.moves[0].number is not None else "")
+            spec = {"after": L.id}
+            did = v.get("start")
+            if did and did != "here":
+                spec = {"diagram": did, "ply": tail.ply if tail.ply is not None else 0}
+            L2 = self.split_lines.get(new_id)
+            if L2 is None:
+                L2 = self.split_lines[new_id] = _Line(
+                    new_id, "fragment", "", L.chapter, 0, "", None, False, None, L.section,
+                    None, tail.start, 0, None, L.born)
+            L2.title = f"{L.title} (from move {label})"
+            L2.page = self.place_of(tail.tokens[0], tail.ci)[0] or L.page
+            L2.diagram = spec.get("diagram")
+            L2.first_offset = tail.start
+            L2.spec = spec
+            L2.split_from = L.id
+            recs.insert(recs.index(rec) + 1, [L2, [("main", tail)] + rest_main + theirs])
+        # runs that continue a line after a move the reader chose
+        for key, v in sorted((fix.get("connect") or {}).items()):
+            loc = where(key)
+            tgt = where(v["after"])
+            if loc is None or tgt is None or tgt[0] != "line":
+                continue
+            if loc[0] == "glob":
+                sub = [("main", glob[loc[1]][0])]
+                head, tail = self.cut_run(sub[0][1], loc[2])
+                if tail is None:
+                    continue
+                if head is not None:
+                    glob[loc[1]][0] = head
+                else:
+                    glob[loc[1]] = None
+                sub = [("main", tail)]
+            else:
+                rec, oi, j = loc[1], loc[2], loc[3]
+                if rec is tgt[1]:
+                    continue                # a line cannot continue itself
+                ops = rec[1]
+                op = ops[oi]
+                if op[0] in ("note", "unplaced"):
+                    ops[oi] = ("skip",)
+                    sub = [("main", op[1])]
+                elif op[0] == "main":
+                    head, tail = self.cut_run(op[1], j)
+                    first = all(o[0] not in ("main", "gap") for o in ops[:oi]) and head is None
+                    rest = [o for o in ops[oi + 1:]]
+                    sub = [("main", tail)] + [o for o in rest if o[0] in ("main", "gap")]
+                    notes = [o for o in rest if o[0] not in ("main", "gap")]
+                    if first:
+                        sub += notes
+                        recs.remove(rec)        # the whole line goes on from the move chosen
+                        moved.add(rec[0].id)
+                    else:
+                        rec[1] = ops[:oi] + ([("main", head)] if head is not None else []) + notes
+                else:
+                    continue
+            tgt[1][1].append(("graft", v["after"], sub, key))
+        globs = [(g[0], g[1]) for g in glob if g is not None]
+        return [(rec[0], rec[1]) for rec in recs], globs, dismissed
+
+    # ---------------- replaying
+    def drop_line(self, lid):
+        """Remove a line's nodes, marks, waiting entry and the sequences its
+        notes left in no line."""
+        for nid in self.by_line.pop(lid, []):
+            n = self.nodes.pop(nid, None)
+            if n is not None and n.get("key") and self.node_by_key.get(n["key"]) == nid:
+                del self.node_by_key[n["key"]]
+        for page in self.line_pages.pop(lid, ()):
+            self.marks[page] = [m for m in self.marks[page]
+                                if m["line"] != lid and m.get("_src") != lid]
+        self.unattached = [u for u in self.unattached if u.get("_src") != lid]
+        self.dismissed = [u for u in self.dismissed if u.get("_src") != lid]
+        self.attached = [u for u in self.attached if u.get("_src") != lid]
+        self.waiting = [w for w in self.waiting if w.get("line") != lid]
+
+    def root_fen(self, L):
+        """The position a replayed line starts from, or None (unknown)."""
+        spec = L.spec
+        if "after" in spec:
+            src = self.line_by_id.get(spec["after"])
+            last = src.main_nodes[-1] if src is not None and src.main_nodes else None
+            return self.nodes[last]["fen"] if last and last in self.nodes else None
+        did = spec.get("diagram")
+        if did and did in self.fix_diagrams:
+            b = chess.Board(self.fix_diagrams[did])
+            ply = spec.get("ply") or 0
+            b.turn = chess.BLACK if ply % 2 else chess.WHITE
+            b.ep_square = None
+            b.fullmove_number = ply // 2 + 1
+            return b.fen()
+        if did and spec.get("fen") is None and "fen" not in spec:
+            return self.diagram_fen(did, _Run("main", [], [], 0, 0, 0, spec.get("ply"), None))
+        return spec.get("fen")
+
+    def replay_line(self, L):
+        """Build the nodes of a line again from its ops, with the corrections."""
+        self.drop_line(L.id)
+        self.replaying = True
+        fen = self.root_fen(L)
+        L.nseq = 0
+        L.main_tok, L.main_nodes, L.ply_node, L.notes = [], [], {}, []
+        L.variations, L.broken, L.result = 0, False, L.base_result
+        L.waiting = fen is None
+        L.start_fen = fen
+        first = next((r for o in L.ops for r in self.op_runs(o)), None)
+        start_ply = _board_ply(fen) if fen else L.spec.get("ply", 0) or 0
+        L.next_ply, L.last_fen = start_ply, fen
+        self.ci = first.ci if first is not None else L.chapter
+        root = self.new_node(L, fen=fen, status="waiting" if L.waiting else "root", main=True,
+                             page=L.page, comment=self.base["roots"].get(L.id, ""))
+        L.root = root
+        L.main_nodes.append(root)
+        L.ply_node[start_ply - 1] = root
+        if L.waiting and first is not None:
+            self.waiting.append({"page": L.page, "chapter": L.chapter, "text": self.run_text(first),
+                                 "reason": WAIT_REASON, "line": L.id,
+                                 "diagram": L.spec.get("diagram")})
+        if getattr(L, "split_from", None):
+            L.first_split = True
+        self.run_ops(L, L.ops)
+        self.replaying = False
+        self.finish_replayed(L)
+
+    def run_ops(self, L, ops):
+        state = {"vars": defaultdict(list), "last": None}
+        for op in ops:
+            kind = op[0]
+            runs = self.op_runs(op)
+            if runs:
+                self.ci = runs[0].ci
+            if kind == "main":
+                n0 = len(L.main_nodes)
+                self.extend(L, op[1])
+                if getattr(L, "first_split", False) and len(L.main_nodes) > n0:
+                    self.set_corrected(L.main_nodes[n0], "split")
+                    L.first_split = False
+            elif kind == "gap":
+                self.gap(L, op[1], op[2], op[3])
+            elif kind == "notes":
+                state = {"vars": defaultdict(list), "last": None}
+            elif kind in ("note", "unplaced", "dismiss", "long"):
+                self.do_note(L, op, state)
+            elif kind == "attach":
+                self.do_attach(L, op[1], op[2])
+            elif kind == "graft":
+                self.do_graft(L, op)
+
+    def target_node(self, L, key):
+        """The node of line L whose move token key names, or None."""
+        try:
+            page, x, y, _ = fixes.parse_key(key)
+        except ValueError:
+            return None
+        best = None
+        for nid in self.by_line.get(L.id, []):
+            n = self.nodes[nid]
+            k = n.get("key")
+            if not k:
+                continue
+            p2, x2, y2, _ = fixes.parse_key(k)
+            d = max(abs(x2 - x), abs(y2 - y))
+            if p2 == page and d <= fixes.TOLERANCE and (best is None or d < best[0]):
+                best = (d, nid)
+        return best and best[1]
+
+    def set_corrected(self, nid, what):
+        n = self.nodes[nid]
+        n["corrected"] = what
+        for m in self.marks.get(n["page"], []):
+            if m["node"] == nid:
+                m["corrected"] = what
+
+    def do_attach(self, L, run, target):
+        """A sequence the reader tied to a move of this line: an alternative
+        to that move, or else the moves that follow it, whichever reads
+        legally (and better)."""
+        run = self.forced(run)
+        nid = self.target_node(L, target)
+        best = None
+        if nid is not None and not L.waiting:
+            node = self.nodes[nid]
+            for parent in (node["parent"], nid):
+                if parent is None or not self.nodes[parent]["fen"]:
+                    continue
+                decs = self.dec.run(self.nodes[parent]["fen"], run.tokens)
+                f = _fit(decs)
+                if f[0] <= 1 and (best is None or f < best[0]):
+                    best = (f, parent, decs)
+        if best is None:
+            why = ("you tied it to a move that the program no longer finds" if nid is None else
+                   "its moves are not legal at the move you tied it to")
+            self.unplaced(run, why, src=L)
+            return
+        _, parent, decs = best
+        nodes = self.insert_decoded(L, parent, run, decs)
+        L.variations += 1
+        if nodes:
+            self.set_corrected(nodes[0], "placed")
+        page, box = self.place_of(run.moves[0], run.ci)
+        self.attached.append({"page": page, "chapter": run.ci, "text": self.run_text(run),
+                              "reason": "", "key": fixes.token_key(page, box, run.moves[0].raw)
+                              if box else None, "bbox": box, "_src": L.id,
+                              "node": nodes[0] if nodes else None})
+
+    def shown_move(self, raw):
+        """A printed move as the reader would write it, where it can be read."""
+        sym = junk_prefix(raw, self.dec.letters)
+        if sym and sym in self.fix_glyphs:
+            p = self.fix_glyphs[sym]
+            raw = ("" if p == "P" else p) + raw[len(sym):]
+        return readable_move(raw, self.dec.glyphs, self.dec.letters) or _shown(raw)
+
+    def move_words(self, nid):
+        n = self.nodes[nid]
+        if n["parent"] is None:
+            return "the start of the line"
+        return f"{n['number']}{'...' if n['black'] else '.'}{n['san'] or _shown(n['raw'])}"
+
+    def do_graft(self, L, op):
+        """Runs that the reader said continue this line after one of its moves:
+        the main line goes on with them when that move ends it, and they form
+        a variation from that move otherwise. Moves that are not legal there
+        are placed in no line, with the reason."""
+        _, target, sub, src_key = op
+        nid = self.target_node(L, target)
+        mains = [o[1] for o in sub if o[0] == "main"]
+        if not mains:
+            return
+        run0 = self.forced(mains[0])
+
+        def refuse(why):
+            for o in sub:
+                if o[0] in ("main", "note", "unplaced"):
+                    self.unplaced(o[1], why, src=L)
+        if nid is None:
+            refuse("you joined it to a move that the program no longer finds")
+            return
+        fen = self.nodes[nid]["fen"]
+        if not fen:
+            refuse(f"the position after {self.move_words(nid)} is unknown, so its moves cannot "
+                   "be checked there")
+            return
+        decs = self.dec.run(fen, run0.tokens)
+        if not decs or decs[0].status == "failed" or _fit(decs)[0] == 2:
+            shown = self.shown_move(run0.moves[0].raw)
+            side = "Black" if chess.Board(fen).turn == chess.BLACK else "White"
+            refuse(f"its first move, {shown}, is not a legal move for {side} after "
+                   f"{self.move_words(nid)}")
+            return
+        if nid == L.main_nodes[-1] and not L.broken:
+            n0 = len(L.main_nodes)
+            self.run_ops(L, sub)
+            if len(L.main_nodes) > n0 and src_key:
+                self.set_corrected(L.main_nodes[n0], "connected")
+            return
+        # a variation from the move chosen: the runs read as one sequence
+        toks = [t for r in mains for t in self.forced(r).tokens if r.ci == run0.ci]
+        whole = replace(run0, tokens=toks, moves=[t for t in toks if t.kind == "move"],
+                        end=toks[-1].end)
+        decs = self.dec.run(fen, whole.tokens)
+        nodes = self.insert_decoded(L, nid, whole, decs)
+        L.variations += 1
+        if nodes and src_key:
+            self.set_corrected(nodes[0], "connected")
+
+    def finish_replayed(self, L):
+        """Status and pages of a replayed line, and the comments of the
+        assembled book on its moves."""
+        comments = self.base["comments"]
+        for nid in self.by_line.get(L.id, []):
+            n = self.nodes[nid]
+            if n.get("key") and n["parent"] is not None:
+                n["comment"] = comments.get(n["key"], "")
+        if L.waiting:
+            L.status = "waiting"
+        else:
+            worst = max([_LINE_RANK.get(self.nodes[n]["status"], 0) for n in L.main_nodes[1:]],
+                        default=0)
+            L.status = {0: "ok", 1: "guessed", 2: "ambiguous", 3: "failed"}[worst]
+            if len(L.main_nodes) <= 1:
+                L.status = "failed"
+        pages = [self.nodes[n]["page"] for n in L.main_nodes[1:]
+                 if self.nodes[n]["page"] and self.nodes[n].get("key")]
+        L.end_page = max(pages + [L.page])
+
+    def apply_fix(self, fix, chapters=None):
+        """Apply a set of corrections to the assembled book: derive the lines
+        they ask for and replay those that changed. chapters limits the
+        replay of lines whose moves change through a piece symbol to those
+        chapters (the others wait for a later call). Returns {"lines":
+        replayed line ids, "removed": line ids, "pages": pages whose marks
+        changed, "pending": chapters still to replay}."""
+        fix = fixes.normalise(fix) if fix is not None else fixes.empty()
+        old = self.fix
+        self.fix = fix
+        self.fix_moves = fixes.TokenIndex(fix["moves"])
+        self.fix_glyphs = dict(fix["glyphs"])
+        self.fix_diagrams = {did: v["fen"] for did, v in fix["diagrams"].items()}
+        self.dec = self.decoder_for(self.fix_glyphs)
+        derived, globs, dismissed = self.derive(fix)
+        first = not self.derived
+        prev = self.derived
+        lines = [L for L, _ in derived]
+        sigs = {}
+        for L, ops in derived:
+            sigs[L.id] = (tuple(self.op_sig(o) for o in ops),
+                          tuple(sorted((k, v) for k, v in L.spec.items() if k != "fen")))
+        removed = [lid for lid in prev if lid not in sigs]
+        # which lines the changed moves, symbols and positions touch
+        touched = set()
+        changed_keys = {k for k in set(old["moves"]) | set(fix["moves"])
+                        if old["moves"].get(k) != fix["moves"].get(k)}
+        changed_glyphs = {g for g in set(old["glyphs"]) | set(fix["glyphs"])
+                          if old["glyphs"].get(g) != fix["glyphs"].get(g)}
+        changed_diagrams = {d for d in set(old["diagrams"]) | set(fix["diagrams"])
+                            if old["diagrams"].get(d) != fix["diagrams"].get(d)}
+        pending = set()
+        if not first:
+            for L, ops in derived:
+                runs = [r for o in ops for r in self.op_runs(o)]
+                if changed_diagrams and L.spec.get("diagram") in changed_diagrams:
+                    touched.add(L.id)
+                if changed_keys:
+                    for k in changed_keys:
+                        if self.find_token(k, runs) is not None:
+                            touched.add(L.id)
+                if changed_glyphs and any(junk_prefix(t.raw, self.dec.letters) in changed_glyphs
+                                          for r in runs for t in r.moves):
+                    self.stale.add(L.id)
+                if L.spec.get("after") in touched:
+                    touched.add(L.id)
+        for L, ops in derived:
+            if L.id in self.stale:
+                if chapters is None or L.chapter in chapters:
+                    touched.add(L.id)
+                    self.stale.discard(L.id)
+                else:
+                    pending.add(L.chapter)
+        self.line_by_id = {L.id: L for L in lines}
+        todo = [L for L, ops in derived
+                if first or prev.get(L.id) != sigs[L.id] or L.id in touched
+                or (L.spec.get("after") and prev.get(L.spec["after"]) != sigs.get(L.spec["after"]))]
+        for L, ops in derived:
+            L.ops = ops
+        for lid in removed:
+            self.drop_line(lid)
+        if first:
+            self.nodes, self.by_line, self.line_pages = {}, defaultdict(list), defaultdict(set)
+            self.node_by_key = {}
+            self.waiting, self.attached = [], []
+            self.marks = defaultdict(list)
+            self.unattached = []
+        # the sequences placed in no line, and those the reader dismissed
+        pages = set()
+        for page in list(self.marks):
+            ms = self.marks[page]
+            keep = [m for m in ms if not (m["node"] is None and m.get("_src") is None)]
+            if len(keep) != len(ms):
+                pages.add(page)
+            self.marks[page] = keep
+        self.unattached = [u for u in self.unattached if u.get("_src") is not None]
+        self.dismissed = [u for u in self.dismissed if u.get("_src") is not None]
+        self.replaying = True
+        for run, reason in globs:
+            self.unplaced(run, reason)
+        for run, extra in dismissed:
+            self.unplaced(run, None, dismiss=extra)
+        self.replaying = False
+        for u in self.unattached + self.dismissed:
+            if u.get("_src") is None and u.get("page"):
+                pages.add(u["page"])
+        self.lines = lines
+        for L in todo:
+            before = set(self.line_pages.get(L.id, ()))
+            self.replay_line(L)
+            pages |= before | set(self.line_pages.get(L.id, ()))
+        # diagrams that the text ties to a move, as the assembled book had them
+        for name in ("after", "checked"):
+            out = {}
+            for did, key in self.base[name].items():
+                if isinstance(key, tuple):
+                    L = self.line_by_id.get(key[1])
+                    nid = L.root if L is not None else None
+                else:
+                    nid = self.node_by_key.get(key)
+                if nid is not None and nid in self.nodes:
+                    out[did] = nid
+            if name == "after":
+                self.after_node = out
+            else:
+                self.checked = out
+        self.derived = sigs
+        return {"lines": [L.id for L in todo], "removed": removed, "pages": sorted(pages),
+                "pending": sorted(pending)}
+
+    def finalize(self, fix):
+        """Keep the assembled lines as the base and apply the corrections."""
+        self.snapshot()
+        return self.apply_fix(fix)
 
     # -------------------------------------------------------- output
     def line_dicts(self):
@@ -2798,14 +3727,10 @@ class _Builder:
 
 def _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens, only=None,
               dotless=False, readings=None, fix=None):
-    fix = fix or {}
-    dec = _Decoder(glyphs, letters, fix.get("glyphs"))
-    if fix.get("diagrams") and readings:
-        # a position the reader gave has no doubtful squares to repair
-        readings = {did: (dict(r, doubtful=[]) if did in fix["diagrams"] else r)
-                    for did, r in readings.items()}
-    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens, dotless, readings,
-                 fix)
+    """One assembly pass. The corrections (fix) are not used here: the
+    caller applies them with _Builder.finalize."""
+    dec = _Decoder(glyphs, letters)
+    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens, dotless, readings)
     for ci, ch in enumerate(chapters):
         if ch["end"] < ch["start"]:
             continue
@@ -2846,7 +3771,7 @@ def usable_fens(readings):
 
 def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3,
                diagram_fens=None, write=True, progress=None, boards=True, readings=None,
-               corrections=None):
+               corrections=None, state=None):
     """Assemble the whole book and write output/<stem>/book.json.
 
     letters names a movetext.LETTER_SETS entry (default English; figurines are
@@ -2882,9 +3807,8 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     read_now = diagram_fens is None and boards
     fix = fixes.normalise(corrections) if corrections is not None else \
         fixes.load(pdf_path, books_dir)
-    fix_fens = {did: v["fen"] for did, v in fix["diagrams"].items()}
-    if text_fens or diagram_fens is not None or fix_fens:
-        diagram_fens = {**(diagram_fens or {}), **text_fens, **fix_fens}
+    if text_fens or diagram_fens is not None:
+        diagram_fens = {**(diagram_fens or {}), **text_fens}
     chapters = book_chapters(structure, doc.page_count)
     selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
     numbering = book_numbering(doc)
@@ -2894,8 +3818,8 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     timings = []
     readings = dict(readings or {})
     if read_now and passes <= 1:
-        readings = read_boards(doc, diagrams, known=fix_fens or None, say=say)
-        diagram_fens = {**usable_fens(readings), **text_fens, **fix_fens}
+        readings = read_boards(doc, diagrams, say=say)
+        diagram_fens = {**usable_fens(readings), **text_fens}
         read_now = False
     figmap, learnt = {}, {}
     fig_cands = figurines.candidates(
@@ -2907,14 +3831,12 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
             # positions the first pass reached at diagrams teach the reader
             known = {did: builder.nodes[nid]["fen"] for did, nid in builder.after_node.items()
                      if builder.nodes.get(nid, {}).get("fen")}
-            known.update(fix_fens)          # the positions the reader gave are certain
             readings = read_boards(doc, diagrams, known=known, say=say)
-            diagram_fens = {**usable_fens(readings), **text_fens, **fix_fens}
+            diagram_fens = {**usable_fens(readings), **text_fens}
             read_now = False
         t1 = time.perf_counter()
         builder, dec = _assemble(doc, fonts, chapters, diagrams, selection, glyphs, letters,
-                                 diagram_fens, dotless=numbering["dotless"], readings=readings,
-                                 fix=fix)
+                                 diagram_fens, dotless=numbering["dotless"], readings=readings)
         timings.append(round(time.perf_counter() - t1, 1))
         say(f"pass {len(timings)}: {len(builder.lines)} lines, {len(builder.nodes)} nodes, "
             f"{dec.calls} decodes in {timings[-1]} s")
@@ -2945,12 +3867,19 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
                 k = 0
                 continue
         k += 1
+    # the reader's corrections, applied by replaying the lines they touch
+    builder.finalize(fix)
     book = _book_dict(pdf_path, doc, chapters, diagrams, selection, builder, glyphs, structure,
                       readings, fix, letters)
     book["numbering"] = numbering
     book["figurines"] = [{"font": f, "code": f"U+{ord(ch):04X}", "piece": p,
                           "learnt": (f, ch) in learnt}
                          for (f, ch), p in sorted(figmap.items())]
+    if state is not None:
+        # what the browser app keeps to apply later corrections live (live.py)
+        state.update(builder=builder, doc=doc, chapters=chapters, diagrams=diagrams,
+                     selection=selection, glyphs=glyphs, structure=structure, readings=readings,
+                     letters=letters, pdf=pdf_path)
     book["stats"]["seconds"] = round(time.perf_counter() - t0, 1)
     book["stats"]["pass_seconds"] = timings
     if write:
@@ -3037,15 +3966,15 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
         by_page[d["page"]].append((did, d))
     for p in range(1, doc.page_count + 1):
         r = doc[p - 1].rect
-        marks = sorted(b.marks.get(p, []), key=lambda m: m.pop("_o"))
+        marks = page_marks(b, p)
         pages.append({
             "page": p, "folio": _folio(p, b.folio_offset),
             "width": round(r.width, 1), "height": round(r.height, 1),
             "chapter": chapter_of.get(p), "selected": b.selection.page_selected(p),
             "diagrams": [{"id": did, "rect": d["rect"], "label": d.get("label"),
                           "kind": kinds.get(did), "selected": b.selection.diagram_selected(did),
-                          **_diagram_reading(did, b.diagram_fens.get(did), (readings or {}).get(did),
-                                             did in fix["diagrams"]),
+                          **_diagram_reading(did, b.fix_diagrams.get(did) or b.diagram_fens.get(did),
+                                             (readings or {}).get(did), did in fix["diagrams"]),
                           "after_node": b.after_node.get(did), "checked": did in b.checked,
                           "lines": diagram_lines.get(did, [])}
                          for did, d in by_page.get(p, [])],
@@ -3069,9 +3998,10 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
     for u in b.unattached:
         counts[u["chapter"]]["unattached"] += 1
     for n in b.nodes.values():
-        if n.get("corrected") in ("move", "symbol"):
-            key = "moves" if n["corrected"] == "move" else "symbol_moves"
-            counts[line_chapter[n["line"]]]["corrected"][key] += 1
+        what = {"move": "moves", "symbol": "symbol_moves", "connected": "connections",
+                "split": "splits"}.get(n.get("corrected"))
+        if what:
+            counts[line_chapter[n["line"]]]["corrected"][what] += 1
     for u in b.dismissed + b.attached:
         counts[u["chapter"]]["corrected"]["sequences"] += 1
     for p in pages:
@@ -3126,10 +4056,10 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
         "chapters": out_chapters,
         "lines": lines,
         "nodes": nodes,
-        "unattached": b.unattached,
-        "dismissed": b.dismissed,
-        "attached": b.attached,
-        "waiting": b.waiting,
+        "unattached": public_list(b.unattached),
+        "dismissed": public_list(b.dismissed),
+        "attached": public_list(b.attached),
+        "waiting": public_list(b.waiting),
         "letters": letters or "English",
         "symbols": dict(symbols.most_common()),
         "corrections": fix,
@@ -3141,7 +4071,27 @@ def _empty_counts():
     return {"lines": 0, "games": 0, "fragments": 0, "line_status": Counter(),
             "moves": Counter(), "variations": 0, "variation_moves": 0, "unattached": 0,
             "waiting": 0, "corrected": Counter({"moves": 0, "symbol_moves": 0, "diagrams": 0,
-                                                "sequences": 0})}
+                                                "sequences": 0, "connections": 0, "splits": 0})}
+
+
+def _public(entry):
+    """A builder record without its private fields (those starting with _)."""
+    return {k: v for k, v in entry.items() if not k.startswith("_")}
+
+
+def public_list(entries):
+    """Records of sequences or waiting lines in reading order, without their
+    private fields: the same order however the corrections were applied."""
+    def key(u):
+        box = u.get("bbox") or [0, 0]
+        return (u.get("chapter") or 0, u.get("page") or 0, round(box[1]), round(box[0]),
+                u.get("text") or "", u.get("line") or "")
+    return [_public(u) for u in sorted(entries, key=key)]
+
+
+def page_marks(b, page):
+    """The marks of a page for book.json, in reading order."""
+    return [_public(m) for m in sorted(b.marks.get(page, []), key=lambda m: m["_o"])]
 
 
 def main(argv=None):

@@ -12,7 +12,7 @@ CORRECTIONS_JS = r"""
 function makeCorrections(applied, opts){
   // applied: the corrections the build used ({diagrams, moves, unattached, glyphs}).
   const key = "chessbook-corrections:" + opts.pdf + ":" + opts.pageCount;
-  const PARTS = ["diagrams", "moves", "unattached", "glyphs"];
+  const PARTS = ["diagrams", "moves", "unattached", "glyphs", "connect", "disconnect"];
   function canon(src){
     const o = {version: 1};
     for (const p of PARTS) {
@@ -46,6 +46,8 @@ function makeCorrections(applied, opts){
       catch (e) { /* the browser keeps no storage: the corrections live in this page only */ }
     },
     reset(){ st = canon(applied); try { localStorage.removeItem(key); } catch (e) { /* no storage */ } stored = false; },
+    // the book now holds these corrections (the browser app applied them at once)
+    rebase(now){ applied = now; },
     stored(){ return stored; }
   };
   return api;
@@ -128,7 +130,19 @@ svg.board .sel{fill:none;stroke:var(--accent);stroke-width:2px;vector-effect:non
 svg.board .hit{fill:transparent;cursor:pointer}
 .fix canvas.pic{max-width:min(100%,max(240px,calc(100vh - 420px)))}
 .editing-diagram #boardarea,.editing-diagram .controls{display:none}
+#penbtn[aria-pressed="true"],#mpen[aria-pressed="true"]{color:var(--accent)}
+.pencil .mark,.pencil .diag{outline:1px dotted color-mix(in srgb,var(--accent) 60%,transparent)}
+.joining .mark[data-node]:hover{outline:1.5px solid var(--accent)}
+.legend .penk{display:none}
+.pencil .legend .penk{display:inline-flex}
+.pencil .legend{visibility:visible}
+.pencil .key .help{visibility:hidden}
+.k.pen{border:1px dotted var(--accent)}
+.lineacts{display:grid;gap:6px;border-top:1px solid var(--line);padding-top:8px}
+.lineacts p{margin:0}
+#diagpick[hidden]{display:none}
 @media (max-width:900px){
+.pencil .legend{display:flex}
 .tools{flex-wrap:wrap;row-gap:4px}
 #fix:not([hidden]){position:fixed;left:0;right:0;z-index:9;max-height:62vh;overflow:auto;background:var(--bg);
 border-top:1px solid var(--line);padding:12px 16px}
@@ -152,7 +166,7 @@ const REVIEW = ["guessed", "ambiguous", "failed"];
 
 function inApp(){ return !!window.CHESSBOOK_APP; }
 function applyWords(){
-  return inApp() ? "Read again at the top of the page applies it." :
+  return inApp() ? "The reader applies it at once." :
     "The next run of the program applies it once you copy the corrections on the contents page into the chat.";
 }
 function pieceSvg(letter, white){
@@ -271,7 +285,8 @@ function buildItems(){
         if (!n || seen.has(m.node) || n.page !== page) return;
         seen.add(m.node);
         const need = (REVIEW.indexOf(n.status) >= 0 && n.legal) || n.corrected === "move" ||
-          n.corrected === "placed" || (n.key && FIX.get("moves", n.key));
+          n.corrected === "placed" || n.corrected === "connected" || n.corrected === "split" ||
+          (n.key && (FIX.get("moves", n.key) || FIX.get("connect", n.key) || FIX.get("disconnect", n.key)));
         if (need) out.push({kind: "move", node: m.node, page, order: i, y: m.bbox[1]});
       } else if (m.seq && !seen.has(m.seq)) {
         seen.add(m.seq);
@@ -309,8 +324,14 @@ function itemState(it){
       return ["corrected", "Corrected by you to " + FIX.get("moves", n.key).san + ". " + pend];
     if (n.key && !FIX.get("moves", n.key) && FIX.pending("moves", n.key))
       return [n.status, "You removed your correction. " + pend];
+    for (const part of ["connect", "disconnect"])
+      if (n.key && FIX.pending(part, n.key))
+        return FIX.get(part, n.key) ? ["corrected", lineFixWords(part, FIX.get(part, n.key)) + " " + pend] :
+          [n.status, "You removed your correction. " + pend];
     if (n.corrected === "move") return ["corrected", "Corrected by you"];
     if (n.corrected === "placed") return ["corrected", "Placed by you"];
+    if (n.corrected === "connected") return ["corrected", "Joined to the line by you"];
+    if (n.corrected === "split") return ["corrected", "A new line starts here, as you said"];
     return [n.status, D.words[n.status]];
   }
   const u = seqInfo(it.key) || {};
@@ -431,12 +452,23 @@ function setMsg(text, kind){
 function preview(fen, uci, note){ S.preview = fen ? {fen, uci: uci || null, note: note || ""} : null; renderBoard(); }
 
 /* a move */
+function beforeFen(n){
+  if (n.before) return n.before;
+  const par = n.parent != null ? D.nodes[n.parent] : null;
+  return par && par.fen ? par.fen : null;
+}
+function legalOf(n){
+  if (n.legal) return n.legal;
+  const f = beforeFen(n);
+  return f ? CJ.legalMoves(f) : [];
+}
 function openMove(id){
   const n = D.nodes[id];
   if (!n) return;
   if (S.node !== id) selectNode(id, {scrollPage: false});
   RV.edit = {kind: "move", node: id};
-  const legal = n.legal || [];
+  const legal = legalOf(n);
+  n.before = n.before || beforeFen(n);
   const fixed = n.key ? FIX.get("moves", n.key) : null;
   const now = n.san || n.assumed;
   const first = [];
@@ -450,7 +482,9 @@ function openMove(id){
   if (!legal.length) {
     h += "<p class='small muted'>The program does not know the position before this move, so it cannot " +
       "offer the moves that are legal there.</p>";
+    h += "<p class='fixmsg small' id=fixmsg role=status></p>" + lineActions(id);
     showFix(h, "move");
+    wireLineActions(id);
     return;
   }
   if (first.length) {
@@ -465,7 +499,12 @@ function openMove(id){
   h += "<div class=choices id=fixlist aria-label='Legal moves'></div>";
   h += "<p class='fixmsg small' id=fixmsg role=status></p>";
   if (fixed) h += "<div class=fixacts><button class=tb id=fixundo>Remove your correction</button></div>";
+  if (n.symbol) h += "<p class=small><button class=tb id=fixsymbol>Name the piece symbol “<span class=n>" +
+    shownHtml(n.symbol) + "</span>” throughout the book</button></p>";
+  h += lineActions(id);
   showFix(h, "move");
+  wireLineActions(id);
+  if ($("fixsymbol")) $("fixsymbol").addEventListener("click", () => openSymbol(n.symbol));
   highlightMark(true);
   const list = () => {
     const t = $("fixsan").value, a = sanKey(t, true);
@@ -633,9 +672,13 @@ function openSeq(key){
       String(!!fixed && fixed.attach_to === n.key) + "'>" + esc(moveText(n.id, true)) + "<span class=sub>" +
       esc(title(D.lines[n.line] ? D.lines[n.line].title : "")) + ", " + esc(pageName(n.page)) + "</span></button>").join("") + "</div>";
   h += "<p class='fixmsg small' id=fixmsg role=status></p>";
+  const joined = FIX.get("connect", key);
   h += "<div class=fixacts><button class=tb id=fixdismiss>Not a variation</button>" +
-    (fixed ? "<button class=tb id=fixundo>Remove your correction</button>" : "") + "</div>";
+    "<button class=tb id=fixjoin>Continue a line…</button>" +
+    (fixed || joined ? "<button class=tb id=fixundo>Remove your correction</button>" : "") + "</div>";
+  h += "<p class='small muted'>Continue a line… joins these moves to a line: you then tap the move after which they follow.</p>";
   showFix(h, "seq");
+  $("fixjoin").addEventListener("click", () => startConnect(key, "these moves"));
   if (first) revealMark(first);
   $("fix").querySelector(".fix").addEventListener("click", (e) => {
     const t = e.target.closest("button[data-to]");
@@ -646,7 +689,7 @@ function openSeq(key){
     setMsg("You marked these moves as no variation. " + applyWords(), "good");
   });
   if ($("fixundo")) $("fixundo").addEventListener("click", () => {
-    FIX.set("unattached", key, null); afterFix(); openSeq(key);
+    FIX.set("unattached", key, null); FIX.set("connect", key, null); afterFix(); openSeq(key);
     setMsg("Your correction is removed. " + applyWords());
   });
 }
@@ -679,7 +722,7 @@ function symbolChoices(sym, white){
 function symbolSaid(sym){
   const n = D.symbols[sym] || 0;
   return "This symbol appears " + words(n) + (n === 1 ? " time" : " times") + " in the book; " +
-    (inApp() ? "Read again applies your choice to all of them." :
+    (inApp() ? "the reader applies your choice to all of them now, this chapter first." :
       "the next run of the program applies your choice to all of them once you copy the corrections into the chat.");
 }
 function chooseSymbol(sym, piece){
@@ -739,6 +782,7 @@ function openSymMenu(btn){
 function closeSymMenu(){ const m = $("symmenu"); if (m) { m.hidden = true; m.innerHTML = ""; } }
 
 function afterFix(){
+  liveApply();
   if (RV.on) {
     const keep = RV.cur;
     renderReview();
@@ -758,8 +802,9 @@ function paintFixes(){
   for (const el of document.querySelectorAll("#ov .mark")) {
     const m = D.pages[S.page].marks[parseInt(el.dataset.mark, 10)];
     const n = m.node ? D.nodes[m.node] : null;
-    const fixed = !!(m.corrected || (n && n.corrected) || (n && n.key && FIX.get("moves", n.key)) ||
-      (m.seq && FIX.get("unattached", m.seq)));
+    const fixed = !!(m.corrected || (n && n.corrected) || (n && n.key && (FIX.get("moves", n.key) ||
+      FIX.get("connect", n.key) || FIX.get("disconnect", n.key))) ||
+      (m.seq && (FIX.get("unattached", m.seq) || FIX.get("connect", m.seq))));
     el.classList.toggle("fixed", fixed);
   }
 }
@@ -779,8 +824,188 @@ function pageEyes(){
   });
   paintFixes();
 }
+/* ---------------- the pencil: correct anything on the page, and join or split lines */
+const PEN = {on: false, connect: null};
+function lineFixWords(part, v){
+  if (part === "connect") return "Joined by you to a line after another move.";
+  if (v && v.remove) return "Taken out of the line by you.";
+  return v && v.start && v.start !== "here" ? "A new line starts here from a diagram, as you said." :
+    "A new line starts here, as you said.";
+}
+function lineStartOf(id){
+  // the first move of the run a move belongs to: the first move of its line's main line, or of its variation
+  const n = D.nodes[id];
+  if (!n) return null;
+  if (n.main) {
+    const root = D.nodes[D.lines[n.line].root];
+    return root.children.find(x => D.nodes[x] && D.nodes[x].main) || id;
+  }
+  let cur = id;
+  for (;;) {
+    const par = D.nodes[cur].parent;
+    if (par == null || D.nodes[par].main || cont(par) !== cur) return cur;
+    cur = par;
+  }
+}
+function diagramsNear(page){
+  const out = [];
+  for (const p of [page - 1, page]) if (D.pages[p]) for (const d of D.pages[p].diagrams)
+    if (d.selected && D.notPosition.indexOf(d.kind) < 0) out.push([p, d]);
+  return out;
+}
+function lineActions(id){
+  const n = D.nodes[id];
+  if (!n || n.parent == null || !n.key) return "";
+  const first = lineStartOf(id), isFirst = first === id, src = D.nodes[first];
+  let h = "<div class=lineacts><p class='lab small'>The line</p><div class=fixacts>";
+  if (n.main && !isFirst) h += "<button class=tb id=splithere>Start a new line here</button>";
+  if (n.main) h += "<button class=tb id=splitdiag>" + (isFirst ? "Start this line from a diagram" :
+    "Start a new line here from a diagram") + "</button>";
+  h += "<button class=tb id=notpart>Not part of this line</button>";
+  if (src && src.key) h += "<button class=tb id=joinline>Continue the line…</button>";
+  h += "</div><div class='choices lines' id=diagpick hidden></div>";
+  if (FIX.get("disconnect", n.key) || (src && src.key && FIX.get("connect", src.key)))
+    h += "<div class=fixacts><button class=tb id=lineundo>Remove your change to the line</button></div>";
+  h += "<p class='small muted'>" + (src && src.key ? "Continue the line… joins the moves from " +
+    esc(moveText(first, true)) + " on to another line: you then tap the move after which they follow. " : "") +
+    "Not part of this line takes the moves from " + esc(moveText(id, true)) + " to the end of the line out of it.</p>";
+  return h + "</div>";
+}
+function wireLineActions(id){
+  const n = D.nodes[id], first = lineStartOf(id), src = D.nodes[first];
+  const on = (x, f) => { if ($(x)) $(x).addEventListener("click", f); };
+  // the editor shows the change at once (with the button that removes it)
+  const done = (msg) => { afterFix(); if (D.nodes[id]) openMove(id); setMsg(msg, "good"); };
+  on("splithere", () => {
+    FIX.set("disconnect", n.key, {start: "here"});
+    done("A new line starts with " + moveText(id, true) + ", from the position before it. " + applyWords());
+  });
+  on("splitdiag", () => {
+    const box = $("diagpick"), ds = diagramsNear(n.page || S.page);
+    box.hidden = false;
+    box.innerHTML = ds.length ? "<p class='lab small'>The diagram the line starts from</p>" + ds.map(([p, d]) =>
+      "<button data-did='" + esc(d.id) + "'>" + esc(cap(diagramName(d, p))) + "<span class=sub>" +
+      esc(d.fen ? "read" : "not read yet") + "</span></button>").join("") :
+      "<p class='small muted'>No diagram stands on this page or the page before it.</p>";
+    box.addEventListener("click", (e) => {
+      const t = e.target.closest("button[data-did]");
+      if (!t) return;
+      FIX.set("disconnect", n.key, {start: t.dataset.did});
+      done("The line from " + moveText(id, true) + " now starts from " + diagramLabel(t.dataset.did) + ". " +
+        applyWords());
+    });
+  });
+  on("notpart", () => {
+    FIX.set("disconnect", n.key, {remove: true});
+    done("The moves from " + moveText(id, true) + " to the end of the line now stand in no line. " + applyWords() +
+      " The pencil can then join them to another line.");
+  });
+  on("joinline", () => startConnect(src.key, moveText(first, true)));
+  on("lineundo", () => {
+    FIX.set("disconnect", n.key, null);
+    if (src && src.key) FIX.set("connect", src.key, null);
+    done("Your change to the line is removed. " + applyWords());
+  });
+}
+function startConnect(key, label){
+  PEN.connect = {key, label};
+  document.body.classList.add("joining");
+  const t = "Tap the move, on the page or in the move list, after which " + label +
+    " follows. The page arrows lead to other pages first. Escape stops.";
+  setMsg(t);
+  say(t);
+}
+function stopConnect(){ PEN.connect = null; document.body.classList.remove("joining"); }
+function finishConnect(target){
+  const c = PEN.connect;
+  stopConnect();
+  const t = D.nodes[target];
+  if (!t || !t.key) { say("That move cannot take a continuation, because the program has no printed move for it."); return; }
+  if (t.key === c.key) { say("A move cannot continue itself."); return; }
+  // when the program has read the first move of the run, it checks it at once
+  const sid = nodeByKey(c.key), s = sid ? D.nodes[sid] : null;
+  if (s && s.san && t.fen) {
+    if (!matchSan(s.san, CJ.legalMoves(t.fen))) {
+      const side = t.fen.split(" ")[1] === "w" ? "White" : "Black";
+      const why = s.san + " is not a legal move for " + side + " after " + moveText(target, true) +
+        ", so the line cannot go on from there.";
+      say(why); setMsg(why, "bad");
+      return;
+    }
+  }
+  FIX.set("connect", c.key, {after: t.key});
+  afterFix();
+  const said = "You joined " + c.label + " to the line after " + moveText(target, true) + ". " + applyWords();
+  say(said); setMsg(said, "good");
+}
+function setPencil(on){
+  PEN.on = on;
+  if (!on) stopConnect();
+  document.body.classList.toggle("pencil", on);
+  for (const b of [$("penbtn"), $("mpen")]) if (b) b.setAttribute("aria-pressed", String(on));
+  say(on ? "Pencil on: a tap on a move, a diagram or a sequence on the page opens its correction. " +
+    "A second tap on the pencil ends it." : "");
+  if (!on && RV.edit && !RV.on) closeFix();
+}
+function penClick(b){
+  // the pencil's tap on the page: true when it handled the tap
+  if (PEN.connect && b.dataset.node) { finishConnect(b.dataset.node); return true; }
+  if (!PEN.on || b.dataset.eye) return false;
+  if (b.dataset.node) { const id = b.dataset.node; selectNode(id, {fromPage: true}); openMove(id); return true; }
+  if (b.dataset.seq) { openSeq(b.dataset.seq); return true; }
+  if (b.dataset.diagram) { openDiagramFix(b.dataset.diagram); return true; }
+  return false;
+}
+
+/* ---------------- corrections applied at once (the browser app) */
+function liveApply(){
+  if (!inApp()) return;
+  say("Applying your correction.");
+  parent.postMessage({correct: FIX.text(), chapter: D.chapter.file}, "*");
+}
+function applyPatch(p){
+  // the changes the app's worker made to this chapter's data: the page and the move stay put
+  for (const id of p.removed || []) delete D.nodes[id];
+  Object.assign(D.nodes, p.nodes || {});
+  if (p.lines) { D.lines = p.lines; D.lineOrder = p.lineOrder; }
+  for (const k in (p.pages || {})) if (D.pages[k]) Object.assign(D.pages[k], p.pages[k]);
+  for (const k of ["unattached", "dismissed", "symbols", "pgn"]) if (p[k] !== undefined) D[k] = p[k];
+  if (p.corrections) { D.corrections = p.corrections; FIX.rebase(p.corrections); }
+  const ren = p.renamed || {};
+  if (S.node && !D.nodes[S.node]) S.node = ren[S.node] || null;
+  const edit = RV.edit;
+  if (edit && edit.node && !D.nodes[edit.node]) edit.node = ren[edit.node] || null;
+  if (S.node) S.line = D.nodes[S.node].line;
+  else if (S.line && !D.lines[S.line]) S.line = null;
+  showPage(S.page);
+  renderTree(); renderBoard(); renderInfo(); layoutPanel(false); highlightMark(false);
+  if (RV.on) { const keep = RV.cur; renderReview(); RV.cur = keep; }
+  if (edit && edit.kind === "move" && !$("fix").hidden) {
+    if (edit.node) { openMove(edit.node); setMsg("Your correction is applied.", "good"); }
+    else closeFix();
+  }
+  const pgn = $("pgnbtn");
+  if (pgn) pgn.disabled = !D.pgn;
+  if (S.node) history.replaceState(null, "", "#node=" + S.node);
+  setState();
+  say(p.progress || "Your correction is applied.");
+}
+window.applyPatch = applyPatch;
+function initPencil(){
+  for (const b of [$("penbtn"), $("mpen")]) if (b) b.addEventListener("click", () => setPencil(!PEN.on));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && PEN.connect) { stopConnect(); say(""); } });
+  window.addEventListener("message", (e) => {
+    if (e.source !== window.parent || e.source === window) return;
+    const m = e.data || {};
+    if (m.patch) applyPatch(m.patch);
+    else if (m.progress) say(m.progress);
+    else if (m.failed) say(m.failed);
+  });
+}
+
 function initReview(){
   $("reviewbtn").addEventListener("click", () => setReview(!RV.on));
+  initPencil();
   $("revlist").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-item]");
     if (b) openItem(parseInt(b.dataset.item, 10));
