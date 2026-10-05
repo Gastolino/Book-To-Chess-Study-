@@ -1,0 +1,115 @@
+# Builds the app as "Publish the app" (pages.yml) does and publishes it on
+# Cloudflare Pages with the library's server (functions/, server/): the
+# user's private library of books, behind Cloudflare Access. docs/CLOUDFLARE.md
+# says how to set it up.
+#
+# The job needs the repository secrets CLOUDFLARE_API_TOKEN and
+# CLOUDFLARE_ACCOUNT_ID. While either is missing it does nothing and ends
+# without an error, so the GitHub Pages site goes on as before. The
+# repository variables ACCESS_TEAM_DOMAIN and ACCESS_AUD, when set, make the
+# server check the sign-in token of Cloudflare Access (server/auth.js).
+name: Publish the library on Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare
+  cancel-in-progress: true
+
+env:
+  PROJECT: chess-book-reader      # the Pages project (wrangler.toml "name")
+  DATABASE: chessbook             # the D1 database (wrangler.toml "database_name")
+  BUCKET: chessbook-books         # the R2 bucket (wrangler.toml "bucket_name")
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+      ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+    steps:
+      - name: Check for the Cloudflare secrets
+        id: secrets
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::The secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set, so nothing is published on Cloudflare (docs/CLOUDFLARE.md)."
+          fi
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.ready == 'true'
+      - uses: actions/setup-python@v5
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          node-version: "22"
+      - name: Fetch the browser builds of PyMuPDF and python-chess
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          mkdir -p wheels
+          python -m pip wheel --no-deps chess==1.11.2 -w wheels
+          python - <<'PY'
+          import json, urllib.request
+          data = json.load(urllib.request.urlopen("https://pypi.org/pypi/pymupdf/1.28.2/json"))
+          url = next(f["url"] for f in data["urls"] if "pyemscripten_2025_0" in f["filename"])
+          urllib.request.urlretrieve(url, "wheels/" + url.rsplit("/", 1)[1])
+          PY
+          ls -l wheels
+      - name: Build the site
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          python tools/build_web.py --out site \
+            --pymupdf wheels/pymupdf-1.28.2-cp313-abi3-pyemscripten_2025_0_wasm32.whl \
+            --chess wheels/chess-1.11.2-py3-none-any.whl
+      - name: Install wrangler
+        if: steps.secrets.outputs.ready == 'true'
+        run: npm install --no-audit --no-fund
+      # The database, the bucket and the project are made here when the
+      # account does not hold them yet; the database's id goes into
+      # wrangler.toml for this deployment.
+      - name: Find the database, the bucket and the project
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          db_id() {
+            npx wrangler d1 list --json | python -c "
+          import json, sys
+          text = sys.stdin.read()
+          dbs = json.loads(text[text.index('['):]) if '[' in text else []
+          print(next((d.get('uuid') or d.get('id') for d in dbs if d.get('name') == '$DATABASE'), ''))"
+          }
+          id="$(db_id)"
+          if [ -z "$id" ]; then
+            npx wrangler d1 create "$DATABASE"
+            id="$(db_id)"
+          fi
+          test -n "$id"
+          sed -i "s/00000000-0000-0000-0000-000000000000/$id/" wrangler.toml
+          if ! npx wrangler r2 bucket list | grep -q "$BUCKET"; then
+            npx wrangler r2 bucket create "$BUCKET"
+          fi
+          if ! npx wrangler pages project list --json | grep -q "\"$PROJECT\""; then
+            npx wrangler pages project create "$PROJECT" --production-branch main
+          fi
+          if [ -n "$ACCESS_TEAM_DOMAIN" ] && [ -n "$ACCESS_AUD" ]; then
+            printf '\n[vars]\nACCESS_TEAM_DOMAIN = "%s"\nACCESS_AUD = "%s"\n' "$ACCESS_TEAM_DOMAIN" "$ACCESS_AUD" >> wrangler.toml
+          else
+            echo "::warning::ACCESS_TEAM_DOMAIN and ACCESS_AUD are not set: the library trusts the Access header without checking its token (docs/CLOUDFLARE.md, step 8)."
+          fi
+      - name: Bring the database's tables up to date
+        if: steps.secrets.outputs.ready == 'true'
+        run: npx wrangler d1 execute "$DATABASE" --remote --yes --file server/schema.sql
+      - name: Publish
+        if: steps.secrets.outputs.ready == 'true'
+        run: npx wrangler pages deploy site --project-name "$PROJECT" --branch main --commit-dirty=true

@@ -125,6 +125,33 @@ with a local Pyodide folder (`CHESSBOOK_PYODIDE`) and the PyMuPDF and
 python-chess wheels for Pyodide (`CHESSBOOK_WHEELS`); `CHESSBOOK_APP_BOOK`
 names another book to read than the generated test book.
 
+## A private library on Cloudflare
+
+The same app, published on Cloudflare (`.github/workflows/cloudflare.yml`),
+keeps a library for one person behind Cloudflare Access. Its start page lists
+the books with a picture of the first page, the title, the page last read
+("Page 47 of 402") and the day the book was last opened; "Add a book" adds
+one, and "Remove" deletes one after a question. A book is still read in the
+browser, once; the site stores the PDF, the program's finished reading (for
+the Primer about 4 MB, compressed from 19 MB), the cover picture, the
+corrections, the selection and the place last read. Another device then
+opens the book from the stored reading without reading it again, with the
+corrections, at the page and move last read. A stored reading made by an
+older version of the program is replaced: the book is read again when it
+opens.
+
+Corrections, the selection and the place are written to the browser's
+storage as before and sent to the site a moment later; a change made offline
+is sent when the connection returns, and on opening a book the newer copy
+wins. The site only stores: `server/app.js` (Pages Functions, with an R2
+bucket for the files and a D1 database for the records, `server/schema.sql`)
+answers under `/api/`, and the app finds out from `/api/books` whether it
+runs there. Anywhere else (GitHub Pages, or the built site opened from a
+folder) it works as described above, and nothing leaves the device.
+`docs/CLOUDFLARE.md` gives the setup in plain steps; `tests/test_library.py`
+runs the server under `wrangler pages dev` and the library end to end
+(`tests/library_e2e.js`).
+
 ## Correcting what the program could not read
 
 Each chapter reader has a Review button. It lists, in page order, every place
