@@ -714,3 +714,33 @@ def test_a_run_in_a_bracket_continues_the_variation_before_it(tmp_path):
     assert [nodes[c]["san"] for c in nodes[replies["Kh7"]]["children"]] == ["Rb7"]
     assert [nodes[c]["san"] for c in nodes[replies["f5"]]["children"]] == ["Rd8+"]
 
+
+def test_moves_after_a_diagram_in_a_run_that_starts_nowhere(tmp_path):
+    """A run from move 1 that does not read from the initial position, with
+    no diagram before it, goes on across a diagram: the moves after the
+    diagram start from the position it shows. The diagram, printed among the
+    moves the line has read, does not end the line, and a later run of the
+    main font that reads where its numbering puts it is a variation there,
+    even when it would also read at the line's end."""
+    import pymupdf
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(1)
+    b.line("1.Rd1 Kg8 2.Rd2 Kh7 3.Rd3 Kg8 4.Rd7", bold=True)
+    b.pg.insert_image(pymupdf.Rect(300, b.y - 11, 400, b.y + 89), pixmap=b.board)
+    b.line("4...Kh8 5.Rxf7 Kg8 6.Rf3", bold=True)
+    b.y += 90
+    b.prose(1)
+    b.line("4...Kh7 5.h3", bold=True)
+    b.prose(1)
+    fen = "6k1/3R1pp1/7p/8/8/8/5PPP/6K1 b - - 0 4"
+    book = _build(tmp_path, b, {"p3-1": fen})
+    line = _line_with(book, "Rxf7")
+    assert line["diagram"] == "p3-1"
+    assert _sans(book, line) == ["Kh8", "Rxf7", "Kg8", "Rf3"]
+    nodes = book["nodes"]
+    root = nodes[line["root"]]
+    assert [nodes[c]["san"] for c in root["children"]] == ["Kh8", "Kh7"]
+    kh7 = nodes[root["children"][1]]
+    assert [nodes[c]["san"] for c in kh7["children"]] == ["h3"]

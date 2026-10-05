@@ -836,6 +836,7 @@ class _Line:
     close_at: Optional[int] = None
     broken: bool = False        # a gap in the text ended the decoded part of the line
     hold: Optional[int] = None  # a diagram that may end the line (see _Builder.hold)
+    hold_inside: bool = False   # that diagram stands among the moves of the line's last run
     start_note: str = ""        # how the starting position was chosen, in plain words
     spec: dict = field(default_factory=dict)          # where the line starts (see _Builder.replay_line)
     ops: list = field(default_factory=list)           # how the line was built, for replaying it
@@ -2311,6 +2312,12 @@ class _Builder:
             if cont is not None:
                 L.hold = None                   # the line goes on past the diagram
                 run = cont
+            elif (L.hold_inside and run.ply is not None and run.ply < L.next_ply
+                  and self.reads_at(L, run, run.ply)):
+                # a diagram printed among the line's own moves did not end it:
+                # here a variation in the main font follows, where its
+                # numbering puts it
+                L.hold = None
             else:
                 self.close(run.start)
         if self.suspended is not None:
@@ -2348,6 +2355,16 @@ class _Builder:
             if L is not None:
                 self.close(run.start)
             accept, _, did = self.initial_accept(run)
+            cut = (self.diagram_cut(run) if not (accept or self.replaying
+                                                 or self.deferred is not None) else None)
+            if cut is not None:
+                # moves that do not read from the initial position: those after
+                # a diagram printed among them are taken up at the diagram,
+                # which shows their position if the moves before it do not
+                # reach it (see the chapter loop)
+                run, tail, off = cut
+                self.deferred = (off, tail)
+                accept, _, did = self.initial_accept(run)
             self.release_pre_notes(None if accept else did)
             self.adopt_pre_notes(self.start_from_initial(run, "main"))
             return
@@ -2390,7 +2407,9 @@ class _Builder:
                 if P - L.next_ply <= GAP_MAX:
                     self.gap(L, run, P)
                     return
-            else:
+            elif not self.reads_at(L, run, P):
+                # (a run that reads as legal play where its numbering puts it
+                # is a variation there, however it may read at the line's end)
                 decs = self.dec.run(L.last_fen, run.tokens)
                 if _fit(decs)[0] == 0:
                     self.extend(L, run, decs)
@@ -2424,6 +2443,13 @@ class _Builder:
             self.extend(L2, run)
             self.adopt_pre_notes(L2)
 
+    def reads_at(self, L, run, P):
+        """True when the run reads cleanly from the position of L's main line
+        before ply P."""
+        nid = L.ply_node.get(P - 1)
+        fen = self.nodes[nid]["fen"] if nid is not None else None
+        return bool(fen) and _fit(self.dec.run(fen, run.tokens))[0] == 0
+
     def lost(self, L):
         """True when the line's main line no longer reads: a gap in the text,
         or its last two moves failed (the position after them is a guess)."""
@@ -2439,6 +2465,19 @@ class _Builder:
         start from the position it shows (on_main, resync), else None."""
         if L.waiting or self.replaying:
             return None
+        cut = self.diagram_cut(run)
+        if cut is None:
+            return None
+        if not L.broken:
+            decs = self.dec.run(L.last_fen, cut[0].tokens) if L.last_fen else []
+            if len(decs) < 2 or not all(d.status == "failed" for d in decs[-2:]):
+                return None
+        return cut
+
+    def diagram_cut(self, run):
+        """(head, tail, offset): the run cut at the first diagram of the
+        selection printed among its moves, when moves stand on both sides and
+        the tail starts at a numbered move; else None."""
         cuts = [off for off, _, kind, did in self.st.events
                 if kind == "diagram" and run.start < off < run.end and self.diagram_selected(did)]
         if not cuts:
@@ -2450,10 +2489,6 @@ class _Builder:
         tm = [t for t in tail if t.kind == "move"]
         if not hm or not tm or _ply(tm[0]) is None:
             return None
-        if not L.broken:
-            decs = self.dec.run(L.last_fen, head) if L.last_fen else []
-            if len(decs) < 2 or not all(d.status == "failed" for d in decs[-2:]):
-                return None
         a = replace(run, tokens=head, moves=hm, end=head[-1].end, result=None, text="")
         b = replace(run, tokens=tail, moves=tm, start=tail[0].start, ply=_ply(tm[0]), text="")
         return a, b, off
@@ -3313,6 +3348,7 @@ class _Builder:
             self.request_close(off)
         elif a.hold is None:
             a.hold = max(off, a.busy_until)     # a run may go on across the diagram
+            a.hold_inside = off < a.busy_until
 
     def continues_held(self, L, run):
         """The run read as the continuation of the held line L, or None."""
