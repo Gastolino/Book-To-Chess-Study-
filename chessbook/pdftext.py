@@ -247,11 +247,56 @@ def _pictures(page, text_diagrams=()):
     return out
 
 
+# A converter's running header written into the middle of the text: calibre,
+# for one, prints the book's title (from its header template) inside a line of
+# the book, glued to the words around it, with a scrap of template markup after
+# it ("10A Chess Opening for White: ... a Fischer Favoriterend:>.Nf1 Bd7").
+_INJECT_TAIL_RE = re.compile(r"[A-Za-z]{0,8}[:;<>]+")
+_TITLE_PREFIX_RE = re.compile(r"^\s*Microsoft Word\s*-\s*", re.I)
+
+
+def injected_strings(doc):
+    """The strings a converter may have written into the book's text: the
+    title the PDF records, when it is long enough not to be a phrase of the
+    text (cached on the document)."""
+    c = _cache(doc)
+    if "inject" not in c:
+        try:
+            title = (doc.metadata or {}).get("title") or ""
+        except (AttributeError, RuntimeError, ValueError):
+            title = ""
+        title = " ".join(_TITLE_PREFIX_RE.sub("", title).split())
+        c["inject"] = [title] if len(title) >= 16 and " " in title else []
+    return c["inject"]
+
+
+def drop_injected(text, strings):
+    """[(start, end)] spans of text that are an injected string glued inside a
+    line: a letter or digit stands right before or right after it, so that it
+    is no line of its own (a title page) nor a phrase of a sentence. The span
+    includes the scrap of template markup glued after it ("rend:>")."""
+    out = []
+    for s in strings:
+        k = text.find(s)
+        while k >= 0:
+            e = k + len(s)
+            tail = _INJECT_TAIL_RE.match(text, e)
+            before = text[k - 1] if k > 0 else ""
+            after = text[e] if e < len(text) else ""
+            if before.isalnum() or after.isalnum():
+                if tail:
+                    e = tail.end()
+                out.append((k, e))
+            k = text.find(s, e)
+    return out
+
+
 def _raw_page(doc, i):
     cache = _cache(doc)["raw"]
     if i in cache:
         return cache[i]
     page = doc[i]
+    inject = injected_strings(doc)
     d = page.get_text("rawdict", flags=_FLAGS)
     fig = _cache(doc).get("figmap")
     lines, whole = [], []
@@ -277,7 +322,18 @@ def _raw_page(doc, i):
                 for c in s["chars"]:
                     ch = fig.get((s["font"], c["c"]), c["c"]) if fig else c["c"]
                     chars.append((ch, c["bbox"][0], c["bbox"][2], si))
-            for group in _split_gaps(chars, spans):
+            bridges = []
+            if inject:
+                cut = drop_injected("".join(ch[0] for ch in chars), inject)
+                if cut:
+                    gone = set()
+                    for a, e in cut:
+                        gone.update(range(a, e))
+                        bridges.append((chars[a][1] - 1, chars[e - 1][2] + 1))
+                    chars = [ch for j, ch in enumerate(chars) if j not in gone]
+                    if not any(ch[0] not in _SPACE_SET for ch in chars):
+                        continue
+            for group in _split_gaps(chars, spans, bridges):
                 rl = _make_line(group, spans, ln["bbox"])
                 if rl:
                     lines.append(rl)
@@ -288,13 +344,16 @@ def _raw_page(doc, i):
     return raw
 
 
-def _split_gaps(chars, spans):
-    """Split a PDF line where a wide horizontal gap shows two columns merged."""
+def _split_gaps(chars, spans, bridges=()):
+    """Split a PDF line where a wide horizontal gap shows two columns merged.
+    A gap left by text taken out of the line (bridges, x ranges) is no
+    such gap."""
     groups, cur, last_x1 = [], [], None
     for ch in chars:
         c, x0, x1, si = ch
         if c not in _SPACE_SET:
-            if last_x1 is not None and x0 - last_x1 > max(3.5 * spans[si]["size"], 25):
+            if last_x1 is not None and x0 - last_x1 > max(3.5 * spans[si]["size"], 25) and \
+                    not any(a <= last_x1 + 1 and x0 - 1 <= b for a, b in bridges):
                 groups.append(cur)
                 cur = []
             last_x1 = x1
