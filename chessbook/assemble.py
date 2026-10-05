@@ -347,6 +347,20 @@ def _tokens_text(tokens):
     return out
 
 
+def _open_bracket(text, lo, off):
+    """Offset of the innermost bracket left open between lo and off, or None."""
+    level = 0
+    for k in range(off - 1, lo - 1, -1):
+        ch = text[k]
+        if ch in ")]":
+            level += 1
+        elif ch in "([":
+            if level == 0:
+                return k
+            level -= 1
+    return None
+
+
 def _first_moves(tokens, n):
     """The tokens of a run up to its n-th move."""
     out, k = [], 0
@@ -698,6 +712,7 @@ class _Run:
     context: Optional[tuple] = None  # the solution context it was held in
     ci: int = -1                # the chapter whose text holds the run
     text: str = ""              # the run's text, for messages
+    bracket: Optional[int] = None   # offset of the bracket the run stands in (depth > 0)
 
 
 class _Stream:
@@ -1287,7 +1302,9 @@ class _Builder:
                         res = next((_norm_result(t.raw) for t in part if t.kind == "result"),
                                    None)
                         out.append(_Run(kind, part, moves, part[0].start, part[-1].end, s.depth,
-                                        _ply(moves[0]), res))
+                                        _ply(moves[0]), res,
+                                        bracket=_open_bracket(text, a, part[0].start)
+                                        if s.depth else None))
         out.sort(key=lambda r: (r.start, r.kind))
         return out
 
@@ -3065,7 +3082,15 @@ class _Builder:
 
         cont = [v for v in vars_ if v["depth"] == run.depth]
         inner = [v for v in vars_ if v["depth"] < run.depth]
+        # a run whose numbering goes on from the variation before it in the
+        # same bracket continues that variation ("(1...Kh6 is met by the
+        # waiting move 2.Rb7"), before it branches from the move the bracket
+        # follows
+        sibling = (cont[-1] if run.depth > 0 and cont and run.bracket is not None
+                   and cont[-1].get("bracket") == run.bracket else None)
         for ply in plies:
+            if sibling is not None and sibling["next"] == ply:
+                add(sibling["last"], "continue")
             if run.depth > 0 and inner:
                 v = inner[-1]
                 if ply in v["plies"]:
@@ -3142,7 +3167,7 @@ class _Builder:
                 plies[ply] = nid
         last = nodes[-1] if nodes else parent
         vars_.append({"depth": run.depth, "plies": plies, "last": last,
-                      "next": (max(plies) + 1) if plies else None})
+                      "next": (max(plies) + 1) if plies else None, "bracket": run.bracket})
         return True
 
     def unread_reason(self, L, run, decs):

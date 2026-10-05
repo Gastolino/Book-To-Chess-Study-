@@ -690,3 +690,27 @@ def test_unreadable_moves_before_a_run_are_not_skipped(tmp_path):
     first = book["nodes"][_main_line(book, line)[0]]
     assert first["status"] == "failed" and "move 14" in first["reason"]
     assert line["start_fen"].endswith(" w - - 0 14")
+
+
+def test_a_run_in_a_bracket_continues_the_variation_before_it(tmp_path):
+    """"(1...Kh7 is met by the waiting move 2.Rb7, ...)": 2.Rb7 goes on from
+    1...Kh7, the variation before it in the same bracket, not from the move
+    the bracket follows, whose own continuation comes after the bracket."""
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(1)
+    b.pictures("Diagram 1")
+    b.line("1.Rd8+ Kh7 2.Rd7", bold=True)
+    b.line("Also possible is 1.Rd7 Kh8 (1...Kh7 is met by the waiting")
+    b.line("move 2.Rb7, while if 1...f5 then 2.Rd8+) 2.Rxf7 and wins.")
+    b.prose(1)
+    book = _build(tmp_path, b, {"p3-1": ENDING})
+    nodes = book["nodes"]
+    rd7 = next(n for n in nodes.values() if n["san"] == "Rd7" and n["number"] == 1)
+    replies = {nodes[c]["san"]: c for c in rd7["children"]}
+    assert set(replies) == {"Kh8", "Kh7", "f5"}
+    assert [nodes[c]["san"] for c in nodes[replies["Kh8"]]["children"]] == ["Rxf7"]
+    assert [nodes[c]["san"] for c in nodes[replies["Kh7"]]["children"]] == ["Rb7"]
+    assert [nodes[c]["san"] for c in nodes[replies["f5"]]["children"]] == ["Rd8+"]
+
