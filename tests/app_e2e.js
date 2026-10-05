@@ -36,7 +36,8 @@
 //     opens, without Read again;
 //   - opens the contents page and checks that its counts show the corrections;
 //   - goes back to the first chapter and checks every correction is still there;
-//   - loads the page again (without pace), uploads the book again, and checks
+//   - forgets the book in the browser's library (keeping the corrections),
+//     loads the page again (without pace), uploads the book again, and checks
 //     that the stored corrections are applied to the new reading.
 // Screenshots of each step go to SCREENS_DIR (NAME_desktop.png, NAME_phone.png).
 // Prints one JSON object {ok, checks, errors, timings, screenshots, notes};
@@ -118,7 +119,8 @@ async function run(browser, which) {
   await page.waitForFunction(() => /Ready/.test(document.getElementById("status").textContent), null, { timeout: 300000 });
   timing("start until Ready (s)", now() - t0);
   const startText = await page.evaluate(() => document.getElementById("status").textContent);
-  check("the app is ready", /Ready\. Choose a book\./.test(startText), startText);
+  // the start page is the library in this browser (web/library.js), empty in a fresh profile
+  check("the app is ready", /Ready\. (Choose a book|Open a book or add one)\./.test(startText), startText);
   await shot("01_ready");
   await instrument();
 
@@ -719,6 +721,18 @@ async function run(browser, which) {
 
   // ---------------------------------------------------------------- reload and read the book again
   const storedFix = await fixOf();
+  // the library in this browser keeps the book and its reading, and would
+  // open it without reading it (tests/device_library_e2e.js tests that): it
+  // forgets them here, and keeps the corrections, so that the book is read again
+  await page.evaluate(() => new Promise((resolve) => {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("chessbook-library:")) localStorage.removeItem(k);
+    }
+    const q = indexedDB.deleteDatabase("chessbook-library");
+    q.onsuccess = q.onerror = () => resolve();
+    setTimeout(resolve, 10000);
+  }));
   await page.goto(siteUrl.split("?")[0]);
   await page.waitForFunction(() => /Ready/.test(document.getElementById("status").textContent), null, { timeout: 300000 });
   const tAgain = now();

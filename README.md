@@ -98,10 +98,59 @@ figurines from books that name their figurines well;
 
 ## Using the app
 
-Open the published site, drop a chess book PDF on the page, and read it beside
-a live board. The book is processed in your own browser (Python runs there
-through Pyodide) and is never uploaded. The first visit downloads about 30 MB;
-later visits start at once.
+Open the published site (<https://gastolino.github.io/Book-To-Chess-Study-/>),
+choose **Add a book** and pick a chess book PDF, and read it beside a live
+board. The book is processed in your own browser (Python runs there through
+Pyodide) and is never uploaded. The first visit downloads about 40 MB; later
+visits start at once.
+
+### Your library on each device
+
+The start page is your library on this device: each book with a picture of
+its first page, its title, the page last read ("Page 47 of 402") and the day
+it was last opened. The browser keeps the books itself (in its IndexedDB
+storage), so nothing leaves the device:
+
+- **Add a book** reads a PDF once, as described below, and then keeps the
+  PDF, the program's finished reading (compressed), the cover picture, the
+  title and the page count. The browser is asked at the same time to keep
+  this storage for good.
+- A tap on a book opens it from the kept reading without reading it again,
+  with your corrections and selection, at the chapter, page and move last
+  read. A small book opens in about a second; the Primer opened in 9
+  seconds in Chromium on a desktop, where reading it took six minutes in
+  the same test. A reading made by an older version of the program is not
+  used: the book is read again (with your corrections) and its reading
+  replaced.
+- **Remove** deletes the book, its reading, its corrections, its selection
+  and its place, after a question.
+- A quiet line under the books says how much room the library takes. The
+  Primer takes about 15 MB: the PDF 11 MB and the reading 4 MB. When the device has no room left,
+  the app says so and opens the book for the moment without keeping it.
+
+On an iPhone or iPad, Safari may clear the storage of a site that has not
+been opened for seven days. An app added to the Home Screen keeps its
+storage: open the site in Safari, choose the share button and **Add to Home
+Screen**, then open the app from the Home Screen and add your books there.
+The Home Screen app has a library of its own, apart from Safari's; the
+library page says this in one line (with **Hide this note**) until the app
+runs from the Home Screen.
+
+### Moving a book to another device
+
+Each device keeps its own library; nothing is copied between devices by
+itself. To move a book, choose **Save to Files** next to it (on a Mac,
+**Save a copy**). The app writes one file, "<title>.chessbook", that holds
+the PDF, the program's reading, your corrections, your selection, your
+place, the cover and the title. On an iPhone or iPad the share sheet opens:
+choose **Save to Files** (for instance into iCloud Drive) or AirDrop; on a
+Mac the file goes to the Downloads folder. On the other device, choose **Add
+a book** and pick that file: the book opens at once from the reading in it,
+with the corrections, at the same place, and stays in that device's library.
+If the file was made by another version of the program, the book is read
+again, with the corrections. If the library holds the book already (the same
+PDF), the newer of the two sets of corrections wins, and the page says which.
+The file is an ordinary zip archive; `book.pdf` inside it is the book.
 
 The reader names the book by its title in words. It takes the title the PDF
 records (without the "Microsoft Word -" that some converters put before it),
@@ -133,9 +182,10 @@ with a local Pyodide folder (`CHESSBOOK_PYODIDE`) and the PyMuPDF and
 python-chess wheels for Pyodide (`CHESSBOOK_WHEELS`); `CHESSBOOK_APP_BOOK`
 names another book to read than the generated test book.
 
-## A private library on Cloudflare
+## A private library on Cloudflare (optional)
 
-The same app, published on Cloudflare (`.github/workflows/cloudflare.yml`),
+The library on each device, above, needs no account anywhere. The same app,
+published on Cloudflare (`.github/workflows/cloudflare.yml`),
 keeps a library for one person behind Cloudflare Access. Its start page lists
 the books with a picture of the first page, the title, the page last read
 ("Page 47 of 402") and the day the book was last opened; "Add a book" adds
@@ -155,10 +205,15 @@ wins. The site only stores: `server/app.js` (Pages Functions, with an R2
 bucket for the files and a D1 database for the records, `server/schema.sql`)
 answers under `/api/`, and the app finds out from `/api/books` whether it
 runs there. Anywhere else (GitHub Pages, or the built site opened from a
-folder) it works as described above, and nothing leaves the device.
+folder) the library lives in the browser, as described above, and nothing
+leaves the device. Both libraries are one page and one code path in
+`web/library.js`, with two stores: the server's and the browser's.
 `docs/CLOUDFLARE.md` gives the setup in plain steps; `tests/test_library.py`
 runs the server under `wrangler pages dev` and the library end to end
-(`tests/library_e2e.js`).
+(`tests/library_e2e.js`). `tests/test_device_library.py` runs the library in
+the browser on the static site (`tests/device_library_e2e.js`): adding,
+opening after the browser starts again, the book file into a fresh profile,
+and removing.
 
 ## Correcting what the program could not read
 

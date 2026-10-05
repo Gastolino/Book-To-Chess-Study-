@@ -8,6 +8,14 @@
 # without an error, so the GitHub Pages site goes on as before. The
 # repository variables ACCESS_TEAM_DOMAIN and ACCESS_AUD, when set, make the
 # server check the sign-in token of Cloudflare Access (server/auth.js).
+#
+# The Cloudflare site is optional: the app on GitHub Pages (pages.yml) keeps a
+# library in the browser of each device (docs/CLOUDFLARE.md).
+#
+# No step may wait for an answer: wrangler runs with CI=true and its input
+# closed (so that it never asks a question, such as a production branch, and
+# takes its default or fails instead), every wrangler command has a time
+# limit of its own, and the job one of 25 minutes.
 name: Publish the library on Cloudflare
 
 on:
@@ -23,6 +31,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  CI: "true"
+  WRANGLER_SEND_METRICS: "false"
+  NPM_CONFIG_YES: "true"
   PROJECT: chess-book-reader      # the Pages project (wrangler.toml "name")
   DATABASE: chessbook             # the D1 database (wrangler.toml "database_name")
   BUCKET: chessbook-books         # the R2 bucket (wrangler.toml "bucket_name")
@@ -30,6 +41,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -57,12 +69,13 @@ jobs:
           node-version: "22"
       - name: Fetch the browser builds of PyMuPDF and python-chess
         if: steps.secrets.outputs.ready == 'true'
+        timeout-minutes: 5
         run: |
           mkdir -p wheels
           python -m pip wheel --no-deps chess==1.11.2 -w wheels
           python - <<'PY'
           import json, urllib.request
-          data = json.load(urllib.request.urlopen("https://pypi.org/pypi/pymupdf/1.28.2/json"))
+          data = json.load(urllib.request.urlopen("https://pypi.org/pypi/pymupdf/1.28.2/json", timeout=60))
           url = next(f["url"] for f in data["urls"] if "pyemscripten_2025_0" in f["filename"])
           urllib.request.urlretrieve(url, "wheels/" + url.rsplit("/", 1)[1])
           PY
@@ -75,15 +88,27 @@ jobs:
             --chess wheels/chess-1.11.2-py3-none-any.whl
       - name: Install wrangler
         if: steps.secrets.outputs.ready == 'true'
-        run: npm install --no-audit --no-fund
+        timeout-minutes: 5
+        run: |
+          npm install --no-audit --no-fund < /dev/null
+          # every later step runs wrangler through this: never a question, at most five minutes a command
+          cat > "$RUNNER_TEMP/wr" <<'SH'
+          #!/bin/sh
+          echo "wrangler $*" >&2
+          exec timeout 300 ./node_modules/.bin/wrangler "$@" < /dev/null
+          SH
+          chmod +x "$RUNNER_TEMP/wr"
+          "$RUNNER_TEMP/wr" --version
       # The database, the bucket and the project are made here when the
       # account does not hold them yet; the database's id goes into
       # wrangler.toml for this deployment.
       - name: Find the database, the bucket and the project
         if: steps.secrets.outputs.ready == 'true'
+        timeout-minutes: 8
         run: |
+          wr="$RUNNER_TEMP/wr"
           db_id() {
-            npx wrangler d1 list --json | python -c "
+            "$wr" d1 list --json | python -c "
           import json, sys
           text = sys.stdin.read()
           dbs = json.loads(text[text.index('['):]) if '[' in text else []
@@ -91,16 +116,18 @@ jobs:
           }
           id="$(db_id)"
           if [ -z "$id" ]; then
-            npx wrangler d1 create "$DATABASE"
+            "$wr" d1 create "$DATABASE"
             id="$(db_id)"
           fi
           test -n "$id"
           sed -i "s/00000000-0000-0000-0000-000000000000/$id/" wrangler.toml
-          if ! npx wrangler r2 bucket list | grep -q "$BUCKET"; then
-            npx wrangler r2 bucket create "$BUCKET"
+          buckets="$("$wr" r2 bucket list)"
+          if ! printf '%s' "$buckets" | grep -q "$BUCKET"; then
+            "$wr" r2 bucket create "$BUCKET"
           fi
-          if ! npx wrangler pages project list --json | grep -q "\"$PROJECT\""; then
-            npx wrangler pages project create "$PROJECT" --production-branch main
+          projects="$("$wr" pages project list --json)"
+          if ! printf '%s' "$projects" | grep -q "\"$PROJECT\""; then
+            "$wr" pages project create "$PROJECT" --production-branch main
           fi
           if [ -n "$ACCESS_TEAM_DOMAIN" ] && [ -n "$ACCESS_AUD" ]; then
             printf '\n[vars]\nACCESS_TEAM_DOMAIN = "%s"\nACCESS_AUD = "%s"\n' "$ACCESS_TEAM_DOMAIN" "$ACCESS_AUD" >> wrangler.toml
@@ -109,7 +136,9 @@ jobs:
           fi
       - name: Bring the database's tables up to date
         if: steps.secrets.outputs.ready == 'true'
-        run: npx wrangler d1 execute "$DATABASE" --remote --yes --file server/schema.sql
+        timeout-minutes: 6
+        run: '"$RUNNER_TEMP/wr" d1 execute "$DATABASE" --remote --yes --file server/schema.sql'
       - name: Publish
         if: steps.secrets.outputs.ready == 'true'
-        run: npx wrangler pages deploy site --project-name "$PROJECT" --branch main --commit-dirty=true
+        timeout-minutes: 6
+        run: '"$RUNNER_TEMP/wr" pages deploy site --project-name "$PROJECT" --branch main --commit-dirty=true'
