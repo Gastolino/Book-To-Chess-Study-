@@ -103,8 +103,7 @@ def _recount(book, b, fix):
         c["moves"][n["status"]] += 1
         if not n["main"]:
             c["variation_moves"] += 1
-        what = {"move": "moves", "symbol": "symbol_moves", "connected": "connections",
-                "split": "splits"}.get(n.get("corrected"))
+        what = assemble.CORRECTED_COUNTS.get(n.get("corrected"))
         if what:
             c["corrected"][what] += 1
     for u in book["unattached"]:

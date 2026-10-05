@@ -12,7 +12,7 @@ CORRECTIONS_JS = r"""
 function makeCorrections(applied, opts){
   // applied: the corrections the build used ({diagrams, moves, unattached, glyphs}).
   const key = "chessbook-corrections:" + opts.pdf + ":" + opts.pageCount;
-  const PARTS = ["diagrams", "moves", "unattached", "glyphs", "connect", "disconnect"];
+  const PARTS = ["diagrams", "moves", "unattached", "glyphs", "connect", "disconnect", "gaps"];
   function canon(src){
     const o = {version: 1};
     for (const p of PARTS) {
@@ -299,6 +299,15 @@ function buildItems(){
   }
   for (const u of D.dismissed)
     if (u.page in D.pages) out.push({kind: "seq", key: u.key, page: u.page, order: 1e6, y: u.bbox ? u.bbox[1] : 0});
+  // gaps in the text: moves the book lacks, before the first printed move after them
+  const gaps = new Set();
+  for (const id in D.nodes) {
+    const n = D.nodes[id];
+    if (!n.gap || gaps.has(n.gap) || !(n.page in D.pages) || !D.pages[n.page].selected) continue;
+    gaps.add(n.gap);
+    const i = D.pages[n.page].marks.findIndex(m => m.key === n.gap);
+    out.push({kind: "gap", key: n.gap, page: n.page, order: i >= 0 ? i - 0.5 : 1e5, y: 0});
+  }
   out.sort((a, b) => a.page - b.page || a.order - b.order);
   return symbolsHere().concat(out);
 }
@@ -320,6 +329,15 @@ function itemState(it){
     if (d.status === "doubtful")
       return ["guessed", "Board reading is unsure of " + words(dq.length) + (dq.length === 1 ? " square" : " squares")];
     return ["failed", "Board reading could not read this position"];
+  }
+  if (it.kind === "gap") {
+    const g = gapInfo(it.key), f = FIX.get("gaps", it.key);
+    if (FIX.pending("gaps", it.key))
+      return f ? ["corrected", "You gave " + f.san.join(" ") + ". " + pend] : ["failed", "You removed the moves you gave. " + pend];
+    if (g.hole && D.nodes[g.hole].fill && D.nodes[g.hole].fill.length < (f ? f.san.length : 0))
+      return ["failed", "The moves you gave are not legal here"];
+    if (g.hole) return ["failed", "The book's text lacks " + (g.missing === 1 ? "this move" : words(g.missing) + " moves here")];
+    return ["corrected", "Given by you"];
   }
   if (it.kind === "move") {
     const n = D.nodes[it.node];
@@ -348,6 +366,7 @@ function itemLabel(it){
   if (it.kind === "symbol") return "Piece symbol “<span class=n>" + shownHtml(it.sym) + "</span>”";
   if (it.kind === "diagram") { const {p, d} = diagInfo2(it.id); return esc(cap(diagramName(d, p))); }
   if (it.kind === "move") return moveLabel(it.node);
+  if (it.kind === "gap") return esc(gapTitle(it.key, true));
   const u = seqInfo(it.key);
   return "“<span class=n>" + shownHtml(u ? u.text : "") + "</span>”";
 }
@@ -398,6 +417,7 @@ function openItem(i){
   if (it.kind === "move") { openMove(it.node); }
   else if (it.kind === "diagram") { openDiagramFix(it.id); }
   else if (it.kind === "seq") { openSeq(it.key); }
+  else if (it.kind === "gap") { openGap(it.key); }
   else openSymbol(it.sym);
 }
 
@@ -468,6 +488,8 @@ function legalOf(n){
 function openMove(id){
   const n = D.nodes[id];
   if (!n) return;
+  // a gap in the text, or a move the reader gave for one: the gap's own editor
+  if (n.gap) { openGap(n.gap); return; }
   if (S.node !== id) selectNode(id, {scrollPage: false});
   RV.edit = {kind: "move", node: id};
   const legal = legalOf(n);
@@ -483,11 +505,20 @@ function openMove(id){
   h += "<p class='small muted'>The text recognition read “<span class=n>" + shownHtml(n.raw) + "</span>”. " +
     (n.corrected === "move" ? "You corrected this move." : esc(D.words[n.status] || "") + ".") + "</p>";
   if (!legal.length) {
-    h += "<p class='small muted'>The program does not know the position before this move, so it cannot " +
-      "offer the moves that are legal there.</p>";
+    const gk = gapKeyOf(id);
+    if (gk) {
+      const t = gapTitle(gk);
+      h += "<p class='small muted'>The position before this move is unknown, because the book's text lacks a " +
+        "move before it. The board shows the position before the gap. Once you give the missing move, the program " +
+        "reads this move from there.</p><div class=fixacts><button class=tb id=fixgap>" + esc(t) + "</button></div>";
+    } else
+      h += "<p class='small muted'>The program does not know the position before this move, so it cannot " +
+        "offer the moves that are legal there.</p>";
     h += "<p class='fixmsg small' id=fixmsg role=status></p>" + lineActions(id);
     showFix(h, "move");
     wireLineActions(id);
+    if ($("fixgap")) $("fixgap").addEventListener("click", () => openGap(gk));
+    highlightMark(true);
     return;
   }
   if (first.length) {
@@ -547,6 +578,141 @@ function chooseMove(id, m){
   setMsg("You chose " + m[0] + ". The board shows the position after it. " + applyWords() +
     " The program then reads the rest of the line from this move.", "good");
   afterFix();
+}
+
+/* a gap in the text: moves the book's text lacks */
+function gapKeyOf(id){
+  // the gap a move belongs to (the gap itself, or a move the reader gave for it) or follows
+  // (a printed move whose position is unknown because of it), else null
+  let cur = id;
+  while (cur != null && D.nodes[cur]) {
+    const n = D.nodes[cur];
+    if (n.gap) return n.gap;
+    if (n.fen || n.parent == null) return null;
+    cur = n.parent;
+  }
+  return null;
+}
+function gapInfo(key){
+  // {hole: the gap node (null once the reader gave every move), filled: the moves the reader gave,
+  //  in order, base: the position before the gap, missing: the moves the text lacks there}
+  let hole = null;
+  const filled = [];
+  for (const id in D.nodes) {
+    const n = D.nodes[id];
+    if (n.gap !== key) continue;
+    if (n.san) filled.push(id); else hole = id;
+  }
+  let first = filled.find(id => filled.indexOf(D.nodes[id].parent) < 0) || null;
+  const order = [];
+  for (let id = first; id && filled.indexOf(id) >= 0; id = cont(id)) order.push(id);
+  const start = first || hole;
+  const par = start ? D.nodes[D.nodes[start].parent] : null;
+  const missing = order.length + (hole ? (D.nodes[hole].missing || 1) : 0);
+  return {hole, filled: order, base: par && par.fen ? par.fen : null, before: par ? D.nodes[start].parent : null,
+    missing};
+}
+function sideWords(fen){
+  const f = fen.split(" ");
+  return (f[1] === "b" ? "Black" : "White") + "'s move " + (f[5] || "1");
+}
+function gapMoves(key){
+  // [the position after the moves the reader gave, [[number, SAN, UCI]...], the first move that is not legal]
+  const g = gapInfo(key), f = FIX.get("gaps", key);
+  let fen = g.base;
+  const done = [];
+  for (const s of (f ? f.san : [])) {
+    const legal = fen ? CJ.legalMoves(fen) : [];
+    const m = legal.find(x => x[0] === s) || matchSan(s, legal);
+    if (!m) return [fen, done, s];
+    const b = fen.split(" ");
+    done.push([b[5] + (b[1] === "b" ? "…" : "."), m[0], m[1]]);
+    // (applyUci keeps no move number)
+    const a = applyUci(fen, m[1]).split(" ");
+    a[5] = String(parseInt(b[5] || "1", 10) + (b[1] === "b" ? 1 : 0));
+    fen = a.join(" ");
+  }
+  return [fen, done, null];
+}
+function gapTitle(key, list){
+  const g = gapInfo(key), [fen, done, bad] = gapMoves(key);
+  if (!g.base) return "Moves missing from the text";
+  if (!bad && fen && done.length < g.missing) return list ? cap(sideWords(fen)) + ", missing from the text" :
+    "Give " + sideWords(fen);
+  if (list) return done.length ? done.map(d => d[0] + d[1]).join(" ") + ", given by you" : "Moves missing from the text";
+  return "The moves you gave for the gap";
+}
+function openGap(key){
+  const g = gapInfo(key);
+  if (!g.hole && !g.filled.length) return;
+  if (!(S.node && gapKeyOf(S.node) === key)) selectNode(g.hole || g.filled[g.filled.length - 1], {scrollPage: false});
+  RV.edit = {kind: "gap", key};
+  const f = FIX.get("gaps", key), [fen, done, bad] = gapMoves(key);
+  const room = g.missing - done.length;
+  const after = nodeByKey(key);
+  let h = "<div class=fh><h3>" + esc(gapTitle(key)) + "</h3></div>";
+  const where = (g.missing === 1 ? "a move" : words(g.missing) + " moves") + " here" +
+    (after ? ", before <span class=n>" + moveHtml(after, true) + "</span>" : "");
+  h += "<p class='small muted'>" + (room > 0 || bad ? "The book's text lacks " + where +
+    ", so the program cannot follow the line on its own. It never supplies such a move itself: " +
+    (g.missing === 1 ? "choose the move that was played." : "choose the moves that were played, one at a time.") :
+    "The book's text lacks " + where + ". The program reads the line on from the moves you gave.") + "</p>";
+  if (done.length) h += "<p class=small>You gave <span class=n>" + esc(done.map(d => d[0] + d[1]).join(" ")) + "</span>." +
+    (FIX.pending("gaps", key) ? " " + esc(applyWords()) : "") + "</p>";
+  let legal = [];
+  if (!g.base) h += "<p class='small muted'>The position before the gap is unknown, so the program cannot offer " +
+    "the moves that are legal there.</p>";
+  else if (bad) h += "<p class='small fixmsg bad'>The move you gave, <span class=n>" + esc(bad) + "</span>, is not legal " +
+    "here, so the program ignores the moves you gave.</p>";
+  else if (room > 0) {
+    legal = CJ.legalMoves(fen);
+    h += "<div class=typed><label class='lab small' for=fixsan>Type the move</label><input type=text id=fixsan " +
+      "autocomplete=off autocapitalize=off spellcheck=false placeholder='such as Nf3' aria-describedby=fixmsg></div>";
+    h += "<div class=choices id=fixlist aria-label='Legal moves'></div>";
+  }
+  h += "<p class='fixmsg small' id=fixmsg role=status></p>";
+  if (f) h += "<div class=fixacts><button class=tb id=fixundo>Remove the moves you gave</button></div>";
+  showFix(h, "gap");
+  highlightMark(true);
+  if (fen && done.length) preview(fen, done[done.length - 1][2], "The board shows the position after the moves you gave.");
+  else if (g.base) preview(g.base, null, "The board shows the position before the gap.");
+  if ($("fixundo")) $("fixundo").addEventListener("click", () => {
+    FIX.set("gaps", key, null); afterFix(); openGap(key);
+    setMsg("The moves you gave are removed. " + applyWords());
+  });
+  if (!legal.length) return;
+  const list = () => {
+    const a = sanKey($("fixsan").value, true);
+    const hits = legal.filter(m => !a || sanKey(m[0], true).indexOf(a) === 0);
+    $("fixlist").innerHTML = hits.slice(0, 40).map(m => "<button data-san='" + esc(m[0]) + "'>" + esc(m[0]) +
+      "</button>").join("") + (hits.length > 40 ? "<span class=sub>and " + (hits.length - 40) + " more</span>" : "") +
+      (hits.length ? "" : "<span class=sub>No legal move begins like this.</span>");
+  };
+  list();
+  $("fixsan").addEventListener("input", list);
+  $("fixsan").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const m = matchSan($("fixsan").value, legal);
+    if (m) chooseGap(key, m);
+    else setMsg("“" + $("fixsan").value + "” is not a legal move in this position. The moves below are legal.", "bad");
+  });
+  $("fixlist").addEventListener("click", (e) => {
+    const t = e.target.closest("button[data-san]");
+    if (t) chooseGap(key, legal.find(x => x[0] === t.dataset.san));
+  });
+}
+function chooseGap(key, m){
+  if (!m) return;
+  const [, done] = gapMoves(key);
+  const san = done.map(d => d[1]).concat([m[0]]);
+  FIX.set("gaps", key, {san});
+  const left = gapInfo(key).missing - san.length;
+  afterFix();
+  openGap(key);
+  setMsg("You gave " + m[0] + ". " + (left > 0 ? "The text lacks " + (left === 1 ? "one more move" : words(left) +
+    " more moves") + " here: give the next one, or leave the rest. " : "The program then reads the line on from it. ") +
+    applyWords(), "good");
 }
 
 /* a diagram */
@@ -806,7 +972,7 @@ function paintFixes(){
     const m = D.pages[S.page].marks[parseInt(el.dataset.mark, 10)];
     const n = m.node ? D.nodes[m.node] : null;
     const fixed = !!(m.corrected || (n && n.corrected) || (n && n.key && (FIX.get("moves", n.key) ||
-      FIX.get("connect", n.key) || FIX.get("disconnect", n.key))) ||
+      FIX.get("connect", n.key) || FIX.get("disconnect", n.key) || FIX.get("gaps", n.key))) ||
       (m.seq && (FIX.get("unattached", m.seq) || FIX.get("connect", m.seq))));
     el.classList.toggle("fixed", fixed);
   }
@@ -996,6 +1162,11 @@ function applyPatch(p){
   if (RV.on) { const keep = RV.cur; renderReview(); RV.cur = keep; }
   if (edit && edit.kind === "move" && !$("fix").hidden) {
     if (edit.node) { openMove(edit.node); setMsg("Your correction is applied.", "good"); }
+    else closeFix();
+  }
+  if (edit && edit.kind === "gap" && !$("fix").hidden) {
+    const g = gapInfo(edit.key);
+    if (g.hole || g.filled.length) { openGap(edit.key); setMsg("Your correction is applied.", "good"); }
     else closeFix();
   }
   const pgn = $("pgnbtn");

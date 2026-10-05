@@ -63,7 +63,7 @@ def test_the_garbled_book_needs_corrections(garbled):
     assert u["text"] == "12.Qh5+ g6" and u["key"].endswith(":Qh5+")
     assert book["stats"]["corrected"] == {"moves": 0, "symbol_moves": 0, "diagrams": 0,
                                           "sequences": 0, "symbols": 0, "connections": 0,
-                                          "splits": 0}
+                                          "splits": 0, "gap_moves": 0}
 
 
 def test_corrected_move_decodes_and_the_line_goes_on(garbled):
@@ -172,7 +172,7 @@ def test_schema_and_pasted_text():
     assert data["glyphs"] == {"tLl": "N"} and data["moves"]["4:116,496:Zq9"] == {"san": "Nxd5"}
     assert data["unattached"]["4:258,68:Qh5+"] == {"attach_to": "dismiss"}
     assert fixes.count(data) == {"diagrams": 1, "moves": 1, "unattached": 1, "glyphs": 1,
-                                 "connect": 0, "disconnect": 0}
+                                 "connect": 0, "disconnect": 0, "gaps": 0}
     for bad in ({"diagrams": {"p5-1": {"fen": "8/8/8/8/8/8/8/8 w - - 0 1"}}},
                 {"diagrams": {"page five": {"fen": ENDING_FEN}}},
                 {"moves": {"Zq9": {"san": "Nxd5"}}},
@@ -245,6 +245,124 @@ def test_contents_page_counts_corrections(garbled, tmp_path):
     index = (tmp_path / "reader" / "index.html").read_text(encoding="utf-8")
     assert ("The run used your corrections of <span class=\"num\">1</span> move, "
             "<span class=\"num\">1</span> diagram and <span class=\"num\">1</span> piece symbol.") in index
+
+
+# ------------------------------------------------------------------ moves the text lacks
+
+# the game with Black's fifth move and White's sixth missing from the text: after
+# 5.exd5 the score goes on with 6...Kxf7, which no move of Black's reads there
+GAPPED = ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5", "6...Kxf7 7.Qf3+ Ke6", "8.Nc3"]
+
+
+@pytest.fixture(scope="module")
+def gapped(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("gapped")
+    pdf = make_book(tmp / "gapped.pdf", game=GAPPED)
+    state = {}
+    book = build_book(pdf, output_dir=tmp / "output", books_dir=tmp / "books", state=state)
+    return tmp, pdf, book, state
+
+
+def gap_of(book):
+    _, nodes = game_nodes(book)
+    return next(n for n in nodes if n.get("gap") and not n["san"])
+
+
+def test_a_gap_in_the_text_is_a_gap_node(gapped):
+    _, _, book, _ = gapped
+    _, nodes = game_nodes(book)
+    hole = gap_of(book)
+    assert hole["status"] == "failed" and hole["missing"] == 2 and hole["fill"] == []
+    assert "lacks Black's move 5 and the 1 move after it" in hole["reason"]
+    # the key of the gap is the key of the first printed move after it
+    after = nodes[nodes.index(hole) + 1]
+    assert after["raw"] == "Kxf7" and after["key"] == hole["gap"] and after["status"] == "failed"
+
+
+def test_filling_a_gap_reads_the_line_on(gapped):
+    tmp, pdf, book, _ = gapped
+    key = gap_of(book)["gap"]
+    fixed = rebuild(tmp, pdf, {"gaps": {key: {"san": ["Nxd5", "Nxf7"]}}})
+    _, nodes = game_nodes(fixed)
+    assert [n["san"] for n in nodes] == SANS
+    assert not any(n.get("gap") and not n["san"] for n in nodes)
+    given = [n for n in nodes if n.get("corrected") == "filled"]
+    assert [n["san"] for n in given] == ["Nxd5", "Nxf7"] and all(n["gap"] == key for n in given)
+    assert all(n["status"] == "ok" for n in nodes)
+    assert line_titled(fixed, "Smith - Jones")["status"] == "ok"
+    assert fixed["stats"]["corrected"]["gap_moves"] == 2
+
+
+def test_a_partial_fill_keeps_a_smaller_gap(gapped):
+    tmp, pdf, book, _ = gapped
+    key = gap_of(book)["gap"]
+    fixed = rebuild(tmp, pdf, {"gaps": {key: {"san": ["Nxd5"]}}})
+    _, nodes = game_nodes(fixed)
+    hole = gap_of(fixed)
+    assert hole["gap"] == key and hole["fill"] == ["Nxd5"] and hole["missing"] == 1
+    assert "lacks White's move 6," in hole["reason"]
+    before = fixed["nodes"][hole["parent"]]
+    assert before["san"] == "Nxd5" and before["corrected"] == "filled"
+    after = nodes[nodes.index(hole) + 1]
+    assert after["raw"] == "Kxf7" and after["status"] == "failed"
+
+
+def test_a_fill_that_is_not_legal_is_ignored_with_the_reason(gapped):
+    tmp, pdf, book, _ = gapped
+    key = gap_of(book)["gap"]
+    for fill, words in ((["Qh5"], "Qh5, is not a legal move for Black"),
+                        (["Nxd5", "Nxf7", "h3"], "You gave 3 moves here, but the text lacks only 2")):
+        fixed = rebuild(tmp, pdf, {"gaps": {key: {"san": fill}}})
+        hole = gap_of(fixed)
+        assert hole["fill"] == [] and hole["missing"] == 2 and words in hole["reason"], hole["reason"]
+        assert fixed["stats"]["corrected"]["gap_moves"] == 0
+
+
+def test_gap_corrections_round_trip(tmp_path):
+    data = fixes.parse_corrections_text('{"gaps": {"4:238,54:Kxf7": {"san": ["Nxd5", " Nxf7 "]}}}')
+    assert data["gaps"] == {"4:238,54:Kxf7": {"san": ["Nxd5", "Nxf7"]}}
+    assert fixes.normalise({"gaps": {"4:238,54:Kxf7": "Nxd5"}})["gaps"]["4:238,54:Kxf7"] == {"san": ["Nxd5"]}
+    assert fixes.count(data)["gaps"] == 1
+    path = fixes.save(data, tmp_path / "corrections.json")
+    assert fixes.normalise(json.loads(path.read_text(encoding="utf-8"))) == data
+    for bad in ({"gaps": {"Kxf7": {"san": ["Nxd5"]}}}, {"gaps": {"4:238,54:Kxf7": {"san": []}}},
+                {"gaps": {"4:238,54:Kxf7": {"san": [""]}}}):
+        with pytest.raises(ValueError):
+            fixes.normalise(bad)
+
+
+def test_a_gap_is_filled_live(gapped):
+    """The browser app's worker: live.apply replays the line of the gap at once,
+    with the result of a fresh build, and the chapter's patch carries it."""
+    import copy
+    from chessbook import live
+    tmp, pdf, book, state = gapped
+    book = copy.deepcopy(book)
+    key = gap_of(book)["gap"]
+    ch = book["chapters"][1]
+    old = reader.chapter_data(book, ch, "")
+    hole_id = next(k for k, n in old["nodes"].items() if n.get("gap") and not n["san"])
+    assert old["nodes"][hole_id]["fill"] == [] and old["nodes"][hole_id]["missing"] == 2
+    assert old["nodes"][hole_id]["legal"] and ["Nxd5", "f6d5"] in old["nodes"][hole_id]["legal"]
+    fix = {"gaps": {key: {"san": ["Nxd5"]}}}
+    res = live.apply(state, book, fix)
+    assert res["lines"] and key in book["corrections"]["gaps"]
+    patch, new = live.chapter_patch(book, ch, old)
+    assert any(n.get("corrected") == "filled" and n["san"] == "Nxd5" for n in patch["nodes"].values())
+    hole = next(n for n in new["nodes"].values() if n.get("gap") and not n["san"])
+    assert hole["fill"] == ["Nxd5"] and hole["missing"] == 1
+    fresh = rebuild(tmp, pdf, fix)
+    _, a = game_nodes(book)
+    _, b = game_nodes(fresh)
+    assert [(n["san"], n["status"], n.get("corrected")) for n in a] == \
+        [(n["san"], n["status"], n.get("corrected")) for n in b]
+    # the whole gap: the line reads on
+    live.apply(state, book, {"gaps": {key: {"san": ["Nxd5", "Nxf7"]}}})
+    _, a = game_nodes(book)
+    assert [n["san"] for n in a] == SANS
+    assert book["stats"]["corrected"]["gap_moves"] == 2
+    live.apply(state, book, {})
+    assert gap_of(book)["fill"] == []
 
 
 # ------------------------------------------------------------------ the Primer
