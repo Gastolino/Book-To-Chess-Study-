@@ -262,6 +262,38 @@ def test_pencil_in_chromium(tmp_path):
         assert (screens / name).stat().st_size > 10000, name
 
 
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_gap_in_chromium(tmp_path):
+    """A tap on a red move opens its corrector, and a gap in the text is filled
+    (tests/gap_e2e.js), on the generated book whose game lacks two moves."""
+    from chessbook import live
+    from test_corrections import GAPPED, gap_of
+    pdf = make_book(tmp_path / "gapped.pdf", game=GAPPED)
+    state = {}
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
+                      state=state)
+    out = tmp_path / "output" / "gapped" / "reader"
+    reader.build_reader(book, pdf, out)
+    ch = book["chapters"][1]
+    old = reader.chapter_data(book, ch, "")
+    live.apply(state, book, {"gaps": {gap_of(book)["gap"]: {"san": ["Nxd5", "Nxf7"]}}})
+    patch, _ = live.chapter_patch(book, ch, old)
+    (tmp_path / "patch.json").write_text(json.dumps(patch), encoding="utf-8")
+    screens = ROOT / "output" / "screens"
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "gap_e2e.js"), str(out / ch["file"]),
+                           str(tmp_path / "patch.json"), str(screens)],
+                          capture_output=True, text=True, env=env, timeout=300)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    for name in ("gap_move_1280_light.png", "gap_filled_1280_light.png", "gap_patched_1280_light.png",
+                 "gap_move_390_light.png", "gap_fill_390_light.png"):
+        assert (screens / name).stat().st_size > 10000, name
+
+
 def _read_again_from_the_command_line(res, tmp_path, monkeypatch):
     """The corrections the browser test made, pasted into make_reader
     --corrections (the command line's Read again): every kind is applied."""

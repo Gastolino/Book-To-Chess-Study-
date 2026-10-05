@@ -114,6 +114,29 @@ def test_a_diagram_correction_reaches_the_open_chapter(tmp_path, monkeypatch):
     assert "6" not in out["patch"]["pages"]
 
 
+def test_a_gap_correction_reaches_the_open_chapter(tmp_path, monkeypatch):
+    """The worker's driver applies the moves the reader gave for a gap in the
+    text at once: the patch holds them, and the moves after the gap decode."""
+    import json
+    driver = _driver(tmp_path, monkeypatch)
+    from test_assemble import make_book
+    from test_corrections import GAPPED, SANS
+    pdf = make_book(tmp_path / "gapped.pdf", game=GAPPED)
+    driver.process(str(pdf), lambda *_: None)
+    name = next(c["file"] for c in driver.STATE["book"]["chapters"] if c["start"] <= 4 <= c["end"])
+    driver.chapter(name, lambda *_: None)
+    key = next(n["gap"] for n in driver.STATE["book"]["nodes"].values() if n.get("gap") and not n["san"])
+    out = json.loads(driver.correct(json.dumps({"version": 1, "gaps": {key: {"san": ["Nxd5", "Nxf7"]}}}), name))
+    nodes = out["patch"]["nodes"]
+    assert [n["san"] for n in nodes.values() if n.get("corrected") == "filled"] == ["Nxd5", "Nxf7"]
+    after = next(n for n in nodes.values() if n.get("key") == key)
+    assert after["san"] == "Kxf7" and after["status"] == "ok"
+    assert out["patch"]["corrections"]["gaps"] == {key: {"san": ["Nxd5", "Nxf7"]}}
+    game = [n["san"] for n in driver.STATE["book"]["nodes"].values()
+            if n["main"] and n["san"] and n["page"] == 4]
+    assert game[:len(SANS)] == SANS
+
+
 GPA = ROOT / "corpus" / "gpa.pdf"
 
 
