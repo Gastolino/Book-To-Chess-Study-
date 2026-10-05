@@ -872,6 +872,8 @@ class _Decoder:
         self.seconds = 0.0
 
     def run(self, fen, tokens):
+        if self.fixed:
+            tokens = [self.named(t) for t in tokens]
         key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced, t.shape) for t in tokens))
         hit = self.memo.get(key)
         if hit is None:
@@ -884,6 +886,19 @@ class _Decoder:
             self.calls += 1
             self.memo[key] = hit
         return hit
+
+
+    def named(self, tok):
+        """A move whose piece symbol the reader named carries that piece as a
+        certain shape (Token.shape): the decoder reads it so even where the
+        book's glyph model knows a longer junk ("1:'!:" for the "1:'!" that was
+        named), and only illegal play overrules it."""
+        if tok.kind != "move":
+            return tok
+        piece = self.fixed.get(junk_prefix(tok.raw, self.letters))
+        if piece and piece in "KQRBN":
+            return replace(tok, shape=(piece, 1.0))
+        return tok
 
 
 def _vanished(d):
@@ -2825,7 +2840,7 @@ class _Builder:
                 self.nodes[nid]["alternatives"] = list(d.alternatives[:4])
             if tok.forced:
                 self.nodes[nid]["corrected"] = "move"
-            elif d.glyph and d.glyph in self.fix_glyphs:
+            elif self.named_piece(tok, d):
                 self.nodes[nid]["corrected"] = "symbol"
         else:
             assumed = d.alternatives[0] if d.alternatives else None
@@ -4111,6 +4126,16 @@ class _Builder:
                               "reason": "", "key": fixes.token_key(page, box, run.moves[0].raw)
                               if box else None, "bbox": box, "_src": L.id,
                               "node": nodes[0] if nodes else None})
+
+    def named_piece(self, tok, d):
+        """True when the move reads with the piece the reader named for its
+        symbol (the decoder's glyph, or the symbol the page shows for it)."""
+        if d.glyph and d.glyph in self.fix_glyphs:
+            return True
+        piece = self.fix_glyphs.get(junk_prefix(tok.raw, self.dec.letters))
+        if not piece or not d.san:
+            return False
+        return d.san[0] == piece if piece in "KQRBN" else d.san[0] not in "KQRBNO"
 
     def shown_move(self, raw):
         """A printed move as the reader would write it, where it can be read."""
