@@ -284,7 +284,7 @@ const LIB = (() => {
     busy = true;
     $("bar").classList.add("on");
     const name = safeName(b.fileName);
-    api.current = { id: b.id, book: b, name, restored: false, position: null };
+    api.current = { id: b.id, book: b, name, restored: false, position: null, t0: Date.now() };
     try {
       say("Downloading the book.");
       const pdf = await download("books/" + b.id + "/pdf",
@@ -318,6 +318,13 @@ const LIB = (() => {
       $("bar").classList.remove("on");
       say("The book could not be opened: " + err.message, true);
     }
+  };
+
+  // The top bar's words for a book opened from its stored reading.
+  api.openedIn = function () {
+    const t0 = api.current && api.current.t0;
+    return t0 ? "opened from your library in " + Math.max(1, Math.round((Date.now() - t0) / 1000)) + " seconds"
+              : "opened from your library";
   };
 
   function safeName(fileName) {

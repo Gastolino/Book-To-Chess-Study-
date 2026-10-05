@@ -180,10 +180,11 @@ worker.onmessage = (e) => {
       "the program reads only the diagrams that the book prints in a chess font." : choose);
   } else if (m.type === "index") {
     // the contents, as soon as the chapters are known: the reading goes on
+    // (a book of the library opened from its stored reading is read already)
     busy = false;
-    loading = true;
+    loading = !m.restored;
     $("bar").classList.remove("on");
-    $("took").textContent = "Reading the book";
+    $("took").textContent = m.restored ? LIB.openedIn() : "Reading the book";
     openChapter = "index.html";
     show("index.html", "", m.html);
     working(false);
@@ -193,8 +194,7 @@ worker.onmessage = (e) => {
     if (openChapter === "index.html") toView({ thumbs: m.thumbs });
   } else if (m.type === "done") {
     loading = false;
-    $("took").textContent = (m.restored ? "opened from your library in " : "read in ") +
-      Math.round(m.seconds) + " seconds";
+    if (!m.restored) $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
     working(false);
     if (m.html && openChapter === "index.html") show("index.html", "", m.html);
   } else if (m.type === "reopen") {

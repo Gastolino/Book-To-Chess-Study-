@@ -243,6 +243,9 @@ async function run() {
     await b.page.click("#books li.book[data-id='" + one.id + "'] .open");
     await b.page.waitForFunction(() => /opened from your library/.test(document.getElementById("took").textContent),
                                  null, { timeout: 600000 });
+    timing("second device: opening " + path.basename(book1) + " from the library, until the contents (s)", now() - t);
+    note("second device: the driver opened the stored reading in " +
+         (await b.page.evaluate(() => LIB.last && LIB.last.seconds)) + " s");
     const atPlace = await b.waitFrame((p) => window.READER && window.READER.chapter.file === p.chapter &&
       window.readerState.page === p.page && window.readerState.nodeId === p.node && window.readerState, placed, 300000);
     timing("second device: opening " + path.basename(book1) + " from the library, until the chapter at the place (s)", now() - t);
