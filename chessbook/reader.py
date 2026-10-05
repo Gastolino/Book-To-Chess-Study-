@@ -528,6 +528,8 @@ function nodeFen(id){ const n = D.nodes[id]; return n && n.fen ? n.fen : null; }
 function setState(){
   window.readerState = {fen: S.node ? nodeFen(S.node) : null, nodeId: S.node, page: S.page};
   if (S.diagram) window.readerState.diagram = S.diagram;
+  // the app's library keeps the page and the move last read, to open the book there again
+  if (window.CHESSBOOK_APP && S.page) parent.postMessage({position: {page: S.page, node: S.node || null}}, "*");
   const t = $("mtxt");
   if (!t) return;
   if (S.node) t.innerHTML = D.nodes[S.node].parent == null ? "Start position" :
@@ -1294,6 +1296,14 @@ function setReading(on){
 /* ---------------------------------------------------------------- wiring */
 function fromHash(){
   const h = location.hash.replace(/^#/, "");
+  // "at=PAGE:NODE" (the place the app's library stored) chooses the move when this
+  // reading holds it, and shows the page otherwise
+  const at = /^at=(\d+):(.*)$/.exec(h);
+  if (at) {
+    if (at[2] && D.nodes[at[2]]) { selectNode(at[2], {scrollPage: true}); return true; }
+    goPage(at[1], true);
+    return true;
+  }
   const m = /^(page|node|line)=(.+)$/.exec(h);
   if (!m) return false;
   if (m[1] === "page") { goPage(m[2], true); return true; }

@@ -16,8 +16,18 @@ the correction when it is built. The corrections are saved as well, so that
 reading the book again gives the same result. While the book is still
 read, a correction applies to a reading of the open chapter alone, and the
 final book holds every correction.
+
+In the app's library (served by the Cloudflare site, see docs/CLOUDFLARE.md)
+a book is read once: save_reading() gives the finished reading as bytes,
+which the app stores, and restore() opens the book from them on any device
+without reading it again. A stored reading names the VERSION of the program
+that made it and the selection it was made with; restore() refuses one made
+by another version or with another selection, and the app then reads the
+book again.
 """
+import hashlib
 import json
+import pickle
 import sys
 import time
 from pathlib import Path
@@ -30,6 +40,36 @@ OUT = Path("/out")
 CFG = Path("/cfg")
 STATE = {}
 BATCH_PAGES = 10        # pages of lines a piece-symbol correction replays per call (correct_more)
+READING_MAGIC = b"chessbook-reading\n"
+COVER_WIDTH = 240       # pixels across the cover picture of the library
+
+
+def _version():
+    """A digest of the program's own files: a stored reading is used only by
+    the program that made it, since another version may read the book
+    differently (and its objects may differ)."""
+    root = Path(corrections.__file__).resolve().parents[1]
+    files = sorted(p for p in (root / "chessbook").rglob("*")
+                   if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc")
+    files += [root / "stage1_inspect.py", Path(__file__).resolve()]
+    h = hashlib.sha256()
+    for p in files:
+        h.update(p.name.encode("utf-8"))
+        h.update(p.read_bytes())
+    return h.hexdigest()[:16]
+
+
+VERSION = _version()
+
+
+def _selection_key(selection_json):
+    """The selection as one canonical text (None for the default), to tell
+    whether a stored reading was made with the selection in use now."""
+    if not selection_json:
+        return None
+    data = selection.parse_selection_text(selection_json)
+    data.pop("note", None)
+    return json.dumps(data, sort_keys=True)
 
 
 def start(path, selection_json=None, corrections_json=None):
@@ -59,9 +99,11 @@ def start(path, selection_json=None, corrections_json=None):
         target.write_text(json.dumps(selection.parse_selection_text(selection_json)),
                           encoding="utf-8")
     STATE.clear()
-    STATE.update(job=progressive.Job(pdf, OUT, CFG), pdf=pdf, out=OUT / pdf.stem / "reader",
+    job = progressive.Job(pdf, OUT, CFG)
+    STATE.update(job=job, pdf=pdf, out=OUT / pdf.stem / "reader", thumbs=job.thumbs,
                  built=set(), built_from={}, data={}, fix_path=fix_path, index_stale=False, pending=set(),
-                 open=None, book=None, keep=None, t0=time.perf_counter())
+                 open=None, book=None, keep=None, t0=time.perf_counter(),
+                 selection=_selection_key(selection_json), restored=False)
     return json.dumps(notes)
 
 
@@ -81,6 +123,8 @@ def step():
     the messages for the page (see progressive.Job.step), with the contents
     page's HTML in "index" and, at the end, in "done" when the contents page
     is open."""
+    if STATE.get("restored"):
+        return _restored_step()
     job = STATE["job"]
     if job.done:
         return json.dumps({"events": [], "done": True})
@@ -88,6 +132,7 @@ def step():
     for ev in job.step():
         if ev["type"] == "index":
             ev["html"] = _index_html()
+            ev.update(title=job.plain["title"], pages=job.plain["page_count"])
         elif ev["type"] == "patch":
             STATE["data"][ev["chapter"]] = job.data[ev["chapter"]]
             # the reader holds the new reading; its file is written again when opened
@@ -163,15 +208,19 @@ def index():
         STATE["job"].closed()
         return _index_html()
     if STATE.get("index_stale"):
-        job = STATE["job"]
-        doc = job.ctx["doc"]
+        doc = _doc()
         for p in range(1, doc.page_count + 1):
-            if p not in job.thumbs:
-                job.thumbs[p] = reader.thumb(doc, p)
+            if p not in STATE["thumbs"]:
+                STATE["thumbs"][p] = reader.thumb(doc, p)
         reader.build_reader(STATE["book"], STATE["pdf"], STATE["out"], chapters=set(), app=True,
-                            thumbs=job.thumbs)
+                            thumbs=STATE["thumbs"])
         STATE["index_stale"] = False
     return (STATE["out"] / "index.html").read_text(encoding="utf-8")
+
+
+def _doc():
+    """The open PDF document of the book."""
+    return STATE.get("doc") or STATE["job"].ctx["doc"]
 
 
 def _chapter_of(name):
@@ -254,3 +303,122 @@ def _stale(res, keep=None):
         # the open reader holds the patched data; its file is written again on the next opening
         STATE["built"].discard(keep)
     STATE["index_stale"] = True
+
+
+# ---------------------------------------------------------------- the library
+
+def save_reading():
+    """The finished reading of the book as bytes, to open it again later
+    without reading it (restore()): a header line (JSON: the program's
+    VERSION, the selection used, the PDF's name and page count), then the
+    book and the state that applies corrections live (live.py), pickled.
+    The PDF itself is not part of it: restore() opens it again."""
+    if _loading():
+        raise ValueError("The book is still being read.")
+    keep = STATE["keep"]
+    b = keep["builder"]
+    book = STATE["book"]
+    header = {"version": VERSION, "selection": STATE.get("selection"), "pdf": STATE["pdf"].name,
+              "pages": book["page_count"]}
+    doc, b.doc = b.doc, None
+    try:
+        body = pickle.dumps({"book": book, "keep": {k: v for k, v in keep.items() if k != "doc"}},
+                            protocol=pickle.HIGHEST_PROTOCOL)
+    finally:
+        b.doc = doc
+    return READING_MAGIC + json.dumps(header).encode("utf-8") + b"\n" + body
+
+
+def reading_header(path):
+    """The header of a stored reading (save_reading), or None when the file
+    is not one."""
+    with open(path, "rb") as f:
+        if f.read(len(READING_MAGIC)) != READING_MAGIC:
+            return None
+        try:
+            return json.loads(f.readline())
+        except ValueError:
+            return None
+
+
+def restore(path, reading_path, selection_json=None, corrections_json=None):
+    """Open the book at path from its stored reading (the bytes of
+    save_reading() in the file reading_path) instead of reading it. The
+    corrections stored in the browser are applied live when they differ
+    from those the reading holds. Returns JSON: the messages for the page,
+    [{"type": "stale", "why"}] when the reading cannot be used (another
+    version of the program, another selection), or the contents page
+    ({"type": "index"}). step() then draws the page thumbnails and ends
+    with {"type": "done"}, as when the book is read."""
+    pdf = Path(path)
+    header = reading_header(reading_path)
+    if header is None:
+        return json.dumps([{"type": "stale", "why": "The stored reading is damaged."}])
+    if header.get("version") != VERSION:
+        return json.dumps([{"type": "stale", "why": "The stored reading was made by another "
+                                                    "version of the program."}])
+    if header.get("selection") != _selection_key(selection_json):
+        return json.dumps([{"type": "stale", "why": "The selection of pages and diagrams changed "
+                                                    "since the stored reading was made."}])
+    t0 = time.perf_counter()
+    with open(reading_path, "rb") as f:
+        f.read(len(READING_MAGIC))
+        f.readline()
+        data = pickle.load(f)
+    import pymupdf
+    doc = pymupdf.open(pdf)
+    book, keep = data["book"], data["keep"]
+    keep.update(doc=doc, pdf=pdf)
+    keep["builder"].doc = doc
+    fix_path = corrections.corrections_path(pdf, CFG)
+    fix = corrections.parse_corrections_text(corrections_json) if corrections_json else \
+        corrections.empty()
+    corrections.save(fix, fix_path)
+    old = corrections.normalise(book.get("corrections") or {})
+    if any(fix[k] != old[k] for k in corrections.PARTS):
+        live.apply(keep, book, fix)
+    target = selection.selection_path(pdf, CFG)
+    if target.exists():
+        target.unlink()
+    if selection_json:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(selection.parse_selection_text(selection_json)),
+                          encoding="utf-8")
+    STATE.clear()
+    STATE.update(job=None, pdf=pdf, out=OUT / pdf.stem / "reader", doc=doc, thumbs={},
+                 built=set(), built_from={}, data={}, fix_path=fix_path, index_stale=False,
+                 pending=set(), open=None, book=book, keep=keep, t0=t0,
+                 selection=header.get("selection"), restored=True)
+    reader.build_reader(book, pdf, STATE["out"], chapters=set(), app=True, thumbs=STATE["thumbs"])
+    html = (STATE["out"] / "index.html").read_text(encoding="utf-8")
+    return json.dumps([{"type": "index", "html": html, "title": book["title"],
+                        "pages": book["page_count"], "restored": True,
+                        "seconds": round(time.perf_counter() - t0, 2)}])
+
+
+def _restored_step():
+    """After restore(): the page thumbnails of the contents page, a batch at
+    a time, then "done"."""
+    doc = STATE["doc"]
+    todo = [p for p in range(1, doc.page_count + 1) if p not in STATE["thumbs"]]
+    todo = todo[:progressive.THUMB_BATCH]
+    if todo:
+        got = {p: reader.thumb(doc, p) for p in todo}
+        STATE["thumbs"].update(got)
+        return json.dumps({"events": [{"type": "thumbs", "thumbs": got}], "done": False})
+    STATE["restored"] = False
+    STATE["index_stale"] = True
+    ev = {"type": "done", "restored": True}
+    if STATE["open"] is None:
+        ev["html"] = index()
+    return json.dumps({"events": [ev], "done": True})
+
+
+def cover(path):
+    """A small colour JPEG of the book's first page, for the library."""
+    import pymupdf
+    doc = pymupdf.open(path)
+    page = doc[0]
+    zoom = COVER_WIDTH / max(page.rect.width, 1)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csRGB, alpha=False)
+    return pix.tobytes("jpg", jpg_quality=70)
