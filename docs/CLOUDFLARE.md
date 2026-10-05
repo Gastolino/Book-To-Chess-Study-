@@ -1,7 +1,25 @@
 # Your private library on Cloudflare
 
-The app on GitHub Pages reads a book in your browser and keeps nothing
-anywhere else. The Cloudflare site is the same app with a library: the
+## This setup is optional
+
+The app on GitHub Pages (<https://gastolino.github.io/Book-To-Chess-Study-/>)
+already keeps a library: each device's browser keeps the books you add on
+it, with the program's reading, your corrections and your place, and opens
+them again without reading them. A book moves to another device as one file
+("Save to Files", then "Add a book" on the other device); the README's
+"Using the app" says how. Nothing below is needed for that.
+
+The Cloudflare site adds one thing: a single library for all your devices,
+which they share without files. If its setup does not work for you, leave it:
+the GitHub Pages app goes on working, and the Cloudflare workflow does
+nothing while the two secrets of step 6 are missing (delete them to stop
+it). The workflow stops by itself after 25 minutes at most and never waits
+for an answer, so a run that cannot finish ends with a red cross and a
+message in its log.
+
+## What the Cloudflare site does
+
+The Cloudflare site is the same app with a library kept by the site: the
 program reads each book once, and the site keeps the book, the program's
 reading of it, your corrections and the page you last read. Every device you
 sign in on (iPhone, iPad, Mac) then opens the book at once, at your page,
