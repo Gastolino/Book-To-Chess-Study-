@@ -118,6 +118,14 @@ def test_number_glued_to_rook_glyph_starts_a_run():
     assert kinds("the bk7 and")[1] == ("other", "bk7")
 
 
+def test_k_in_a_square_may_also_be_an_h():
+    # OCR reads an h as a k as well as a c joined to the glyph before it: in
+    # "1 ... .!k8" (Primer page 173) the king goes to h8, and "J:k7" may still be Rc7
+    board = chess.Board("6k1/6pp/2r1q3/4B3/3pn3/1Q6/6PP/5RK1 b - - 0 1")
+    assert sans("1...Kk8", board) == ["Kh8"]
+    assert sans("1.Kk2", chess.Board("4k3/8/8/8/8/8/8/2K5 w - - 0 1")) == ["Kc2"]
+
+
 def test_check_sign_printed_apart_from_its_move():
     # "'!Wfl t" is Qf1+ with the check sign set apart: the move is not lost
     assert moves("23. \x14d3 '!Wfl t 24. \x14c2 J.fl") == ["\x14d3", "'!Wfl t", "\x14c2", "J.fl"]

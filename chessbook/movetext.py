@@ -101,12 +101,13 @@ COMMON_GLYPH_JUNK: dict[str, list[str]] = {
 
 # What an OCR'd character in the file slot of a square can stand for, with the
 # cost of that reading. Exact readings cost nothing. A "k" is a c joined to the
-# last stroke of the glyph before it (":k7", "Jk1" for Rc7, Rc1).
+# last stroke of the glyph before it (":k7", "Jk1" for Rc7, Rc1), and only
+# when no c fits, an h (".!k8" for Kh8).
 FILE_READ: dict[str, dict[int, float]] = {
     "a": {0: 0.0}, "b": {1: 0.0, 7: 0.6}, "c": {2: 0.0, 4: 0.5}, "d": {3: 0.0},
     "e": {4: 0.0, 2: 0.5}, "f": {5: 0.0}, "g": {6: 0.0}, "h": {7: 0.0, 1: 0.6},
     "o": {0: 0.6}, "t": {5: 0.5}, "£": {5: 0.15}, "q": {6: 0.5}, "r": {5: 0.9},
-    "9": {6: 0.9}, "€": {4: 0.6}, "ƒ": {5: 0.3}, "k": {2: 0.6},
+    "9": {6: 0.9}, "€": {4: 0.6}, "ƒ": {5: 0.3}, "k": {2: 0.6, 7: 1.6},
 }
 # The same for the rank slot. 'l', 'I', 'i' and '!' read as 1 (and as the
 # 7 whose hook was lost), 'B', 'S' and 's' as 8 and 5, 'b' and 'G' as 6.
