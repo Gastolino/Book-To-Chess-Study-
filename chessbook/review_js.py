@@ -57,8 +57,8 @@ function makeCorrections(applied, opts){
 REVIEW_CSS = r"""
 #reviewbtn[aria-pressed="true"]{color:var(--accent)}
 .eye{position:absolute;z-index:5;padding:0;margin:0;border:0;background:none;cursor:pointer;width:16px;height:12px;
-line-height:0;color:var(--doubt);display:none;transform:translate(-2px,-100%)}
-.eye svg{width:16px;height:12px;fill:none;stroke:currentColor;stroke-width:1.25;stroke-linecap:round;stroke-linejoin:round}
+line-height:0;color:var(--doubt);display:none}
+.eye svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.25;stroke-linecap:round;stroke-linejoin:round}
 .eye.fixed{color:var(--ok)}
 .eye:hover{color:var(--accent)}
 .eye::before{content:"";position:absolute;left:50%;top:50%;width:32px;height:28px;transform:translate(-50%,-50%)}
@@ -262,8 +262,11 @@ function symbolsHere(){
   return Object.values(seen).sort((a, b) => b.book - a.book || b.here - a.here);
 }
 function symbolNeeded(m){
+  // (a symbol the book taught well is not what a doubt about its move is about)
   const n = m.node ? D.nodes[m.node] : null;
-  return n ? (REVIEW.indexOf(n.status) >= 0 || n.corrected === "symbol") : m.status === "unattached";
+  if (n && n.corrected === "symbol") return true;
+  if (m.known) return false;
+  return n ? REVIEW.indexOf(n.status) >= 0 : m.status === "unattached";
 }
 function buildItems(){
   const out = [];
@@ -816,7 +819,11 @@ function pageEyes(){
     const b = document.createElement("button");
     b.className = "eye";
     b.dataset.eye = i; b.dataset.sym = m.symbol;
-    b.style.left = pct(m.bbox[0], P.w); b.style.top = pct(m.bbox[1], P.h);
+    // as tall as half the printed move, on its top left corner, so that it
+    // marks the symbol without covering the words around it at any zoom
+    const h = (m.bbox[3] - m.bbox[1]) * 0.5, w = h * 4 / 3;
+    b.style.left = pct(m.bbox[0] - w * 0.15, P.w); b.style.top = pct(m.bbox[1] - h * 0.35, P.h);
+    b.style.width = pct(w, P.w); b.style.height = pct(h, P.h);
     b.innerHTML = EYE;
     const t = "Unreadable piece symbol “" + shown(m.symbol) + "”: choose the piece it stands for";
     b.title = t; b.setAttribute("aria-label", t); b.setAttribute("aria-haspopup", "menu");

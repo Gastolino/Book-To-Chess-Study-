@@ -176,7 +176,24 @@ one family) have their italic moves read as notes, never as moves of the
 game. A line whose moves stop reading (the text lacks a move, or two moves
 in a row cannot be read) takes up again at the next diagram printed among
 its moves: the moves after the diagram start from the position it shows, as
-a line of their own, instead of standing unread in the line before.
+a line of their own, instead of standing unread in the line before. The
+same holds for a run of moves from move 1 that does not read from the
+initial position: its moves after a diagram printed among them start from
+the diagram. A diagram printed among the moves a line has read does not end
+it when a run of the main font that follows reads as a variation where its
+numbering puts it ("25...fxe5" after the line has gone on to move 34); such
+a run is a variation there, even if it would also read as legal play at the
+line's end.
+
+Inside a bracket, a run whose numbering goes on from the variation before it
+in the same bracket continues that variation: in "1.Ra7+ Kg8 (1...Kh6 is met
+by the waiting move 2.Rb7, while if 1...Kh8 then 2.Kg6) 2.Kf6", 2.Rb7 follows
+1...Kh6 and 2.Kf6 stays the move after 1...Kg8.
+
+In the reader, an eye marks a piece symbol on the page only when the program
+is unsure of that symbol; a move it doubts for another reason (its square,
+say) whose symbol the book has taught it well shows no eye. The eye is drawn
+on the move's corner, sized to the print, so it hides no other words.
 
 ## Running it from the command line
 

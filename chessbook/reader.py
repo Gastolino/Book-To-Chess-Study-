@@ -1578,7 +1578,7 @@ def chapter_data(book, ch, pgn_text):
                 "folio": pg.get("folio"),
                 "diagrams": pg["diagrams"],
                 "marks": [{k: m[k] for k in ("bbox", "node", "status", "raw", "line", "reason",
-                                             "key", "seq", "symbol", "corrected", "ref")
+                                             "key", "seq", "symbol", "known", "corrected", "ref")
                            if k in m} for m in pg["marks"]]}
     lines = {}
     order = []

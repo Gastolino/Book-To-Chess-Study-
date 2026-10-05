@@ -563,7 +563,7 @@ async function openChapterOf(page, p) {
       for (const p in D.pages) D.pages[p].marks.forEach((m) => {});
       for (const p in D.pages) for (const m of D.pages[p].marks) {
         const n = m.node && D.nodes[m.node];
-        if (m.symbol && n && ["failed", "guessed", "ambiguous"].indexOf(n.status) >= 0 && n.san && /^[KQRBN]/.test(n.san))
+        if (m.symbol && !m.known && n && ["failed", "guessed", "ambiguous"].indexOf(n.status) >= 0 && n.san && /^[KQRBN]/.test(n.san))
           return { page: parseInt(p, 10), sym: m.symbol, piece: n.san[0], count: D.symbols[m.symbol] };
       }
       return null;

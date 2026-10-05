@@ -10,7 +10,7 @@ It writes output/<stem>/book.json and returns the same dict:
                 "diagrams": [{"id", "rect", "label", "kind", "selected", "fen",
                               "status", "reading"?, "after_node", "checked", "lines"}],
                 "marks": [{"bbox", "node", "status", "raw", "line", "reason"?, "key",
-                           "seq"?, "symbol"?, "corrected"?}]}],
+                           "seq"?, "symbol"?, "known"?, "corrected"?}]}],
      "chapters": [{..book_structure chapter.., "index", "file", "counts"}],
      "lines": [{"id", "title", "kind", "chapter", "page", "end_page", "start_fen",
                 "root", "status", "diagram", "section", "header", "result",
@@ -45,7 +45,8 @@ The reader's corrections
 corrections.py keeps the reader's corrections of a book. A token's "key"
 ("page:x,y:raw") names a move token on the page; a mark's "seq" is the key
 of the sequence placed in no line that it belongs to, and its "symbol" the
-piece symbol the text recognition could not name. A node's or mark's
+piece symbol the text recognition could not name ("known" when the book
+taught the program that symbol well, so that no eye marks it). A node's or mark's
 "corrected" says what the reader corrected: "move" (the token reads as the
 move given), "symbol" (its piece symbol), or "placed" (the first move of a
 sequence the reader placed), "connected" (the first move of a run the reader
@@ -225,7 +226,7 @@ from . import selection as sel
 from .movetext import GlyphModel, Token, clean_run, decode, find_sequences, numbering_counts
 from .movetext import DOTLESS_MIN, DOTLESS_SHARE
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
-from .movetext import _ocr_digit_slip, junk_prefix
+from .movetext import CAPTURE_CHARS, _ocr_digit_slip, junk_prefix
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -4519,9 +4520,12 @@ def _diagram_reading(did, fen, reading, corrected=False):
     return out
 
 
-def _symbol_counts(book_marks, letters, fixed):
+def _symbol_counts(book_marks, letters, fixed, glyphs=None):
     """{symbol: times printed} for every piece symbol of the book's move tokens
-    that is neither a letter of the notation nor a figurine."""
+    that is neither a letter of the notation nor a figurine. With the book's
+    glyph model, a mark whose symbol the book has taught well (the same junk
+    read nearly always as one piece) is marked "known": the reader puts no
+    eye on it, since a doubt about such a move is not about its piece."""
     out = Counter()
     for marks in book_marks.values():
         for m in marks:
@@ -4529,13 +4533,26 @@ def _symbol_counts(book_marks, letters, fixed):
             if sym:
                 out[sym] += 1
                 m["symbol"] = sym
+                if glyphs is not None and _symbol_known(glyphs, m["raw"], sym):
+                    m["known"] = True
     return out
+
+
+def _symbol_known(glyphs, raw, sym):
+    """True when the glyph model trusts its reading of the symbol, or of the
+    symbol with the capture sign after it that the book prints as part of
+    the piece ("E:" for the rook in "E:h7#")."""
+    if glyphs.strong(sym):
+        return True
+    k = raw.find(sym)
+    nxt = raw[k + len(sym):k + len(sym) + 1] if k >= 0 else ""
+    return bool(nxt) and nxt in CAPTURE_CHARS and glyphs.strong(sym + nxt)
 
 
 def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structure, readings=None,
                fix=None, letters=None):
     fix = fix or fixes.empty()
-    symbols = _symbol_counts(b.marks, letters, fix["glyphs"])
+    symbols = _symbol_counts(b.marks, letters, fix["glyphs"], glyphs)
     ids = sel.diagram_ids(diagrams)
     kinds = b.kinds
     chapter_of = {}
