@@ -1,0 +1,19 @@
+# The Cloudflare site: the app (built into site/ by tools/build_web.py) and
+# the library's server (functions/, server/). docs/CLOUDFLARE.md says how to
+# set it up; .github/workflows/cloudflare.yml deploys it.
+name = "chess-book-reader"
+pages_build_output_dir = "site"
+compatibility_date = "2025-09-01"
+
+# The book files: PDFs, stored readings and covers.
+[[r2_buckets]]
+binding = "BOOKS"
+bucket_name = "chessbook-books"
+
+# The records of the library (server/schema.sql). The deployment puts the id
+# of the database named "chessbook" in place of these zeros; on one's own
+# computer `wrangler pages dev` keeps a local copy and needs no id.
+[[d1_databases]]
+binding = "DB"
+database_name = "chessbook"
+database_id = "00000000-0000-0000-0000-000000000000"
