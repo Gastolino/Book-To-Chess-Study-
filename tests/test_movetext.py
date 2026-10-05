@@ -98,6 +98,16 @@ def test_glued_number_cut_leaves_a_whole_move():
     assert moves("5.Ng5 Ngt66.Bd3 e6") == ["Ng5", "Ngt6", "Bd3", "e6"]
 
 
+def test_number_one_merged_with_rook_glyph():
+    # "U:g6" is 1.Rg6: the "1." and the first stroke of the rook's "E:" became a "U"
+    assert kinds("U:g6 i>hs 2.i>f6") == [("number", "U"), ("move", ":g6"), ("move", "i>hs"),
+                                         ("number", "2."), ("move", "i>f6")]
+    assert tokenize("U:a6t i>d7")[0].number == 1
+    # an ordinary word, and a "U" in the middle of moves, are left alone
+    assert kinds("Ulysses: the game")[0] == ("other", "Ulysses:")
+    assert [k for k, _ in kinds("3.Kf2 U:g6")] == ["number", "move", "move"]
+
+
 def test_glyph_dot_after_number():
     # "3 . .ic4": the second dot belongs to the bishop glyph ".i"
     toks = tokenize("3 . .ic4 .ig4")

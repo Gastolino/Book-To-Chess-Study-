@@ -1016,7 +1016,7 @@ _LEAD_DOTS_RE = re.compile(r"^([.…•·]+)(.+)$", re.S)
 _GLUE_AFTER = set("12345678t+#!?)")
 _GLUED_NUM_RE = re.compile(r"([0-9][0-9lIOo]{0,2}|[lI][0-9lIOo]{0,2}|[sS])(?=[.…•·]+\S)")
 _DOTLESS_RE = re.compile(r"^(\d{1,3})(?=[^\d.…•·])(.+)$", re.S)
-_ONE_GLYPH_RE = re.compile(r"^[1Il](?=J[^ ])")
+_ONE_GLYPH_RE = re.compile(r"^(?:[1Il](?=J[^ ])|U(?=[:J][^ ]))")
 # Words after which a number names a diagram, a page or an exercise.
 _REF_WORD_RE = re.compile(r"^(?:[DO][il1]a?gr[ae](?:m|rn|in)s?|Diag\.?|Positions?|Pos\.?|Nos?\.|"
                           r"[Pp]ages?|pp?\.|Fig(?:ure)?s?\.?|Exercises?|Problems?|Games?|"
@@ -1699,7 +1699,8 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
         mj = _ONE_GLYPH_RE.match(w)
         if mj and not (st.in_seq and st.prev == "move") and _shape(w[1:]) == "strong":
             # "1." printed with its dot lost before a glyph that starts with
-            # "J" ("IJ\x1dd2!", "1J\x1dg4!" for 1.Rd2!, 1.Rg4!)
+            # "J" ("IJ\x1dd2!", "1J\x1dg4!" for 1.Rd2!, 1.Rg4!), or "1." and the
+            # first stroke of a rook's "E:" merged into a "U" ("U:g6" for 1.Rg6)
             number(Token("number", text[s:s + 1], s, s + 1, 1, False, True))
             move(s + 1, e)
             i += 1
