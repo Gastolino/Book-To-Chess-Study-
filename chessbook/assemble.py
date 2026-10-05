@@ -2313,8 +2313,7 @@ class _Builder:
             if cont is not None:
                 L.hold = None                   # the line goes on past the diagram
                 run = cont
-            elif (L.hold_inside and run.ply is not None and run.ply < L.next_ply
-                  and self.reads_at(L, run, run.ply)):
+            elif self.variation_across_hold(L, run):
                 # a diagram printed among the line's own moves did not end it:
                 # here a variation in the main font follows, where its
                 # numbering puts it
@@ -2443,6 +2442,17 @@ class _Builder:
             self.active = L2
             self.extend(L2, run)
             self.adopt_pre_notes(L2)
+
+    def variation_across_hold(self, L, run):
+        """True when the run after a diagram printed among the moves of the
+        held line L is a variation of L in the main font: it reads where its
+        numbering puts it, a full move or more before the line's next move
+        ("25...fxe5" after the game reached move 34). A run that only offers
+        another move for the line's last one is not: that move is more likely
+        a stray of the text before the diagram (a move named in a note), and
+        the run the line itself, going on from the diagram."""
+        return (L.hold_inside and run.ply is not None and run.ply < L.next_ply - 1
+                and self.reads_at(L, run, run.ply))
 
     def reads_at(self, L, run, P):
         """True when the run reads cleanly from the position of L's main line

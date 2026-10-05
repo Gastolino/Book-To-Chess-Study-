@@ -183,7 +183,9 @@ the diagram. A diagram printed among the moves a line has read does not end
 it when a run of the main font that follows reads as a variation where its
 numbering puts it ("25...fxe5" after the line has gone on to move 34); such
 a run is a variation there, even if it would also read as legal play at the
-line's end.
+line's end. A run that only offers another move for the line's last move is
+no such variation: that last move is more likely a stray of a note before the
+diagram, and the run goes on with the game from the diagram.
 
 Inside a bracket, a run whose numbering goes on from the variation before it
 in the same bracket continues that variation: in "1.Ra7+ Kg8 (1...Kh6 is met

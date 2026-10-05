@@ -744,3 +744,27 @@ def test_moves_after_a_diagram_in_a_run_that_starts_nowhere(tmp_path):
     assert [nodes[c]["san"] for c in root["children"]] == ["Kh8", "Kh7"]
     kh7 = nodes[root["children"][1]]
     assert [nodes[c]["san"] for c in kh7["children"]] == ["h3"]
+
+
+
+def test_a_run_that_replaces_only_the_last_move_is_no_variation_across_a_diagram():
+    """After a diagram printed among the moves of the line, a run of the main
+    font that reads where its numbering puts it is a variation there when it
+    starts a full move or more before the line's next move ("25...fxe5" after
+    move 34), but not when it only offers another move for the line's last
+    one: that move is likely a stray of a note before the diagram ("22 Rf1
+    Qb5." read as the game's 20...Qb5), and the run the game going on."""
+    from types import SimpleNamespace
+    from chessbook.assemble import _Builder
+    b = _Builder.__new__(_Builder)
+    b.reads_at = lambda L, run, P: True
+    line = SimpleNamespace(hold_inside=True, next_ply=40)   # the line played 20...Qb5
+    assert not b.variation_across_hold(line, SimpleNamespace(ply=39))   # "20...Kh8"
+    assert b.variation_across_hold(line, SimpleNamespace(ply=38))       # "20.Nd5"
+    assert b.variation_across_hold(line, SimpleNamespace(ply=29))       # "15...fxe5"
+    # a diagram after the line's moves, and a run without a number, are no case
+    assert not b.variation_across_hold(SimpleNamespace(hold_inside=False, next_ply=40),
+                                       SimpleNamespace(ply=29))
+    assert not b.variation_across_hold(line, SimpleNamespace(ply=None))
+    b.reads_at = lambda L, run, P: False
+    assert not b.variation_across_hold(line, SimpleNamespace(ply=29))
