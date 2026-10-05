@@ -151,3 +151,15 @@ def test_read_again_drops_a_selection_the_browser_no_longer_holds(tmp_path, monk
     assert selection.selection_path(pdf, tmp_path / "cfg").exists()
     driver.process(str(pdf), lambda *_: None, None)
     assert not selection.selection_path(pdf, tmp_path / "cfg").exists()
+
+
+def test_the_library_joins_only_when_the_site_answers(tmp_path):
+    """The shell loads web/library.js and asks it to start; the library turns
+    itself on only when /api/books answers with a list of books (the
+    Cloudflare site), so the app on GitHub Pages works as before."""
+    page = build(tmp_path)
+    assert '<script src="library.js"></script>' in page and "LIB.start();" in page
+    assert "if (LIB.message(m)) return;" in page and "if (LIB.on) { LIB.add(file); return; }" in page
+    lib = (tmp_path / "site" / "library.js").read_text(encoding="utf-8")
+    assert 'fetch("api/books"' in lib
+    assert "if (!data || !Array.isArray(data.books)) return false;" in lib
