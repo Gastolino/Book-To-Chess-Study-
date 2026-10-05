@@ -4,3 +4,7 @@ __pycache__/
 corpus/
 .claude/worktrees/
 local/
+node_modules/
+.wrangler/
+.dev.vars
+site/

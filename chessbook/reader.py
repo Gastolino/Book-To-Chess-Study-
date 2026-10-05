@@ -263,7 +263,7 @@ CHAPTER_CSS = r"""
 .diagnote{margin:0 0 16px}
 .provnote{display:none;margin:0 0 16px}
 .reading.first .provnote{display:block}
-.key{display:grid;margin:0 0 16px}
+.key{display:grid;margin:16px 0 0}
 .key > *{grid-area:1/1}
 .legend{display:none;flex-wrap:wrap;align-content:start;gap:4px 20px}
 .reading .legend{display:flex}
@@ -528,6 +528,8 @@ function nodeFen(id){ const n = D.nodes[id]; return n && n.fen ? n.fen : null; }
 function setState(){
   window.readerState = {fen: S.node ? nodeFen(S.node) : null, nodeId: S.node, page: S.page};
   if (S.diagram) window.readerState.diagram = S.diagram;
+  // the app's library keeps the page and the move last read, to open the book there again
+  if (window.CHESSBOOK_APP && S.page) parent.postMessage({position: {page: S.page, node: S.node || null}}, "*");
   const t = $("mtxt");
   if (!t) return;
   if (S.node) t.innerHTML = D.nodes[S.node].parent == null ? "Start position" :
@@ -830,6 +832,8 @@ function boardFor(){
   const n = S.node ? D.nodes[S.node] : null;
   const fen = n ? nodeFen(S.node) : null;
   if (fen) return ["svg", boardSvg(fen, S.flip, n.uci), ""];
+  const known = n ? beforeGap(S.node) : null;
+  if (known) return ["svg", boardSvg(nodeFen(known), S.flip, D.nodes[known].uci), gapBoardNote(S.node, known)];
   const L = S.line ? D.lines[S.line] : null;
   if (n && n.reason) return ["empty", null, n.reason];
   if (L && L.diagram) return ["crop", L.diagram, "This line starts from " + diagramLabel(L.diagram) +
@@ -837,6 +841,20 @@ function boardFor(){
   // a line chosen but no move yet: the line's starting position
   if (!n && L && nodeFen(L.root)) return ["svg", boardSvg(nodeFen(L.root), S.flip, null), ""];
   return ["empty", null, "The board shows a position once you choose a move on the page."];
+}
+function beforeGap(id){
+  // the last move with a known position before a gap in the text that move id is or follows
+  const n = D.nodes[id];
+  if (!n || n.fen || n.parent == null || !gapKeyOf(id)) return null;
+  let cur = n.parent;
+  while (cur != null && !D.nodes[cur].fen) cur = D.nodes[cur].parent;
+  return cur;
+}
+function gapBoardNote(id, known){
+  const n = D.nodes[id];
+  const at = D.nodes[known].parent != null ? ", after " + moveText(known, true) : ", at the start of the line";
+  return (n.gap ? "The book's text lacks this move." : "The position here is unknown, because the book's text " +
+    "lacks a move before it.") + " The board shows the position before the gap" + at + ".";
 }
 function renderBoard(){
   const [kind, x, note] = boardFor();
@@ -1036,6 +1054,7 @@ function statusLines(n){
       n.corrected === "placed" ? "You placed this variation here." :
       n.corrected === "connected" ? "You joined these moves to the line here." :
       n.corrected === "split" ? "You started a new line with this move." :
+      n.corrected === "filled" ? "You gave this move, which the book's text lacks." :
       "You named its piece symbol “<span class=n>" + shownHtml(n.symbol || "") + "</span>”.";
     return ["corrected", esc(D.words.corrected), (n.raw ? ["The text recognition read “<span class=n>" +
       shownHtml(n.raw) + "</span>”."] : []).concat([why], out)];
@@ -1048,6 +1067,9 @@ function statusLines(n){
     out.push(n.assumed ? "The program assumed <span class=n>" + esc(n.assumed) +
       "</span> here so that the line goes on." : "The program could not read this move.");
   if (n.reason) out.push(esc(n.reason));
+  const known = beforeGap(n.id);
+  if (known) out.push("The board shows the position before the gap" + (D.nodes[known].parent != null ?
+    ", after <span class=n>" + esc(moveText(known, true)) + "</span>" : ", at the start of the line") + ".");
   if (/[\u0000-\u001f]/.test(n.raw || ""))
     out.push("The box " + PLACEHOLDER + " stands for a sign that the text recognition could not name, " +
       "such as a figurine.");
@@ -1069,15 +1091,25 @@ function renderInfo(){
       const [st, lab, more] = statusLines(n);
       h += "<div class='status small muted'><p><i class='dot st-" + esc(st) + "'></i>" + lab + "</p>" +
         more.map(x => "<p>" + x + "</p>").join("") + "</div>";
-      if (n.key && beforeFen(n) && !(RV.edit && RV.edit.node === S.node))
+      const gk = gapKeyOf(S.node);
+      if (gk && !(RV.edit && RV.edit.kind === "gap"))
+        h += "<p class=small><button class=tb id=fixgapbtn>" + esc(n.gap && n.san ? "Change the moves you gave" :
+          gapTitle(gk)) + "</button></p>";
+      else if (n.key && beforeFen(n) && !(RV.edit && RV.edit.node === S.node))
         h += "<p class=small><button class=tb id=fixthis>Correct this move</button></p>";
     }
   }
   box.innerHTML = h;
   $("infosec").hidden = !h;
   if ($("fixthis")) $("fixthis").addEventListener("click", () => openMove(S.node));
+  if ($("fixgapbtn")) $("fixgapbtn").addEventListener("click", () => openGap(gapKeyOf(S.node)));
 }
 
+function openIfFailed(id){
+  // a move the program could not read (red in the move list) opens its corrector at once
+  const n = D.nodes[id];
+  if (n && n.parent != null && n.status === "failed") openMove(id);
+}
 function selectNode(id, opts){
   opts = opts || {};
   const n = D.nodes[id];
@@ -1085,7 +1117,8 @@ function selectNode(id, opts){
   const treeFocus = $("tree").contains(document.activeElement);
   if (S.diagram) closeDiagram();
   S.preview = null;
-  if (RV.edit && !(RV.edit.kind === "move" && RV.edit.node === id) && RV.edit.kind !== "symbol") closeFix();
+  if (RV.edit && !(RV.edit.kind === "move" && RV.edit.node === id) && RV.edit.kind !== "symbol" &&
+      !(RV.edit.kind === "gap" && gapKeyOf(id) === RV.edit.key)) closeFix();
   const lineChanged = S.line !== n.line;
   S.node = id; S.line = n.line;
   const L = D.lines[n.line];
@@ -1294,6 +1327,14 @@ function setReading(on){
 /* ---------------------------------------------------------------- wiring */
 function fromHash(){
   const h = location.hash.replace(/^#/, "");
+  // "at=PAGE:NODE" (the place the app's library stored) chooses the move when this
+  // reading holds it, and shows the page otherwise
+  const at = /^at=(\d+):(.*)$/.exec(h);
+  if (at) {
+    if (at[2] && D.nodes[at[2]]) { selectNode(at[2], {scrollPage: true}); return true; }
+    goPage(at[1], true);
+    return true;
+  }
   const m = /^(page|node|line)=(.+)$/.exec(h);
   if (!m) return false;
   if (m[1] === "page") { goPage(m[2], true); return true; }
@@ -1322,7 +1363,7 @@ function init(){
       const i = RV.items.findIndex(it => it.kind === "seq" && it.key === b.dataset.seq);
       if (i >= 0) { openItem(i); return; }
     }
-    if (b.dataset.node) { selectNode(b.dataset.node, {fromPage: true}); return; }
+    if (b.dataset.node) { selectNode(b.dataset.node, {fromPage: true}); openIfFailed(b.dataset.node); return; }
     if (b.dataset.diagram) { showDiagram(b.dataset.diagram); return; }
     if (b.dataset.mark) {
       const m = D.pages[S.page].marks[parseInt(b.dataset.mark, 10)];
@@ -1341,7 +1382,10 @@ function init(){
   $("tree").addEventListener("click", (e) => {
     const t = e.target.closest(".mv");
     if (t && t.dataset.node && PEN.connect) { finishConnect(t.dataset.node); return; }
-    if (t && t.dataset.node) selectNode(t.dataset.node, {scrollTree: false, scrollPage: true});
+    if (t && t.dataset.node) {
+      selectNode(t.dataset.node, {scrollTree: false, scrollPage: true});
+      openIfFailed(t.dataset.node);
+    }
   });
   $("bstart").addEventListener("click", () => toEnd(-1));
   $("bback").addEventListener("click", () => step(-1));
@@ -1493,6 +1537,10 @@ __PGNBTN__
 <p class="offpage small" id="offpage"></p>
 <p class="diagnote small muted" id="diagnote"></p>
 <p class="provnote small muted" id="provnote">The program is still reading the book. The moves of this chapter are a first reading, made with what the program had learnt when it reached them. When it has read the whole book, the final reading replaces them here, and the page and the chosen move stay where they are.</p>
+<div class="pagescroll" id="pagescroll">
+<div class="pagebox" id="pagebox"><img class="scan" id="pageimg" alt=""><div class="ov" id="ov"></div>
+<ul class="symmenu small" id="symmenu" role="menu" hidden></ul></div>
+</div>
 <div class="key small muted">
 <div class="help"><p class="mouse">A click on a move or a diagram shows it in the panel. The left and right arrow keys step through the moves, the up and down arrow keys switch between the moves the book gives at a branch, and Page Up and Page Down turn the pages.</p>
 <p class="touch">A tap on a move or a diagram shows it on the board. A swipe across the page turns it.</p></div>
@@ -1507,10 +1555,6 @@ __PGNBTN__
 <span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
 </div>
-</div>
-<div class="pagescroll" id="pagescroll">
-<div class="pagebox" id="pagebox"><img class="scan" id="pageimg" alt=""><div class="ov" id="ov"></div>
-<ul class="symmenu small" id="symmenu" role="menu" hidden></ul></div>
 </div>
 <div class="pagefoot small">
 <div class="onpage" aria-label="Lines on this page"><span class="lab">On this page</span><span class="onlines" id="chips"></span></div>
@@ -1612,9 +1656,13 @@ def chapter_data(book, ch, pgn_text):
                 nn["alternatives"] = n["alternatives"]
             if n.get("reason"):
                 nn["reason"] = n["reason"]
-            for k in ("key", "corrected"):
+            for k in ("key", "corrected", "gap"):
                 if n.get(k):
                     nn[k] = n[k]
+            if n.get("gap") and not n.get("san"):
+                # a gap in the text: the moves the reader gave for it so far
+                nn["fill"] = list(n.get("fill") or [])
+                nn["missing"] = n.get("missing") or 1
             if n.get("raw") and n.get("parent") is not None:
                 sym = junk_prefix(n["raw"], book.get("letters"))
                 if sym:
@@ -2027,7 +2075,8 @@ def _corrected_sentence(c):
                            ("sequences", "sequence placed in no line", "sequences placed in no line"),
                            ("symbols", "piece symbol", "piece symbols"),
                            ("connections", "line joined to another", "lines joined to others"),
-                           ("splits", "line started anew", "lines started anew")):
+                           ("splits", "line started anew", "lines started anew"),
+                           ("gap_moves", "move the text lacks", "moves the text lacks")):
         k = c.get(key, 0)
         if k:
             parts.append(f"{_n(k)} {one if k == 1 else many}")

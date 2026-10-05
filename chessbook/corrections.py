@@ -14,6 +14,7 @@ selection (selection.py), and in the browser under
      "disconnect": {"204:80,300:Qh5": {"start": "here"},
                     "204:90,410:Rd1": {"start": "p204-1"},
                     "205:60,90:Kf2":  {"remove": true}},
+     "gaps":       {"7:28,664:e5": {"san": ["Bd7"]}},
      "note": "Corrections made in the book reader."}
 
 diagrams     a diagram id (selection.py) and the position it shows; it wins
@@ -41,6 +42,14 @@ disconnect   the key of a move of a line. {"start": "here"} starts a new line
              id>} starts the new line from that diagram instead; {"remove":
              true} takes the moves from it to the end of the line out of the
              line, so that they stand in no line.
+gaps         the key of the first printed move after a gap in the text (moves
+             that the book's text lacks, assemble._Builder.gap) and the moves
+             the reader gave for the gap, in SAN and in order ("san", a list:
+             the reader may give them one at a time). The moves are played
+             from the line's last position before the gap when they are
+             legal there; when they fill the whole gap the line reads on from
+             them, else a smaller gap follows them. The program never
+             supplies such a move itself.
 
 The corrections are applied after the book is assembled, by replaying the
 lines they touch (assemble._Builder.apply_fix), so that the browser app can
@@ -57,7 +66,7 @@ import chess
 from .selection import BOOKS_DIR, ID_RE, _FENCE_RE, _objects
 
 VERSION = 1
-PARTS = ("diagrams", "moves", "unattached", "glyphs", "connect", "disconnect")
+PARTS = ("diagrams", "moves", "unattached", "glyphs", "connect", "disconnect", "gaps")
 PIECES = "KQRBNP"
 KEY_RE = re.compile(r"^(\d+):(-?\d+),(-?\d+):(.*)$", re.S)
 TOLERANCE = 2.5             # points a token may move between builds and keep its key
@@ -101,7 +110,7 @@ def normalise(data):
     if not isinstance(data, dict):
         raise ValueError("Corrections must be a JSON object.")
     out = {"version": VERSION, "diagrams": {}, "moves": {}, "unattached": {}, "glyphs": {},
-           "connect": {}, "disconnect": {}}
+           "connect": {}, "disconnect": {}, "gaps": {}}
     for did, v in (data.get("diagrams") or {}).items():
         if not ID_RE.match(str(did)):
             raise ValueError(f"{did!r} is not a diagram id such as 'p201-1'.")
@@ -144,6 +153,15 @@ def normalise(data):
             if start != "here" and not ID_RE.match(str(start)):
                 raise ValueError(f"{start!r} is not a diagram id such as 'p201-1'.")
             out["disconnect"][key] = {"start": str(start)}
+    for key, v in (data.get("gaps") or {}).items():
+        parse_key(key)
+        sans = (v or {}).get("san") if isinstance(v, dict) else v
+        if isinstance(sans, str):
+            sans = [sans]
+        if not isinstance(sans, list) or not sans or \
+                not all(isinstance(x, str) and x.strip() for x in sans):
+            raise ValueError(f"The moves given for the gap at {key!r} are not a list of moves.")
+        out["gaps"][key] = {"san": [x.strip() for x in sans]}
     if data.get("note"):
         out["note"] = str(data["note"])
     return out
@@ -184,8 +202,8 @@ def parse_corrections_text(text):
             if isinstance(obj, dict) and set(PARTS) & obj.keys():
                 return normalise(obj)
     raise ValueError("The text holds no corrections: no JSON object with \"diagrams\", "
-                     "\"moves\", \"unattached\", \"glyphs\", \"connect\" or \"disconnect\" "
-                     "was found.")
+                     "\"moves\", \"unattached\", \"glyphs\", \"connect\", \"disconnect\" or "
+                     "\"gaps\" was found.")
 
 
 class TokenIndex:

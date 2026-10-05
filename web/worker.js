@@ -29,7 +29,20 @@ async function init(cfg) {
   py.FS.mkdirTree("/books");
   py.runPython("import sys; sys.path.insert(0, '/app/web')");
   driver = py.pyimport("driver");
-  postMessage({ type: "ready", boards });
+  postMessage({ type: "ready", boards, version: driver.VERSION });
+}
+
+// Bytes made by Python, as a JavaScript array (the Python object is freed).
+function bytesOf(proxy) {
+  const out = proxy.toJs();
+  proxy.destroy();
+  return out;
+}
+// gzip on the way to the library and back, with the browser's own streams.
+async function gzip(bytes, how) {
+  const stream = new Blob([bytes]).stream().pipeThrough(
+    how === "decompress" ? new DecompressionStream("gzip") : new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 // The book is read in small steps (driver.step). Between two steps the
@@ -70,6 +83,30 @@ onmessage = async (event) => {
       for (const ev of JSON.parse(driver.start(path, msg.selection || null, msg.corrections || null)))
         postMessage(ev);
       await run(id, t0);
+    } else if (msg.type === "restore") {
+      // a book of the library, opened from its stored reading (gzip) instead of read;
+      // a reading the driver refuses ("stale") makes the page read the book instead
+      const t0 = performance.now();
+      const path = "/books/" + msg.name;
+      py.FS.writeFile(path, new Uint8Array(msg.bytes));
+      py.FS.writeFile("/books/reading.bin", await gzip(msg.reading, "decompress"));
+      const id = ++job;
+      const events = JSON.parse(driver.restore(path, "/books/reading.bin", msg.selection || null,
+                                               msg.corrections || null));
+      py.FS.unlink("/books/reading.bin");
+      for (const ev of events) postMessage(ev);
+      if (events.length && events[0].type === "stale") return;
+      await run(id, t0);
+    } else if (msg.type === "save") {
+      // the finished reading, gzipped, for the library
+      const t0 = performance.now();
+      const raw = bytesOf(driver.save_reading());
+      const bytes = await gzip(raw);
+      postMessage({ type: "reading", bytes, size: raw.length, version: driver.VERSION,
+                    seconds: (performance.now() - t0) / 1000 }, [bytes.buffer]);
+    } else if (msg.type === "cover") {
+      const bytes = bytesOf(driver.cover("/books/" + msg.name));
+      postMessage({ type: "cover", bytes }, [bytes.buffer]);
     } else if (msg.type === "chapter") {
       const html = driver.chapter(msg.name, say, !!msg.small);
       postMessage({ type: "page", name: msg.name, hash: msg.hash || "", html });

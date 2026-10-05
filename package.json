@@ -1,0 +1,11 @@
+{
+  "name": "chess-book-reader",
+  "private": true,
+  "description": "The Cloudflare site of the chess book reader: `npm install` brings wrangler, which runs and deploys it (docs/CLOUDFLARE.md).",
+  "scripts": {
+    "test:server": "node --test tests/server_test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}

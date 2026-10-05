@@ -37,6 +37,14 @@ often give each piece figurine as a private character code. The program
 learns from the book which code stands for which piece and reads the letter
 in its place (`chessbook/figurines.py`), so "Nxe6" is read as printed.
 
+Some converters write the book's title into its text. calibre printed the
+title of Tangborn's book inside a line of moves, glued to the move number
+and followed by a scrap of its header template ("10A Chess Opening for
+White: ... a Fischer Favoriterend:>.Nf1 Bd7"). The program takes the title
+that the PDF records out of a line where it stands glued to other words, so
+that the line reads "10.Nf1 Bd7"; a title page and a sentence that names the
+book keep it (`chessbook/pdftext.py`, `drop_injected`).
+
 ## Reading the boards
 
 Stage 3 reads every board picture without any labelling by hand. It finds the
@@ -125,12 +133,39 @@ with a local Pyodide folder (`CHESSBOOK_PYODIDE`) and the PyMuPDF and
 python-chess wheels for Pyodide (`CHESSBOOK_WHEELS`); `CHESSBOOK_APP_BOOK`
 names another book to read than the generated test book.
 
+## A private library on Cloudflare
+
+The same app, published on Cloudflare (`.github/workflows/cloudflare.yml`),
+keeps a library for one person behind Cloudflare Access. Its start page lists
+the books with a picture of the first page, the title, the page last read
+("Page 47 of 402") and the day the book was last opened; "Add a book" adds
+one, and "Remove" deletes one after a question. A book is still read in the
+browser, once; the site stores the PDF, the program's finished reading (for
+the Primer about 4 MB, compressed from 19 MB), the cover picture, the
+corrections, the selection and the place last read. Another device then
+opens the book from the stored reading without reading it again, with the
+corrections, at the page and move last read. A stored reading made by an
+older version of the program is replaced: the book is read again when it
+opens.
+
+Corrections, the selection and the place are written to the browser's
+storage as before and sent to the site a moment later; a change made offline
+is sent when the connection returns, and on opening a book the newer copy
+wins. The site only stores: `server/app.js` (Pages Functions, with an R2
+bucket for the files and a D1 database for the records, `server/schema.sql`)
+answers under `/api/`, and the app finds out from `/api/books` whether it
+runs there. Anywhere else (GitHub Pages, or the built site opened from a
+folder) it works as described above, and nothing leaves the device.
+`docs/CLOUDFLARE.md` gives the setup in plain steps; `tests/test_library.py`
+runs the server under `wrangler pages dev` and the library end to end
+(`tests/library_e2e.js`).
+
 ## Correcting what the program could not read
 
 Each chapter reader has a Review button. It lists, in page order, every place
 where the program is unsure: diagrams with doubtful squares or no reading,
-moves chosen between several readings, moves it could not read, and moves
-that it placed in no line. Above them it lists the piece symbols that the
+moves chosen between several readings, moves it could not read, moves that
+the book's text lacks, and moves that it placed in no line. Above them it lists the piece symbols that the
 text recognition could not name (in scanned books a figurine often becomes
 junk such as "tLl"), the most frequent in the book first. A click on an item
 shows it on the page and on the board, with the choices to correct it:
@@ -142,9 +177,27 @@ shows it on the page and on the board, with the choices to correct it:
   book's letters, which the program accepts only when it is legal there;
 - a sequence placed in no line: the move of the line it replaces, "Not a
   variation", or "Continue a line…";
+- a gap in the text: the moves the text lacks, one at a time (see below);
 - a piece symbol: one of the six pieces. The choice applies to every move of
   the book printed with that symbol (the eye on the page opens the same
   choice).
+
+A tap on a move that the program could not read (a red move, on the page or
+in the move list) opens its corrector at once, pencil or no pencil; on a
+phone it opens as a sheet above the bar at the foot of the screen. A tap on
+another move only chooses it.
+
+Where the book's text lacks a move (the move list shows "…" in its place),
+the program cannot follow the line, and the moves after it stay red: their
+position is unknown. The board then shows the last position the program
+knows, before the gap. A tap on the gap, or the button "Give Black's move
+10" in the corrector of a red move after it, opens the gap's corrector: it
+lists the legal moves of the position before the gap and takes a typed move.
+When the text lacks several moves, the corrector asks for them one at a
+time; "Remove the moves you gave" takes them back. The program never
+supplies such a move itself. Once the moves are given, the line reads on
+from them, and the moves after the gap decode; the Review list names every
+gap of the chapter.
 
 The pencil in the reader's top bar (and in the bar at the foot of a phone
 screen) corrects anything on the page, not only what the program doubts.

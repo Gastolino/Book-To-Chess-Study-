@@ -18,7 +18,7 @@ It writes output/<stem>/book.json and returns the same dict:
      "nodes": {id: {"san", "fen", "parent", "children", "number", "black",
                     "page", "bbox", "status", "raw", "comment", "main",
                     "assumed", "uci", "line", "alternatives"?, "reason"?, "key"?,
-                    "corrected"?}},
+                    "corrected"?, "gap"?, "fill"?, "missing"?}},
      "unattached": [{"page", "chapter", "text", "reason", "key", "bbox"}],
      "dismissed", "attached": [the same, for sequences the reader dismissed or placed],
      "symbols": {piece symbol: times printed}, "letters", "corrections",
@@ -101,7 +101,11 @@ run that continues the line ("1 ... fxe4" for 7...fxe4, "s" for 5) is read
 as the number the line expects. Where the
 numbering skips moves that the text lacks, the program does not invent them:
 the decoded part of the line ends with a "gap" node (status failed, no move,
-with a reason) and the rest of the printed score follows unread. A run that
+with a reason) and the rest of the printed score follows unread. The gap
+node's "gap" is the key of the first printed move after the gap, under which
+the reader may give the moves the text lacks (corrections.py "gaps"; "fill"
+holds those the line plays, "missing" the moves still lacking); the moves the
+reader gave are nodes with "corrected" "filled" and the same "gap". A run that
 starts later than move 1 without an earlier line to continue starts from the
 diagram the sentence names, or else the diagram printed before it (but see
 "How a line's starting position is chosen" below); the
@@ -237,6 +241,9 @@ STATUSES = ("ok", "guessed", "ambiguous", "failed", "inserted", "waiting")
 _LINE_RANK = {"ok": 0, "inserted": 1, "guessed": 1, "ambiguous": 2, "failed": 3}
 NOTE_BREAK = "¶"           # stands where main-font words were blanked from the notes
 WAIT_REASON = "needs the diagram position (Stage 3)"
+# what a node's "corrected" counts as in the counts of corrections
+CORRECTED_COUNTS = {"move": "moves", "symbol": "symbol_moves", "connected": "connections",
+                    "split": "splits", "filled": "gap_moves"}
 COMMENT_MAX = 2000              # characters of note text kept as one comment
 GAP_MAX = 8                     # plies a main run may skip and still continue its line
 
@@ -865,6 +872,8 @@ class _Decoder:
         self.seconds = 0.0
 
     def run(self, fen, tokens):
+        if self.fixed:
+            tokens = [self.named(t) for t in tokens]
         key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced, t.shape) for t in tokens))
         hit = self.memo.get(key)
         if hit is None:
@@ -877,6 +886,19 @@ class _Decoder:
             self.calls += 1
             self.memo[key] = hit
         return hit
+
+
+    def named(self, tok):
+        """A move whose piece symbol the reader named carries that piece as a
+        certain shape (Token.shape): the decoder reads it so even where the
+        book's glyph model knows a longer junk ("1:'!:" for the "1:'!" that was
+        named), and only illegal play overrules it."""
+        if tok.kind != "move":
+            return tok
+        piece = self.fixed.get(junk_prefix(tok.raw, self.letters))
+        if piece and piece in "KQRBN":
+            return replace(tok, shape=(piece, 1.0))
+        return tok
 
 
 def _vanished(d):
@@ -939,6 +961,7 @@ class _Builder:
         # assembled book alone (live, in the browser app) with the same result.
         self.fix = fixes.empty()
         self.fix_moves = fixes.TokenIndex({})
+        self.fix_gaps = fixes.TokenIndex({})
         self.fix_glyphs = {}
         self.fix_diagrams = {}
         self.node_by_key = {}           # token key -> node id
@@ -2584,6 +2607,11 @@ class _Builder:
         unknown."""
         if not self.replaying:
             L.ops.append(("gap", run, P, follow))
+        page = self.place_of(run.tokens[0], run.ci)[0]
+        key = self.key_of(run.moves[0], run.ci) if run.moves else None
+        fill, stale = self.fill_gap(L, run, P, page, key) if self.replaying else ([], "")
+        if L.next_ply >= P:
+            return                  # the reader gave every move the text lacks
         missing = P - L.next_ply
         what = _ply_words(L.next_ply)
         if missing > 1:
@@ -2593,7 +2621,12 @@ class _Builder:
                   f"The book's text lacks {what}; the line goes on from the diagram after it.")
         nid = self.new_node(L, parent=L.main_nodes[-1], number=L.next_ply // 2 + 1,
                             black=bool(L.next_ply % 2), status="failed", raw="", main=True,
-                            page=self.place_of(run.tokens[0], run.ci)[0], reason=reason)
+                            page=page, reason=(stale + " " + reason).strip())
+        if key:
+            # the reader can give the moves the text lacks (corrections.py "gaps")
+            self.nodes[nid]["gap"] = key
+            self.nodes[nid]["fill"] = fill
+            self.nodes[nid]["missing"] = missing
         L.main_nodes.append(nid)
         L.broken = True
         L.last_fen = None
@@ -2601,6 +2634,51 @@ class _Builder:
         L.next_ply = P
         if follow and not self.replaying:
             self.extend_or_defer(L, run)
+
+    def fill_gap(self, L, run, P, page, key):
+        """Play the moves the reader gave for a gap in the text (corrections.py
+        "gaps", stored under the key of the first printed move after the gap)
+        as main-line moves of L, when they are legal from the line's last
+        position. Returns (the moves played, the reason the stored moves were
+        ignored, or "")."""
+        if not key or not self.fix_gaps:
+            return [], ""
+        pg, x, y, raw = fixes.parse_key(key)
+        _, v = self.fix_gaps.find(pg, (x, y), raw)
+        if not v or not v.get("san"):
+            return [], ""
+        sans = list(v["san"])
+        if L.waiting or L.broken or not L.last_fen:
+            return [], ""
+        missing = P - L.next_ply
+        if len(sans) > missing:
+            return [], (f"You gave {len(sans)} moves here, but the text lacks only "
+                        f"{missing}, so the program ignores them.")
+        board = chess.Board(L.last_fen)
+        moves = []
+        for san in sans:
+            try:
+                mv = board.parse_san(san)
+            except ValueError:
+                side = "Black" if board.turn == chess.BLACK else "White"
+                return [], (f"The move you gave here, {san}, is not a legal move for {side} in "
+                            "this position, so the program ignores the moves you gave.")
+            moves.append((board.copy(), mv))
+            board.push(mv)
+        played = []
+        for before, mv in moves:
+            after = before.copy()
+            after.push(mv)
+            nid = self.new_node(L, parent=L.main_nodes[-1], san=before.san(mv), fen=after.fen(),
+                                number=before.fullmove_number, black=before.turn == chess.BLACK,
+                                status="ok", raw="", main=True, uci=mv.uci(), page=page,
+                                corrected="filled", gap=key)
+            L.main_nodes.append(nid)
+            L.ply_node[L.next_ply] = nid
+            L.next_ply += 1
+            L.last_fen = after.fen()
+            played.append(before.san(mv))
+        return played, ""
 
     def diagram_between(self, L, run):
         return any(L.last_token_end < off < run.start for off, _ in self.diagram_events)
@@ -2762,7 +2840,7 @@ class _Builder:
                 self.nodes[nid]["alternatives"] = list(d.alternatives[:4])
             if tok.forced:
                 self.nodes[nid]["corrected"] = "move"
-            elif d.glyph and d.glyph in self.fix_glyphs:
+            elif self.named_piece(tok, d):
                 self.nodes[nid]["corrected"] = "symbol"
         else:
             assumed = d.alternatives[0] if d.alternatives else None
@@ -4049,6 +4127,16 @@ class _Builder:
                               if box else None, "bbox": box, "_src": L.id,
                               "node": nodes[0] if nodes else None})
 
+    def named_piece(self, tok, d):
+        """True when the move reads with the piece the reader named for its
+        symbol (the decoder's glyph, or the symbol the page shows for it)."""
+        if d.glyph and d.glyph in self.fix_glyphs:
+            return True
+        piece = self.fix_glyphs.get(junk_prefix(tok.raw, self.dec.letters))
+        if not piece or not d.san:
+            return False
+        return d.san[0] == piece if piece in "KQRBN" else d.san[0] not in "KQRBNO"
+
     def shown_move(self, raw):
         """A printed move as the reader would write it, where it can be read."""
         sym = junk_prefix(raw, self.dec.letters)
@@ -4143,6 +4231,7 @@ class _Builder:
         old = self.fix
         self.fix = fix
         self.fix_moves = fixes.TokenIndex(fix["moves"])
+        self.fix_gaps = fixes.TokenIndex(fix["gaps"])
         self.fix_glyphs = dict(fix["glyphs"])
         self.fix_diagrams = {did: v["fen"] for did, v in fix["diagrams"].items()}
         self.dec = self.decoder_for(self.fix_glyphs)
@@ -4157,8 +4246,8 @@ class _Builder:
         removed = [lid for lid in prev if lid not in sigs]
         # which lines the changed moves, symbols and positions touch
         touched = set()
-        changed_keys = {k for k in set(old["moves"]) | set(fix["moves"])
-                        if old["moves"].get(k) != fix["moves"].get(k)}
+        changed_keys = {k for part in ("moves", "gaps") for k in set(old[part]) | set(fix[part])
+                        if old[part].get(k) != fix[part].get(k)}
         changed_glyphs = {g for g in set(old["glyphs"]) | set(fix["glyphs"])
                           if old["glyphs"].get(g) != fix["glyphs"].get(g)}
         changed_diagrams = {d for d in set(old["diagrams"]) | set(fix["diagrams"])
@@ -4823,8 +4912,7 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
     for u in b.unattached:
         counts[u["chapter"]]["unattached"] += 1
     for n in b.nodes.values():
-        what = {"move": "moves", "symbol": "symbol_moves", "connected": "connections",
-                "split": "splits"}.get(n.get("corrected"))
+        what = CORRECTED_COUNTS.get(n.get("corrected"))
         if what:
             counts[line_chapter[n["line"]]]["corrected"][what] += 1
     for u in b.dismissed + b.attached:
@@ -4896,7 +4984,8 @@ def _empty_counts():
     return {"lines": 0, "games": 0, "fragments": 0, "line_status": Counter(),
             "moves": Counter(), "variations": 0, "variation_moves": 0, "unattached": 0,
             "waiting": 0, "corrected": Counter({"moves": 0, "symbol_moves": 0, "diagrams": 0,
-                                                "sequences": 0, "connections": 0, "splits": 0})}
+                                                "sequences": 0, "connections": 0, "splits": 0,
+                                                "gap_moves": 0})}
 
 
 def _public(entry):

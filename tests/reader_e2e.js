@@ -258,7 +258,9 @@ async function openChapterOf(page, p) {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: path.join(screens, "reader_1280.png") });
     out.screenshots.push("reader_1280.png");
-    // on a page that is left out, ticking the diagram uses the page again
+    // on a page that is left out, ticking the diagram uses the page again ("Use this page"
+    // belongs to reading mode, with the other controls of what the program reads)
+    await page.click("#showread");
     await page.uncheck("#usepage");
     const offState = await page.evaluate(() => ({ diag: document.getElementById("usediag").checked,
       note: document.getElementById("dpageoff").textContent }));
@@ -354,8 +356,17 @@ async function openChapterOf(page, p) {
     await mark.scrollIntoViewIfNeeded();
     const y0 = await page.evaluate(() => window.scrollY);
     await mark.click();
-    const y1 = await page.evaluate(() => window.scrollY);
-    check("tapping a box does not move the window", Math.abs(y1 - y0) < 2, { y0, y1 });
+    await page.waitForTimeout(400);
+    // the page stays in view: the window moves at most so far that the tapped box
+    // stays above the bar, which now holds the small board, and never down to the panel
+    const tapped = await page.evaluate((id) => {
+      const r = document.querySelector("#ov .mark[data-node='" + id + "']").getBoundingClientRect();
+      const bar = document.getElementById("mbar").offsetHeight;
+      return { y1: window.scrollY, top: r.top, bottom: r.bottom, free: window.innerHeight - bar,
+               panel: document.getElementById("panel").getBoundingClientRect().top - window.innerHeight };
+    }, target);
+    check("tapping a box keeps it in view above the bar, on the page",
+          tapped.top >= 0 && tapped.bottom <= tapped.free && tapped.panel > 0, { y0, ...tapped });
     const boardW = await page.evaluate(() => [document.querySelector("#board svg").getBoundingClientRect().width,
       document.documentElement.clientWidth]);
     check("the board is as wide as the page at 390 px, within 16 px margins",
@@ -403,6 +414,7 @@ async function openChapterOf(page, p) {
           selObj.pages.exclude.some(([a, b]) => a <= PAGE && PAGE <= b), selObj.pages);
     await page.goto("file://" + path.resolve(dir, out.chapter) + "#page=" + PAGE);
     await page.waitForFunction(() => window.readerState && window.readerState.page !== null);
+    if (!(await page.evaluate(() => document.body.classList.contains("reading")))) await page.click("#showread");
     const offShown = await page.evaluate(() => !document.getElementById("usepage").checked &&
       document.getElementById("offpage").classList.contains("on") &&
       document.getElementById("offpage").offsetHeight > 0);

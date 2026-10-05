@@ -114,6 +114,29 @@ def test_a_diagram_correction_reaches_the_open_chapter(tmp_path, monkeypatch):
     assert "6" not in out["patch"]["pages"]
 
 
+def test_a_gap_correction_reaches_the_open_chapter(tmp_path, monkeypatch):
+    """The worker's driver applies the moves the reader gave for a gap in the
+    text at once: the patch holds them, and the moves after the gap decode."""
+    import json
+    driver = _driver(tmp_path, monkeypatch)
+    from test_assemble import make_book
+    from test_corrections import GAPPED, SANS
+    pdf = make_book(tmp_path / "gapped.pdf", game=GAPPED)
+    driver.process(str(pdf), lambda *_: None)
+    name = next(c["file"] for c in driver.STATE["book"]["chapters"] if c["start"] <= 4 <= c["end"])
+    driver.chapter(name, lambda *_: None)
+    key = next(n["gap"] for n in driver.STATE["book"]["nodes"].values() if n.get("gap") and not n["san"])
+    out = json.loads(driver.correct(json.dumps({"version": 1, "gaps": {key: {"san": ["Nxd5", "Nxf7"]}}}), name))
+    nodes = out["patch"]["nodes"]
+    assert [n["san"] for n in nodes.values() if n.get("corrected") == "filled"] == ["Nxd5", "Nxf7"]
+    after = next(n for n in nodes.values() if n.get("key") == key)
+    assert after["san"] == "Kxf7" and after["status"] == "ok"
+    assert out["patch"]["corrections"]["gaps"] == {key: {"san": ["Nxd5", "Nxf7"]}}
+    game = [n["san"] for n in driver.STATE["book"]["nodes"].values()
+            if n["main"] and n["san"] and n["page"] == 4]
+    assert game[:len(SANS)] == SANS
+
+
 GPA = ROOT / "corpus" / "gpa.pdf"
 
 
@@ -151,3 +174,15 @@ def test_read_again_drops_a_selection_the_browser_no_longer_holds(tmp_path, monk
     assert selection.selection_path(pdf, tmp_path / "cfg").exists()
     driver.process(str(pdf), lambda *_: None, None)
     assert not selection.selection_path(pdf, tmp_path / "cfg").exists()
+
+
+def test_the_library_joins_only_when_the_site_answers(tmp_path):
+    """The shell loads web/library.js and asks it to start; the library turns
+    itself on only when /api/books answers with a list of books (the
+    Cloudflare site), so the app on GitHub Pages works as before."""
+    page = build(tmp_path)
+    assert '<script src="library.js"></script>' in page and "LIB.start();" in page
+    assert "if (LIB.message(m)) return;" in page and "if (LIB.on) { LIB.add(file); return; }" in page
+    lib = (tmp_path / "site" / "library.js").read_text(encoding="utf-8")
+    assert 'fetch("api/books"' in lib
+    assert "if (!data || !Array.isArray(data.books)) return false;" in lib

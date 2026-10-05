@@ -1,6 +1,8 @@
 """Build the browser app: a static site where a reader drops a chess book PDF
 and reads it beside a live board. Every book is processed on the reader's own
-device; nothing is uploaded anywhere.
+device. Served by the Cloudflare site (wrangler.toml, docs/CLOUDFLARE.md), the
+start page is the user's library (web/library.js), which stores the books and
+their readings there; served anywhere else, nothing is uploaded anywhere.
 
 Usage:
     python3 tools/build_web.py [--out output/site] [--local PYODIDE_DIR]
@@ -66,6 +68,34 @@ body{margin:0;display:flex;flex-direction:column}
 #top button:hover{text-decoration:underline}
 #top .gap{flex:1}
 #top button[hidden]{display:none}
+/* the library (web/library.js), when the Cloudflare site serves the app */
+body.library #start{max-width:760px;padding-top:40px}
+#lib{margin-top:24px}
+#books{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.book{display:flex;flex-wrap:wrap;align-items:center;gap:0 16px;padding:12px 0;
+  border-bottom:1px solid var(--line)}
+.book .open{flex:1;min-width:0;display:flex;align-items:center;gap:14px;background:none;border:0;
+  border-radius:0;padding:0;margin:0;text-align:left;cursor:pointer;color:var(--fg);font:inherit}
+.book .cover{flex:none;width:44px;height:62px;border:1px solid var(--line);overflow:hidden}
+.book .cover img{display:block;width:100%;height:100%;object-fit:cover}
+.book .words{min-width:0;display:flex;flex-direction:column;gap:2px}
+.book .title{font-size:17px;font-weight:500;line-height:1.35;letter-spacing:-0.01em;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.book .meta{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.book .open:hover .title{color:var(--accent)}
+.book .remove{font-size:13px;color:var(--muted)}
+.book .confirm{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 20px;
+  margin-top:10px;font-size:13px}
+.book .confirm span{flex-basis:100%}
+.book .confirm .yes{color:var(--fail)}
+#libempty{color:var(--muted);padding:16px 0;border-bottom:1px solid var(--line)}
+body.library #drop{margin-top:0;border-top:0;padding:28px 0;text-align:left}
+body.library #drop .small{max-width:46em}
+@media (min-width:900px){
+  .book{padding:16px 0}
+  .book .cover{width:56px;height:78px}
+  .book .open{gap:20px}
+}
 </style></head>
 <body>
 <div id="top"><span id="took"></span><span class="gap"></span>
@@ -74,9 +104,16 @@ body{margin:0;display:flex;flex-direction:column}
 <span id="note" role="status"></span><div id="topbar"><i></i></div></div>
 <main id="start">
 <h1>Chess Book Reader</h1>
+<div id="intro">
 <p>This page turns a chess book in PDF form into a reader: the book's pages beside a
 live board that follows the moves and variations.</p>
 <p>Your book stays on this device. The page reads it here and sends it nowhere.</p>
+</div>
+<section id="lib" hidden aria-label="Your library">
+<ul id="books"></ul>
+<p id="libempty" hidden>Your library holds no books yet. Add a chess book below: the program
+reads it once, and every device you sign in on opens it at once.</p>
+</section>
 <div id="drop" tabindex="0" role="button" aria-label="Choose a chess book PDF">
 <div class="big">Drop a chess book here</div>
 <div class="small">or click to choose a PDF file</div></div>
@@ -86,11 +123,12 @@ start at once.</div>
 <div id="bar" class="on"><i></i></div>
 </main>
 <iframe id="view" title="Book reader"></iframe>
+<script src="library.js"></script>
 <script>
 const CFG = __CFG__;
 const $ = (id) => document.getElementById(id);
 const worker = new Worker("worker.js");
-let ready = false, busy = false, current = null, lastFile = null;
+let ready = false, busy = false, current = null, lastFile = null, lastName = "";
 // While the worker reads the book, the reader can already read it: the top bar
 // says how far the reading has come, and the thin line under it moves.
 let loading = false;
@@ -131,18 +169,22 @@ function show(name, hash, htmlText) {
 }
 worker.onmessage = (e) => {
   const m = e.data;
+  // the library's own messages (the stored reading, the cover) end here
+  if (LIB.message(m)) return;
   if (m.type === "progress") status(m.text);
   else if (m.type === "ready") {
     ready = true;
-    $("bar").classList.remove("on");
-    status(m.boards === false ? "Ready. Choose a book. This browser could not load board reading, so " +
-      "the program reads only the diagrams that the book prints in a chess font." : "Ready. Choose a book.");
+    if (!busy) $("bar").classList.remove("on");
+    const choose = LIB.on ? "Ready. Open a book or add one." : "Ready. Choose a book.";
+    if (!busy) status(m.boards === false ? choose + " This browser could not load board reading, so " +
+      "the program reads only the diagrams that the book prints in a chess font." : choose);
   } else if (m.type === "index") {
     // the contents, as soon as the chapters are known: the reading goes on
+    // (a book of the library opened from its stored reading is read already)
     busy = false;
-    loading = true;
+    loading = !m.restored;
     $("bar").classList.remove("on");
-    $("took").textContent = "Reading the book";
+    $("took").textContent = m.restored ? LIB.openedIn() : "Reading the book";
     openChapter = "index.html";
     show("index.html", "", m.html);
     working(false);
@@ -152,7 +194,7 @@ worker.onmessage = (e) => {
     if (openChapter === "index.html") toView({ thumbs: m.thumbs });
   } else if (m.type === "done") {
     loading = false;
-    $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
+    if (!m.restored) $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
     working(false);
     if (m.html && openChapter === "index.html") show("index.html", "", m.html);
   } else if (m.type === "reopen") {
@@ -176,7 +218,13 @@ worker.onmessage = (e) => {
       return;
     }
     busy = false;
-    if (m.during === "process") { loading = false; working(false); }
+    if (m.during === "process" || m.during === "restore") { loading = false; working(false); }
+    if (m.during === "restore" && lastFile) {
+      // a stored reading that cannot be opened: the book is read instead
+      status("The stored reading could not be opened (" + m.text + "). The program reads the book again.");
+      read(lastFile, lastName);
+      return;
+    }
     status("Something went wrong: " + m.text, true);
   }
 };
@@ -218,6 +266,8 @@ function patched(m) {
   } else status("");
 }
 window.addEventListener("message", (e) => {
+  LIB.fromReader(e.data);
+  if (e.data && e.data.position) return;
   if (e.data && e.data.open === "index.html") openChapter = "index.html";
   if (e.data && e.data.correct) {
     openChapter = e.data.chapter;
@@ -235,17 +285,25 @@ window.addEventListener("message", (e) => {
     : { type: "chapter", name: e.data.open, hash: e.data.hash,
         small: window.matchMedia("(max-width: 700px)").matches });
 });
+// A book the user chose: added to the library first when the site keeps one.
 async function take(file) {
   if (!file || busy) return;
   if (!/\\.pdf$/i.test(file.name)) { status("Please choose a PDF file.", true); return; }
+  if (LIB.on) { LIB.add(file); return; }
+  read(file, file.name);
+}
+// The program reads the book (file, a File or Blob, named fileName).
+async function read(file, fileName) {
+  if (!file || busy) return;
   if (!ready) { status("The reader is still starting. Try again in a moment."); return; }
   busy = true;
   lastFile = file;
+  lastName = fileName;
   $("again").hidden = true;
   $("bar").classList.add("on");
-  status("Reading " + file.name);
+  status("Reading " + fileName);
   const bytes = await file.arrayBuffer();
-  const name = file.name.replace(/[^\\w.\\-]+/g, "_");
+  const name = fileName.replace(/[^\\w.\\-]+/g, "_");
   worker.postMessage({ type: "process", name, bytes, selection: storedSelection(name),
     corrections: storedCorrections(name) }, [bytes]);
 }
@@ -261,7 +319,7 @@ $("another").addEventListener("click", () => location.reload());
 $("again").addEventListener("click", () => {
   if (!lastFile || busy) return;
   $("start").style.display = "block"; $("view").style.display = "none"; $("top").style.display = "none";
-  take(lastFile);
+  read(lastFile, lastName);
 });
 // The reader keeps a changed selection under "chessbook-selection:<file>:<pages>".
 function storedSelection(name) {
@@ -290,6 +348,8 @@ function storedCorrections(name) {
   return null;
 }
 worker.postMessage({ type: "init", cfg: CFG });
+// served by the Cloudflare site, the start page becomes the library
+LIB.start();
 </script>
 </body></html>
 """
@@ -320,6 +380,7 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     (out / "wheels").mkdir(exist_ok=True)
     shutil.copyfile(ROOT / "web" / "worker.js", out / "worker.js")
+    shutil.copyfile(ROOT / "web" / "library.js", out / "library.js")
     app_zip(out / "app.zip")
     shutil.copyfile(args.chess, out / "wheels" / args.chess.name)
     wheels = ["wheels/" + args.chess.name]
