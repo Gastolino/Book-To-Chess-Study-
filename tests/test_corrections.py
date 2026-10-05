@@ -390,3 +390,17 @@ def test_primer_correcting_a_failed_move_decodes_the_moves_after_it(tmp_path):
     b = book["stats"]["moves"]
     decoded = lambda s: s["ok"] + s["guessed"] + s["ambiguous"]  # noqa: E731
     assert decoded(m) >= decoded(b) + 3 and m["failed"] < b["failed"]
+
+
+def test_a_named_symbol_binds_its_moves_as_a_certain_shape():
+    # the reader named "1:'!"; the book's glyph model may know the longer junk "1:'!:"
+    # of "1:'!:el", but the named piece wins wherever it is legal
+    import chess
+    from chessbook.assemble import _Decoder
+    from chessbook.movetext import GlyphModel, tokenize
+    dec = _Decoder(GlyphModel(), None, {"1:'!": "N"})
+    tok = tokenize("1.1:'!:el")[1]
+    assert dec.named(tok).shape == ("N", 1.0)
+    assert dec.named(tokenize("1.e4")[1]).shape is None
+    out = dec.run("4k3/8/8/8/8/8/8/R3K1N1 w - - 0 1", tokenize("1.1:'!:f3"))
+    assert [d.san for d in out] == ["Nf3"]

@@ -263,7 +263,7 @@ CHAPTER_CSS = r"""
 .diagnote{margin:0 0 16px}
 .provnote{display:none;margin:0 0 16px}
 .reading.first .provnote{display:block}
-.key{display:grid;margin:0 0 16px}
+.key{display:grid;margin:16px 0 0}
 .key > *{grid-area:1/1}
 .legend{display:none;flex-wrap:wrap;align-content:start;gap:4px 20px}
 .reading .legend{display:flex}
@@ -1527,6 +1527,10 @@ __PGNBTN__
 <p class="offpage small" id="offpage"></p>
 <p class="diagnote small muted" id="diagnote"></p>
 <p class="provnote small muted" id="provnote">The program is still reading the book. The moves of this chapter are a first reading, made with what the program had learnt when it reached them. When it has read the whole book, the final reading replaces them here, and the page and the chosen move stay where they are.</p>
+<div class="pagescroll" id="pagescroll">
+<div class="pagebox" id="pagebox"><img class="scan" id="pageimg" alt=""><div class="ov" id="ov"></div>
+<ul class="symmenu small" id="symmenu" role="menu" hidden></ul></div>
+</div>
 <div class="key small muted">
 <div class="help"><p class="mouse">A click on a move or a diagram shows it in the panel. The left and right arrow keys step through the moves, the up and down arrow keys switch between the moves the book gives at a branch, and Page Up and Page Down turn the pages.</p>
 <p class="touch">A tap on a move or a diagram shows it on the board. A swipe across the page turns it.</p></div>
@@ -1541,10 +1545,6 @@ __PGNBTN__
 <span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
 </div>
-</div>
-<div class="pagescroll" id="pagescroll">
-<div class="pagebox" id="pagebox"><img class="scan" id="pageimg" alt=""><div class="ov" id="ov"></div>
-<ul class="symmenu small" id="symmenu" role="menu" hidden></ul></div>
 </div>
 <div class="pagefoot small">
 <div class="onpage" aria-label="Lines on this page"><span class="lab">On this page</span><span class="onlines" id="chips"></span></div>
