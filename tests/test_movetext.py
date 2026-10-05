@@ -108,6 +108,30 @@ def test_number_one_merged_with_rook_glyph():
     assert [k for k, _ in kinds("3.Kf2 U:g6")] == ["number", "move", "move"]
 
 
+def test_number_glued_to_rook_glyph_starts_a_run():
+    # "38J:k7!" is 38.Rc7!: the dot merged into the rook glyph, the c joined to
+    # its stroke as a "k"
+    assert kinds("38J:k7! gal")[:2] == [("number", "38"), ("move", "J:k7!")]
+    assert sans("1.\x1dh7 Kd8 2.J:k7", chess.Board("4k3/8/8/8/8/8/8/4K2R w - - 0 1"),
+                glyphs=GlyphModel(seed=True)) == ["Rh7", "Kd8", "Rc7"]
+    # a "k" within a word is no file
+    assert kinds("the bk7 and")[1] == ("other", "bk7")
+
+
+def test_check_sign_printed_apart_from_its_move():
+    # "'!Wfl t" is Qf1+ with the check sign set apart: the move is not lost
+    assert moves("23. \x14d3 '!Wfl t 24. \x14c2 J.fl") == ["\x14d3", "'!Wfl t", "\x14c2", "J.fl"]
+    # a word of prose before a "t" stays prose
+    assert moves("2.Nf3 but t is") == ["Nf3"]
+
+
+def test_two_moves_glued_after_a_one_character_glyph():
+    assert moves("4.qa4ltlf6 5.0-0") == ["qa4", "ltlf6", "0-0"]
+    assert moves("1.e4 e5 2.Nf3Nc6") == ["e4", "e5", "Nf3", "Nc6"]
+    # a square after a square is one move in long notation
+    assert moves("1.e2e4 e7e5 2.Ng1f3 Qd8h4+") == ["e2e4", "e7e5", "Ng1f3", "Qd8h4+"]
+
+
 def test_glyph_dot_after_number():
     # "3 . .ic4": the second dot belongs to the bishop glyph ".i"
     toks = tokenize("3 . .ic4 .ig4")
@@ -255,6 +279,21 @@ def test_decode_primer_line_without_any_glyph_knowledge():
 def test_decode_ocr_digits_and_squares():
     text = "1.e4 e5 2.ti)f3 ti)c6 3.i.c4 i.c5 4.0-0 ti)f6 5.J3el 0-0 6.c3 d6 7.h3 h6 8.d4 i.h6"
     assert sans(text, glyphs=GlyphModel(seed=True))[8] == "Re1"
+
+
+def test_fl_ligature_reads_as_f2_when_the_moves_need_it():
+    # OCR reads "f2" as the "fl" ligature: "i>fl" is Kf1 or Kf2, and the
+    # following moves decide (here 3.Kf3 needs the king on f2)
+    b = chess.Board("8/8/8/4k3/8/8/3Q4/4K3 w - - 0 1")
+    text = "1.\x1bd7 <it>e4 2.i>fl i>e5 3.i>f3 <it>f6 4.i>f4"
+    assert sans(text, b, glyphs=GlyphModel(seed=True)) == [
+        "Qd7", "Ke4", "Kf2", "Ke5", "Kf3", "Kf6", "Kf4"]
+    # an "l" of any other file is no 2: "el" is e1 or nothing
+    assert all("e2" not in p["squares"] for p in parse_move_text("Rel"))
+    assert any("f2" in p["squares"] for p in parse_move_text("Rfl"))
+    # when both readings are legal and nothing decides, "fl" is f1
+    b = chess.Board("4k3/8/8/8/8/8/8/4K2R w - - 0 1")
+    assert sans("1.\x1dfl Kd7", b, glyphs=GlyphModel(seed=True)) == ["Rf1", "Kd7"]
 
 
 def test_castling_and_promotion():
