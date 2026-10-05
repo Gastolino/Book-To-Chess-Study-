@@ -322,6 +322,10 @@ class Job:
         kind, info = ev
         c = self.ctx
         out = []
+        if c.get("shapes") is not None and "figurines read" not in self.timeline:
+            # the figurines of the moves were read by their shape (figshapes.py)
+            self.timeline["figurines read"] = round(time.perf_counter() - self.t0, 1)
+            self.timeline["figurines named"] = len(c["shapes"].reading())
         if kind == "structure":
             self.plain = self._plain_book()
             self.timeline["contents"] = round(time.perf_counter() - self.t0, 1)
