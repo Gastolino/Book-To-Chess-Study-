@@ -226,7 +226,8 @@ from . import selection as sel
 from .movetext import GlyphModel, Token, clean_run, decode, find_sequences, numbering_counts
 from .movetext import DOTLESS_MIN, DOTLESS_SHARE
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
-from .movetext import CAPTURE_CHARS, _ocr_digit_slip, junk_prefix
+from .movetext import CAPTURE_CHARS, _ocr_digit_slip, junk_prefix, letter_symbol, symbol_span
+from .movetext import _resolve_letters, SHAPE_KNOWN
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -864,7 +865,7 @@ class _Decoder:
         self.seconds = 0.0
 
     def run(self, fen, tokens):
-        key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced) for t in tokens))
+        key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced, t.shape) for t in tokens))
         hit = self.memo.get(key)
         if hit is None:
             t0 = time.perf_counter()
@@ -901,8 +902,14 @@ def _fit(decs):
 
 class _Builder:
     def __init__(self, doc, fonts, chapters, diagrams, selection, decoder, diagram_fens=None,
-                 dotless=False, readings=None, fix=None):
+                 dotless=False, readings=None, fix=None, shapes=None):
         self.doc, self.fonts, self.chapters = doc, fonts, chapters
+        # figurine shapes (figshapes.py): where each junk piece symbol stands,
+        # and the piece read from its picture
+        self.spots = {}                 # token key -> (page, box of the symbol, symbol)
+        self.move_tokens = 0
+        self.shapes = shapes or {}      # token key -> (piece letter, confidence)
+        self.letter_table = None
         self.dotless = dotless          # the book prints move numbers without a dot
         self.diagrams = diagrams
         self.selection = selection
@@ -985,6 +992,10 @@ class _Builder:
             return None, None
         m = {"bbox": box, "node": node, "status": status, "raw": tok.raw, "line": line_id,
              "_o": tok.start, "key": fixes.token_key(page, box, tok.raw)}
+        if tok.shape and tok.shape[1] >= SHAPE_KNOWN and node is not None and \
+                (self.nodes[node].get("san") or "")[:1] == tok.shape[0]:
+            # the picture of its figurine names the piece the move was read as
+            m["known"] = True
         if reason:
             m["reason"] = reason
         if line_id:
@@ -996,6 +1007,33 @@ class _Builder:
                 m["corrected"] = n["corrected"]
         self.marks[page].append(m)
         return page, box
+
+    def note_spot(self, tok):
+        """Note where the junk piece symbol of a move token stands on its page
+        (figshapes.py), and give the token the piece that the picture of its
+        figurine was read as."""
+        self.move_tokens += 1
+        if self.letter_table is None:
+            self.letter_table = _resolve_letters(self.dec.decode_letters)
+        sym = junk_prefix(tok.raw, self.dec.decode_letters)
+        if not sym or sym in FIGURINES or letter_symbol(sym, self.letter_table):
+            return
+        key = self.key_of(tok)
+        if key is None:
+            return
+        span = symbol_span(tok.raw, sym)
+        if span is not None:
+            page, box = self.st.locate(tok.start + span[0], tok.start + span[1])
+            # the square after the symbol must have room of its own: a text
+            # layer that gives one character the whole word's box says
+            # nothing of where the figurine stands
+            _, rest = self.st.locate(tok.start + span[1], tok.end)
+            if box is not None and rest is not None and box[2] > box[0] and \
+                    rest[2] - rest[0] > 0.3 * (box[3] - box[1]):
+                self.spots[key] = (page, box, sym)
+        shape = self.shapes.get(key)
+        if shape is not None:
+            tok.shape = shape
 
     def forced(self, run):
         """The run with the moves the reader corrected carrying the move they
@@ -1382,6 +1420,8 @@ class _Builder:
             r.text = re.sub(r"[ \n\r]+", " ", st.orig_text[r.start:r.end]).strip()
             for t in r.tokens:
                 self.place_of(t)
+                if t.kind == "move":
+                    self.note_spot(t)
         self.all_runs = runs
         self.run_starts = [r.start for r in runs]
         items = [(off, 0, order, kind, payload) for off, order, kind, payload in st.events]
@@ -4243,14 +4283,16 @@ CHAPTER_SLICE = 0.5     # seconds of a chapter's assembly per step of build_step
 
 
 def _assemble_steps(doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens,
-                    only=None, dotless=False, readings=None, ctx=None, pass_no=None):
+                    only=None, dotless=False, readings=None, ctx=None, pass_no=None, shapes=None):
     """_assemble in steps: yields ("chapter", (pass_no, chapter index)) after
     each chapter, with ctx["builder"] the builder at work, and when ctx is
     given, ("part", (pass_no, chapter index)) inside a chapter about every
-    CHAPTER_SLICE seconds. Returns (builder, decoder, seconds spent in the
+    CHAPTER_SLICE seconds. shapes gives the pieces read from the figurines'
+    pictures (figshapes.py). Returns (builder, decoder, seconds spent in the
     pass)."""
     dec = _Decoder(glyphs, letters)
-    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens, dotless, readings)
+    b = _Builder(doc, fonts, chapters, diagrams, selection, dec, diagram_fens, dotless, readings,
+                 shapes=shapes)
     if ctx is not None:
         ctx["builder"] = b
     seconds = 0.0
@@ -4305,6 +4347,53 @@ def read_boards_steps(doc, diagrams, known=None, say=None, batch=BOARD_BATCH):
     return out
 
 
+def read_shapes_steps(doc, builder, say=None, old=None):
+    """Read the figurines of the book's moves by their shape (figshapes.py):
+    cut them out where builder found them (unless old, a figshapes.Shapes of
+    the same book, holds the cuts already), group them and name the groups
+    from the moves builder read with certainty. Yields ("shapes", (pages
+    done, pages)) while cutting; returns the Shapes, or None when the book
+    prints its pieces as letters or figurine characters, or when OpenCV is
+    missing."""
+    try:
+        from . import figshapes
+    except ImportError as exc:          # pragma: no cover - depends on the platform
+        (say or (lambda *_: None))(f"figurine shapes skipped: {exc}")
+        return None
+    spots = builder.spots
+    if not figshapes.worth_reading(spots, builder.move_tokens):
+        return None
+    t = time.perf_counter()
+    if old is None:
+        masks = yield from figshapes.cut_steps(doc, spots)
+        shapes = figshapes.Shapes(masks)
+    else:
+        shapes = old
+    shapes.name(figshapes.votes_from_nodes(shapes.keys, builder.nodes, builder.node_by_key))
+    if say:
+        named = shapes.reading()
+        sure = sum(1 for v in named.values() if v[1] >= figshapes.CONFIDENT)
+        say(f"figurines read in {time.perf_counter() - t:.1f} s: {len(spots)} symbols, "
+            f"{len(shapes.keys)} cut out, {len(named)} named ({sure} surely), "
+            f"{len(shapes.groups)} groups")
+    return shapes
+
+
+def shape_disagreements(shapes, spots, glyphs):
+    """[(symbol, piece the glyph model reads, piece the shape shows, times)]
+    for the symbols whose learnt reading the figurines' pictures contradict."""
+    out = Counter()
+    for key, (piece, conf) in shapes.reading().items():
+        sym = spots.get(key, (None, None, None))[2]
+        if not sym or not glyphs.strong(sym):
+            continue
+        pri = glyphs.prior(sym)
+        learnt = max(pri, key=pri.get)
+        if learnt != piece:
+            out[(sym, learnt, piece)] += 1
+    return [(a, b, c, n) for (a, b, c), n in out.most_common()]
+
+
 def usable_fens(readings):
     """The FENs of readings that make a position with one king of each colour."""
     out = {}
@@ -4320,7 +4409,7 @@ def usable_fens(readings):
 
 def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3,
                diagram_fens=None, write=True, progress=None, boards=True, readings=None,
-               corrections=None, state=None):
+               corrections=None, state=None, shapes=True):
     """Assemble the whole book and write output/<stem>/book.json.
 
     letters names a movetext.LETTER_SETS entry (default English; figurines are
@@ -4330,7 +4419,10 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     pictures after the first pass, using the positions that the first pass
     decoded at diagrams as known examples, and the later passes use its FENs.
     passes is the number of assembly passes (the glyph model of each pass is
-    learnt from the runs the previous pass decoded cleanly). readings may give
+    learnt from the runs the previous pass decoded cleanly). When shapes is
+    true, the figurines printed as OCR junk in the moves are read by their
+    pictures after each pass but the last (figshapes.py, read_shapes_steps),
+    and the later passes use the pieces they show. readings may give
     Stage 3's readings (doubtful squares, sides to move) of the diagrams whose
     FENs diagram_fens supplies. corrections holds the reader's corrections
     (corrections.py); by default they are read from
@@ -4342,7 +4434,7 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     build_steps does the same work in small steps (the browser app).
     """
     book = _drain(build_steps(pdf_path, output_dir, books_dir, letters, passes, diagram_fens,
-                              progress, boards, readings, corrections, state))
+                              progress, boards, readings, corrections, state, shapes=shapes))
     if write:
         out = Path(output_dir or OUTPUT_DIR) / Path(pdf_path).stem / "book.json"
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -4353,7 +4445,7 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
 
 def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3,
                 diagram_fens=None, progress=None, boards=True, readings=None,
-                corrections=None, state=None, ctx=None):
+                corrections=None, state=None, ctx=None, shapes=True):
     """build_book in small steps, for a caller with other work to do between
     them (the browser app reads chapters while the book is assembled, see
     progressive.py). A generator: it yields (event, info) after each step
@@ -4362,7 +4454,8 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
     ((pages inspected, pages)), "diagrams" (Stage 1 is complete), "chapter"
     ((pass, chapter index), after each chapter of each assembly pass), "part"
     (the same, inside a chapter, about every CHAPTER_SLICE seconds),
-    "boards" ((pictures read, pictures)), "pass" (pass number, after each
+    "boards" ((pictures read, pictures)), "shapes" ((pages of figurines
+    cut out, pages), see read_shapes_steps), "pass" (pass number, after each
     pass) and "restructure" (the figurines were learnt and the book is read
     again from the start, its chapters perhaps changed).
 
@@ -4370,7 +4463,8 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
     structure, chapters, numbering, the Stage 1 findings so far
     ("stage1_found", page index -> stage1_inspect.inspect_page) or the
     diagrams once complete, selection, text_fens, diagram_fens, readings,
-    glyphs (the glyph model of the pass at work), builder and pass_no. The
+    glyphs (the glyph model of the pass at work), shapes (the figurines read
+    by their shape, a figshapes.Shapes, once read), builder and pass_no. The
     caller may set ctx["first_pages"] (a callable giving the page numbers
     Stage 1 is to inspect first) and ctx["fix"] (the corrections to apply at
     the end, in place of corrections); neither changes the result otherwise.
@@ -4420,6 +4514,8 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
         read_now = False
         ctx.update(readings=readings, diagram_fens=diagram_fens)
     figmap, learnt = {}, {}
+    shapes_on = shapes
+    shapes_read, shapes, use_shapes = None, {}, shapes_on
     fig_cands = figurines.candidates(
         (pt._raw_page(doc, i) for i in range(doc.page_count)),
         {f["font"] for f in fonts.get("figurines") or []})
@@ -4433,10 +4529,18 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
             diagram_fens = {**usable_fens(readings), **text_fens}
             read_now = False
             ctx.update(readings=readings, diagram_fens=diagram_fens)
+        if k >= 1 and use_shapes:
+            # the figurines' pictures, named from the moves the pass before
+            # read with certainty (cut out once, named again after each pass)
+            shapes_read = yield from read_shapes_steps(doc, builder, say, shapes_read)
+            shapes = shapes_read.reading() if shapes_read is not None else {}
+            use_shapes = shapes_read is not None
+            ctx.update(shapes=shapes_read)
         ctx.update(glyphs=glyphs, pass_no=len(timings) + 1, first_pass=(k == 0))
         builder, dec, secs = yield from _assemble_steps(
             doc, fonts, chapters, diagrams, selection, glyphs, letters, diagram_fens,
-            dotless=numbering["dotless"], readings=readings, ctx=ctx, pass_no=len(timings) + 1)
+            dotless=numbering["dotless"], readings=readings, ctx=ctx, pass_no=len(timings) + 1,
+            shapes=shapes)
         timings.append(round(secs, 1))
         say(f"pass {len(timings)}: {len(builder.lines)} lines, {len(builder.nodes)} nodes, "
             f"{dec.calls} decodes in {timings[-1]} s")
@@ -4465,6 +4569,7 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
                 selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
                 say(f"read {len(figmap)} figurine codes as piece letters; reading again")
                 glyphs = GlyphModel()
+                shapes_read, shapes, use_shapes = None, {}, shapes_on
                 ctx.update(fonts=fonts, structure=structure, chapters=chapters,
                            selection=selection, figmap=figmap)
                 yield "restructure", None
@@ -4478,6 +4583,20 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
     book = _book_dict(pdf_path, doc, chapters, diagrams, selection, builder, glyphs, structure,
                       readings, fix, letters)
     book["numbering"] = numbering
+    if shapes_read is not None:
+        disagree = shape_disagreements(shapes_read, builder.spots, glyphs)
+        if disagree:
+            say("figurine shapes that contradict the learnt symbols: " + ", ".join(
+                f"{a!r} {b}->{c} x{n}" for a, b, c, n in disagree[:8]))
+        book["shapes"] = {
+            "symbols": len(builder.spots), "cut": len(shapes_read.keys),
+            "named": len(shapes), "sure": sum(1 for v in shapes.values()
+                                              if v[1] >= SHAPE_KNOWN),
+            "groups": [{"piece": p, "confidence": c, "how": h, "size": n, "votes": v}
+                       for p, c, h, n, v in shapes_read.summary()],
+            "disagree": [{"symbol": a, "learnt": b, "shape": c, "count": n}
+                         for a, b, c, n in disagree],
+            "tokens": {k: [p, c] for k, (p, c) in sorted(shapes_read.by_key.items())}}
     book["figurines"] = [{"font": f, "code": f"U+{ord(ch):04X}", "piece": p,
                           "learnt": (f, ch) in learnt}
                          for (f, ch), p in sorted(figmap.items())]

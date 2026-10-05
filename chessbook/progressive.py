@@ -356,6 +356,8 @@ class Job:
                                                    "book.")
         elif kind == "boards":
             out += self._set_status(f"Reading the diagrams: {info[0]} of {info[1]}")
+        elif kind == "shapes":
+            out += self._set_status(f"Reading the piece figurines: page {info[0]} of {info[1]}")
         return out
 
     def _finish(self, book):
