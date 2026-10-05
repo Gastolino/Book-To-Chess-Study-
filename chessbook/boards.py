@@ -832,7 +832,17 @@ def printed_orientation(words, rect):
 
 LAST = {}      # the groups and names of the last book read, for inspection
 
-def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None):
+def picture_cells(pics, rec):
+    """The board found in one picture (board_cells of its grey image, for a
+    Pictures of the book)."""
+    try:
+        g = pics.gray(rec)
+    except (RuntimeError, ValueError):
+        g = None
+    return board_cells(g)
+
+
+def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None, cells=None):
     """Read every board picture of a book.
 
     pdf is the book's path (or an open pymupdf Document); diagrams is Stage
@@ -842,7 +852,8 @@ def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None):
     diagram); they help to name the book's piece drawings. Returns
     {id: {"fen", "confidence", "doubtful": [squares], "status", "turn",
     "turn_from", "flipped"}}; status is "read", "doubtful", "partial" (no
-    whole board in the picture) or "unread" (no position could be made)."""
+    whole board in the picture) or "unread" (no position could be made).
+    cells maps diagram ids to the boards picture_cells found in them."""
     from . import selection as sel
     say = progress or (lambda *_: None)
     doc = pdf if isinstance(pdf, pymupdf.Document) else pymupdf.open(pdf)
@@ -853,11 +864,9 @@ def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None):
     known = known or {}
     out, boards = {}, []
     for did, rec in zip(ids, diagrams):
-        try:
-            g = pics.gray(rec)
-        except (RuntimeError, ValueError):
-            g = None
-        r = board_cells(g)
+        # cells may hold the boards found already (picture_cells), for a
+        # caller that reads the pictures in steps
+        r = cells[did] if cells is not None and did in cells else picture_cells(pics, rec)
         if r["grid"] is None:
             out[did] = {"fen": None, "confidence": 0.0, "doubtful": [], "status": "partial"}
             continue

@@ -315,102 +315,111 @@ font-size:13px;line-height:1.5;max-width:none;font-variant-numeric:tabular-nums;
 """
 
 
-def analyse(pdf, out_dir):
-    """Find the board pictures, their labels and every diagram number of a
-    book, and write diagrams.json, numbers.json and pages.json to out_dir.
-    Returns what the report needs. The browser app calls this alone."""
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    doc = pymupdf.open(pdf)
-    n = doc.page_count
-    producer = " ".join(filter(None, (doc.metadata.get("creator"), doc.metadata.get("producer"))))
-
+def inspect_page(doc, i):
+    """Stage 1's findings on page i (counted from 0) of doc: (page record,
+    diagrams, numbers, references). Pages are independent of one another;
+    finish() joins them."""
+    page = doc[i]
     pages, diagrams, numbers, refs = [], [], [], Counter()
-    for i, page in enumerate(doc):
-        lines = list(text_lines(page))
-        chars = sum(len(t) for t, _ in lines)
-        cover, xpics = _page_pictures(page)
-        # Diagrams printed as text in a chess font count as board pictures
-        # with no image (a (diagram, FEN) pair in place of the xref), sorted into the same reading order.
-        tds = textdiagram.page_text_diagrams(lines)
-        for td, fen in tds:
-            xpics.append((pymupdf.Rect(td.rect), 0, 0, (td, fen)))
-        if tds:
-            mid = page.rect.width / 2
-            xpics.sort(key=lambda t: ((t[0].x0 + t[0].x1) / 2 > mid, t[0].y0))
-        pics = [(r, w, h) for r, w, h, _ in xpics]
-        invisible = any(t.get("type") == 3 for t in page.get_texttrace())
-        head = page.rect.height * 0.06  # running head with the page number
-        # OCR sometimes splits a number with a space ("1 15" for 115). Lines that
-        # touch a picture are its rank and file letters, so they are left out.
-        labels = []
-        for t, r in lines:
-            m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
-            if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head
-                    and not any(r.intersects(p + (-12, -4, 12, 4)) and not between_boards(r, p)
-                                for p, _, _ in pics)
-                    and not continues_as_move(r, lines)):
-                labels.append((m.group(1), r))
-        for raw, r in labels:
-            numbers.append({"page": i + 1, "label": raw.translate(DIGIT_FIX),
-                            "repaired": raw != raw.translate(DIGIT_FIX),
-                            "rect": [round(v, 1) for v in r]})
-        used = set()
-        for pic, w, h, xref in xpics:
-            k = label_for(pic, labels, used)
-            raw = labels[k][0] if k is not None else None
-            if k is not None:
-                used.add(k)
-            if isinstance(xref, tuple):
-                td, fen = xref
-                ink = textdiagram.ink_rect(page, pic)
-                diagrams.append({
-                    "page": i + 1, "rect": [round(v, 1) for v in ink], "pixels": [0, 0],
-                    "label": raw.translate(DIGIT_FIX) if raw else None,
-                    "label_repaired": bool(raw) and raw != raw.translate(DIGIT_FIX),
-                    "circled": False, "partial": False, "tall": False, "coords": [0, 0],
-                    "text": True, "fen": fen, "encoding": td.encoding})
-                continue
-            stack = stacked_boards(doc, xref, pic) if pic.height > 1.3 * pic.width else []
-            sub = []
-            for j, br in enumerate(stack):
-                if j == 0:
-                    lab = raw
-                else:
-                    kk = label_for(br, labels, used)
-                    lab = labels[kk][0] if kk is not None else None
-                    if kk is not None:
-                        used.add(kk)
-                sub.append({"rect": [round(v, 1) for v in br],
-                            "label": lab.translate(DIGIT_FIX) if lab else None,
-                            "partial": abs(br.width / br.height - 1) > 0.12,
-                            "coords": list(board_coords(br, lines))})
-            circled = raw is None and any(
-                CIRCLE_RE.match(t) and abs(r.y0 - pic.y0) < 25
-                and ((r.x0 < pic.x0 - 5 and r.x1 < pic.x0 + 25)
-                     or (r.x1 > pic.x1 + 5 and r.x0 > pic.x1 - 25))
-                for t, r in lines)
+    lines = list(text_lines(page))
+    chars = sum(len(t) for t, _ in lines)
+    cover, xpics = _page_pictures(page)
+    # Diagrams printed as text in a chess font count as board pictures
+    # with no image (a (diagram, FEN) pair in place of the xref), sorted into the same reading order.
+    tds = textdiagram.page_text_diagrams(lines)
+    for td, fen in tds:
+        xpics.append((pymupdf.Rect(td.rect), 0, 0, (td, fen)))
+    if tds:
+        mid = page.rect.width / 2
+        xpics.sort(key=lambda t: ((t[0].x0 + t[0].x1) / 2 > mid, t[0].y0))
+    pics = [(r, w, h) for r, w, h, _ in xpics]
+    invisible = any(t.get("type") == 3 for t in page.get_texttrace())
+    head = page.rect.height * 0.06  # running head with the page number
+    # OCR sometimes splits a number with a space ("1 15" for 115). Lines that
+    # touch a picture are its rank and file letters, so they are left out.
+    labels = []
+    for t, r in lines:
+        m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
+        if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head
+                and not any(r.intersects(p + (-12, -4, 12, 4)) and not between_boards(r, p)
+                            for p, _, _ in pics)
+                and not continues_as_move(r, lines)):
+            labels.append((m.group(1), r))
+    for raw, r in labels:
+        numbers.append({"page": i + 1, "label": raw.translate(DIGIT_FIX),
+                        "repaired": raw != raw.translate(DIGIT_FIX),
+                        "rect": [round(v, 1) for v in r]})
+    used = set()
+    for pic, w, h, xref in xpics:
+        k = label_for(pic, labels, used)
+        raw = labels[k][0] if k is not None else None
+        if k is not None:
+            used.add(k)
+        if isinstance(xref, tuple):
+            td, fen = xref
+            ink = textdiagram.ink_rect(page, pic)
             diagrams.append({
-                "page": i + 1,
-                "rect": [round(v, 1) for v in pic],
-                "pixels": [w, h],
+                "page": i + 1, "rect": [round(v, 1) for v in ink], "pixels": [0, 0],
                 "label": raw.translate(DIGIT_FIX) if raw else None,
                 "label_repaired": bool(raw) and raw != raw.translate(DIGIT_FIX),
-                "circled": circled,
-                "partial": abs(pic.width / pic.height - 1) > 0.12,
-                "tall": pic.height > 1.3 * pic.width,
-                "coords": list(board_coords(pic, lines)),
-            })
-            if sub:
-                diagrams[-1]["boards"] = sub
-        for m in REF_RE.finditer(page.get_text()):
-            refs[m.group(1).translate(DIGIT_FIX)] += 1
-        pages.append({"page": i + 1, "chars": chars, "pictures": len(pics) - len(tds),
-                      "text_diagrams": len(tds),
-                      "kind": page_kind(chars, cover, [x for x in xpics if not isinstance(x[3], tuple)],
-                                        invisible),
-                      "ocr_layer": invisible})
+                "circled": False, "partial": False, "tall": False, "coords": [0, 0],
+                "text": True, "fen": fen, "encoding": td.encoding})
+            continue
+        stack = stacked_boards(doc, xref, pic) if pic.height > 1.3 * pic.width else []
+        sub = []
+        for j, br in enumerate(stack):
+            if j == 0:
+                lab = raw
+            else:
+                kk = label_for(br, labels, used)
+                lab = labels[kk][0] if kk is not None else None
+                if kk is not None:
+                    used.add(kk)
+            sub.append({"rect": [round(v, 1) for v in br],
+                        "label": lab.translate(DIGIT_FIX) if lab else None,
+                        "partial": abs(br.width / br.height - 1) > 0.12,
+                        "coords": list(board_coords(br, lines))})
+        circled = raw is None and any(
+            CIRCLE_RE.match(t) and abs(r.y0 - pic.y0) < 25
+            and ((r.x0 < pic.x0 - 5 and r.x1 < pic.x0 + 25)
+                 or (r.x1 > pic.x1 + 5 and r.x0 > pic.x1 - 25))
+            for t, r in lines)
+        diagrams.append({
+            "page": i + 1,
+            "rect": [round(v, 1) for v in pic],
+            "pixels": [w, h],
+            "label": raw.translate(DIGIT_FIX) if raw else None,
+            "label_repaired": bool(raw) and raw != raw.translate(DIGIT_FIX),
+            "circled": circled,
+            "partial": abs(pic.width / pic.height - 1) > 0.12,
+            "tall": pic.height > 1.3 * pic.width,
+            "coords": list(board_coords(pic, lines)),
+        })
+        if sub:
+            diagrams[-1]["boards"] = sub
+    for m in REF_RE.finditer(page.get_text()):
+        refs[m.group(1).translate(DIGIT_FIX)] += 1
+    pages.append({"page": i + 1, "chars": chars, "pictures": len(pics) - len(tds),
+                  "text_diagrams": len(tds),
+                  "kind": page_kind(chars, cover, [x for x in xpics if not isinstance(x[3], tuple)],
+                                    invisible),
+                  "ocr_layer": invisible})
 
+    return pages[0], diagrams, numbers, refs
+
+
+def finish(out_dir, found):
+    """Join the findings of every page (inspect_page, in page order), name
+    the main series of diagram numbers and write diagrams.json, numbers.json
+    and pages.json to out_dir. Returns (pages, diagrams, numbers, refs)."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pages, diagrams, numbers, refs = [], [], [], Counter()
+    for rec, ds, ns, rs in found:
+        pages.append(rec)
+        diagrams.extend(ds)
+        numbers.extend(ns)
+        refs.update(rs)
     main_ids = main_series(numbers)
     for k, x in enumerate(numbers):
         x["series"] = "main" if k in main_ids else "other"
@@ -423,7 +432,44 @@ def analyse(pdf, out_dir):
     (out_dir / "numbers.json").write_text(json.dumps(numbers, indent=1))
     (out_dir / "pages.json").write_text(json.dumps(pages, indent=1))
 
+    return pages, diagrams, numbers, refs
+
+
+def analyse_steps(pdf, out_dir, first=None, batch=10):
+    """analyse() in small steps, for a caller that has other work to do
+    between them (the browser app). Each step inspects up to batch pages
+    and yields (pages done, page count, {page index: findings}). first, when
+    given, is called before each step and returns the page numbers (from 1)
+    to inspect before the others; the result does not depend on the order.
+    Returns what analyse() returns."""
+    doc = pymupdf.open(pdf)
+    n = doc.page_count
+    producer = " ".join(filter(None, (doc.metadata.get("creator"), doc.metadata.get("producer"))))
+    found = {}
+    nxt = 0
+    while len(found) < n:
+        todo = [p - 1 for p in (first() if first else []) if 0 < p <= n and p - 1 not in found]
+        while len(todo) < batch and nxt < n:
+            if nxt not in found and nxt not in todo:
+                todo.append(nxt)
+            nxt += 1
+        for i in todo[:batch]:
+            found[i] = inspect_page(doc, i)
+        yield len(found), n, found
+    pages, diagrams, numbers, refs = finish(out_dir, [found[i] for i in range(n)])
     return doc, n, producer, pages, diagrams, numbers, refs
+
+
+def analyse(pdf, out_dir):
+    """Find the board pictures, their labels and every diagram number of a
+    book, and write diagrams.json, numbers.json and pages.json to out_dir.
+    Returns what the report needs. The browser app calls this alone."""
+    steps = analyse_steps(pdf, out_dir, batch=1 << 30)
+    while True:
+        try:
+            next(steps)
+        except StopIteration as done:
+            return done.value
 
 
 def main():

@@ -66,10 +66,11 @@ body{margin:0;display:flex;flex-direction:column}
 #top button{font:inherit;color:var(--fg);background:none;border:0;padding:0;cursor:pointer}
 #top button:hover{text-decoration:underline}
 #top .gap{flex:1}
+#top button[hidden]{display:none}
 </style></head>
 <body>
 <div id="top"><b id="bookname"></b><span id="took"></span><span class="gap"></span>
-<button id="again" type="button">Read again</button>
+<button id="again" type="button" hidden>Read again</button>
 <button id="another" type="button">Open another book</button>
 <span id="note" role="status"></span><div id="topbar"><i></i></div></div>
 <main id="start">
@@ -91,6 +92,11 @@ const CFG = __CFG__;
 const $ = (id) => document.getElementById(id);
 const worker = new Worker("worker.js");
 let ready = false, busy = false, current = null, lastFile = null;
+// While the worker reads the book, the reader can already read it: the top bar
+// says how far the reading has come, and the thin line under it moves.
+let loading = false;
+// ?pace=MS slows the reading down by MS milliseconds a step (for tests)
+CFG.pace = parseInt(new URLSearchParams(location.search).get("pace") || "0", 10) || 0;
 
 // Links inside the reader pages ask this page to open another page.
 // String.raw keeps the backslashes of the pattern below; an ordinary template
@@ -109,10 +115,14 @@ function status(text, error) {
 }
 function working(on) {
   $("bar").classList.toggle("on", on);
-  $("topbar").classList.toggle("on", on);
+  $("topbar").classList.toggle("on", on || loading);
 }
+// The flag goes first in the head, so that the page's own script sees it
+// while it starts (the stored corrections it sends, the words it chooses).
+const FLAG = "<script>window.CHESSBOOK_APP=true;<" + "/script>";
 function show(name, hash, htmlText) {
-  const blob = new Blob([htmlText.replace("</body>", NAV + "</body>")], { type: "text/html" });
+  const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</body>", NAV + "</body>");
+  const blob = new Blob([page], { type: "text/html" });
   if (current) URL.revokeObjectURL(current);
   current = URL.createObjectURL(blob);
   $("view").src = current + (hash || "");
@@ -126,19 +136,48 @@ worker.onmessage = (e) => {
   else if (m.type === "ready") {
     ready = true;
     $("bar").classList.remove("on");
-    status("Ready. Choose a book.");
+    status(m.boards === false ? "Ready. Choose a book. This browser could not load board reading, so " +
+      "the program reads only the diagrams that the book prints in a chess font." : "Ready. Choose a book.");
   } else if (m.type === "index") {
+    // the contents, as soon as the chapters are known: the reading goes on
     busy = false;
+    loading = true;
     $("bar").classList.remove("on");
-    $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
+    $("took").textContent = "Reading the book";
+    openChapter = "index.html";
     show("index.html", "", m.html);
+    working(false);
+  } else if (m.type === "status") {
+    if (loading) $("took").textContent = m.text;
+  } else if (m.type === "thumbs") {
+    if (openChapter === "index.html") toView({ thumbs: m.thumbs });
+  } else if (m.type === "done") {
+    loading = false;
+    $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
+    working(false);
+    if (m.html && openChapter === "index.html") show("index.html", "", m.html);
+  } else if (m.type === "reopen") {
+    // the final reading changed the chapters: the open one opens again
+    worker.postMessage({ type: "chapter", name: m.chapter, small: window.matchMedia("(max-width: 700px)").matches });
+  } else if (m.type === "patch") {
+    patched(m);
   } else if (m.type === "page") {
     working(false);
     $("note").textContent = "";
+    openChapter = m.name;
     show(m.name, m.hash, m.html);
   } else if (m.type === "error") {
-    busy = false;
     working(false);
+    if (m.during === "correct" || m.during === "correct-more") {
+      // the reader says so too, instead of waiting for a patch that does not come
+      if (m.during === "correct-more") { moreBusy = false; more = []; }
+      const text = "Your correction could not be applied: " + m.text;
+      status(text, true);
+      toView({ failed: text });
+      return;
+    }
+    busy = false;
+    if (m.during === "process") { loading = false; working(false); }
     status("Something went wrong: " + m.text, true);
   }
 };
@@ -150,7 +189,43 @@ worker.onerror = (e) => {
   status("The reader stopped: " + (e.message || "the browser ran out of memory") +
     ". Closing other tabs or using a computer can help.", true);
 };
+// Corrections made in a chapter reader are applied at once by the worker,
+// which answers with a patch for the open page. A changed piece symbol
+// reaches the other chapters afterwards, one chapter at a time. One request
+// for them is on its way at a time: a correction made meanwhile (which
+// answers with the chapters still pending) does not start a second chain.
+let more = [], moreDone = 0, moreBusy = false, openChapter = "";
+function toView(msg) { if ($("view").contentWindow) $("view").contentWindow.postMessage(msg, "*"); }
+function patched(m) {
+  const r = m.result || {};
+  if (r.patch && m.chapter === openChapter) toView({ patch: r.patch });
+  if (m.more) moreBusy = false;
+  const pend = (r.pending || []).slice(), had = more.length;
+  if (!had) moreDone = 0;
+  moreDone += more.filter((c) => pend.indexOf(c) < 0).length;
+  more = pend;
+  if (more.length) {
+    // a chapter stays pending until all its pages are done, ten pages at a time
+    const text = "Applying your piece choice to the other chapters: " + (moreDone + 1) + " of " +
+      (moreDone + more.length) + ".";
+    status(text); toView({ progress: text });
+    if (!moreBusy) {
+      moreBusy = true;
+      worker.postMessage({ type: "correct-more", chapters: [more[0]], chapter: openChapter });
+    }
+  } else if (m.more || had) {
+    status("Your piece choice is applied to the whole book.");
+    toView({ progress: "Your piece choice is applied to the whole book." });
+  } else status("");
+}
 window.addEventListener("message", (e) => {
+  if (e.data && e.data.open === "index.html") openChapter = "index.html";
+  if (e.data && e.data.correct) {
+    openChapter = e.data.chapter;
+    worker.postMessage({ type: "correct", corrections: e.data.correct, chapter: e.data.chapter });
+    return;
+  }
+  if (e.data && e.data.selectionChanged) { $("again").hidden = false; return; }
   if (!e.data || !e.data.open) return;
   working(true);
   status(e.data.open === "index.html" ? "Opening the contents." :
@@ -167,6 +242,7 @@ async function take(file) {
   if (!ready) { status("The reader is still starting. Try again in a moment."); return; }
   busy = true;
   lastFile = file;
+  $("again").hidden = true;
   $("bookname").textContent = file.name.replace(/\\.pdf$/i, "");
   $("bar").classList.add("on");
   status("Reading " + file.name);

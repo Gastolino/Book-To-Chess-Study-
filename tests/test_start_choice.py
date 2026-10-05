@@ -281,7 +281,15 @@ def test_gpa_lines_start_from_the_right_diagram(gpa):
 def test_ivanchuk_stays_whole(tmp_path_factory):
     book = _book_or_skip("ivanchuk", tmp_path_factory)
     assert book["stats"]["line_status"] == {"ok": 1}
-    assert book["stats"]["moves"]["ok"] == 146
+    # 75 moves of the game and 70 of its variations: "8.Rd1 and then
+    # Nb1-c3" no longer adds Nc3 as a variation of the game at move 6
+    assert book["stats"]["moves"]["ok"] == 145
+    marks = {m["raw"].rstrip(".,)"): m for p in book["pages"] for m in p["marks"]}
+    assert "Nb1–c3" not in marks
+    # "playing ...a6-a5" names the game's next move, 15...a5
+    a5 = marks["...a6–a5"] if "...a6–a5" in marks else marks["a6–a5"]
+    node = book["nodes"][a5["node"]]
+    assert a5.get("ref") and node["main"] and node["san"] == "a5" and node["number"] == 15
 
 
 def test_kia_answer_labels_are_not_moves():

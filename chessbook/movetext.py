@@ -162,6 +162,7 @@ GLYPH_STRONG_SHARE = 0.75   # ... when this share of them name one piece
 WEAK_SPREAD = 0.7       # most a weakly learnt glyph may favour one piece over another;
                         # below the cheapest misread of a printed square
 C_IMPLIED_NONCAP = 1.0  # a junk glyph that includes the capture mark, on a non-capture
+C_LONG_FROM = 9.0       # long notation whose from-square is not the square the piece leaves
 C_PAWN_DISAMB = 1.5     # a file letter before a pawn move that captures nothing ("gg4")
 
 
@@ -705,7 +706,14 @@ def _enumerate_parses(core: str) -> list:
                             continue
                         out.append(_Parse(_strip_spaces(prefix), dfile, drank, cap, dest, promo,
                                           fch, rch))
+    if _LONG_CORE_RE.search(core):
+        # long notation ("Ng1-f3", "e2-e4", "d2xd3"): the square the piece leaves is
+        # printed, so only readings that take it as that square count
+        out = [q for q in out if q.dfile is not None and q.drank is not None] or out
     return out
+
+
+_LONG_CORE_RE = re.compile(r"[a-h£][1-8lI]\s?[-–—x:×]\s?[a-h£][1-8lIBS]")
 
 
 @lru_cache(maxsize=200000)
@@ -879,7 +887,9 @@ class _Scorer:
         if p.dfile is not None:
             fc = p.dfile.get(ff)
             if fc is None:
-                c += C_DISAMB_WRONG
+                # long notation names the square the piece leaves: another square
+                # is no reading of it ("Bf1-d4" is not d2-d4)
+                c += C_LONG_FROM if long_form else C_DISAMB_WRONG
             else:
                 c += fc + (0.0 if need_file or long_form else C_DISAMB_EXTRA)
         elif need_file and not (need_rank and p.drank is not None):
@@ -887,7 +897,7 @@ class _Scorer:
         if p.drank is not None:
             rc = p.drank.get(fr)
             if rc is None:
-                c += C_DISAMB_WRONG
+                c += C_LONG_FROM if long_form else C_DISAMB_WRONG
             else:
                 c += rc + (0.0 if need_rank or long_form or (need and p.dfile is None)
                            else C_DISAMB_EXTRA)
@@ -1651,8 +1661,9 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             st.in_seq, st.prev = False, "result"
             i += 1
             continue
-        if w in "([{)]}":
-            other(s, e)
+        if w in "([{)]}" or (len(w) == 1 and w.isalpha() and text[e:e + 1] == ")"
+                             and (s == 0 or text[s - 1] in " \n(")):
+            other(s, e)                          # a label of a list of lines: "A) 8.Be4"
             i += 1
             continue
         r = _scan_number(text, pieces, i, st, dotless)

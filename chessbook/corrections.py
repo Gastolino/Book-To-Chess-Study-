@@ -10,6 +10,10 @@ selection (selection.py), and in the browser under
      "unattached": {"201:96,410:Qh5": {"attach_to": "201:118,342:tLlxf6t"},
                     "202:40,88:Rd1": {"attach_to": "dismiss"}},
      "glyphs":     {"tLl": "N"},
+     "connect":    {"203:52,120:e4": {"after": "202:310,96:Nf3"}},
+     "disconnect": {"204:80,300:Qh5": {"start": "here"},
+                    "204:90,410:Rd1": {"start": "p204-1"},
+                    "205:60,90:Kf2":  {"remove": true}},
      "note": "Corrections made in the book reader."}
 
 diagrams     a diagram id (selection.py) and the position it shows; it wins
@@ -27,6 +31,20 @@ glyphs       a piece symbol that the text recognition garbled (the junk
              piece it stands for, one of K Q R B N P. It applies to every move
              of the book printed with that symbol; a correction of a single
              move overrides it.
+connect      the key of the first move of a run (or of any move of a line:
+             the moves from it on) and the key of the move after which the
+             run continues ("after"). The run continues the main line there
+             when that move ends it, and forms a variation from it otherwise,
+             provided its first move is legal there.
+disconnect   the key of a move of a line. {"start": "here"} starts a new line
+             with that move, from the position before it; {"start": <diagram
+             id>} starts the new line from that diagram instead; {"remove":
+             true} takes the moves from it to the end of the line out of the
+             line, so that they stand in no line.
+
+The corrections are applied after the book is assembled, by replaying the
+lines they touch (assemble._Builder.apply_fix), so that the browser app can
+apply each one at once and a fresh build gives the same result.
 """
 from __future__ import annotations
 
@@ -39,7 +57,7 @@ import chess
 from .selection import BOOKS_DIR, ID_RE, _FENCE_RE, _objects
 
 VERSION = 1
-PARTS = ("diagrams", "moves", "unattached", "glyphs")
+PARTS = ("diagrams", "moves", "unattached", "glyphs", "connect", "disconnect")
 PIECES = "KQRBNP"
 KEY_RE = re.compile(r"^(\d+):(-?\d+),(-?\d+):(.*)$", re.S)
 TOLERANCE = 2.5             # points a token may move between builds and keep its key
@@ -82,7 +100,8 @@ def normalise(data):
     form, a piece other than K Q R B N P) raise ValueError."""
     if not isinstance(data, dict):
         raise ValueError("Corrections must be a JSON object.")
-    out = {"version": VERSION, "diagrams": {}, "moves": {}, "unattached": {}, "glyphs": {}}
+    out = {"version": VERSION, "diagrams": {}, "moves": {}, "unattached": {}, "glyphs": {},
+           "connect": {}, "disconnect": {}}
     for did, v in (data.get("diagrams") or {}).items():
         if not ID_RE.match(str(did)):
             raise ValueError(f"{did!r} is not a diagram id such as 'p201-1'.")
@@ -108,6 +127,23 @@ def normalise(data):
         if not prefix or p not in PIECES:
             raise ValueError(f"{piece!r} is not one of the pieces K, Q, R, B, N and P.")
         out["glyphs"][str(prefix)] = p
+    for key, v in (data.get("connect") or {}).items():
+        parse_key(key)
+        after = (v or {}).get("after") if isinstance(v, dict) else v
+        parse_key(after)
+        if after == key:
+            raise ValueError(f"The correction of {key!r} joins a move to itself.")
+        out["connect"][key] = {"after": after}
+    for key, v in (data.get("disconnect") or {}).items():
+        parse_key(key)
+        v = v if isinstance(v, dict) else {}
+        if v.get("remove"):
+            out["disconnect"][key] = {"remove": True}
+        else:
+            start = v.get("start") or "here"
+            if start != "here" and not ID_RE.match(str(start)):
+                raise ValueError(f"{start!r} is not a diagram id such as 'p201-1'.")
+            out["disconnect"][key] = {"start": str(start)}
     if data.get("note"):
         out["note"] = str(data["note"])
     return out
@@ -148,7 +184,8 @@ def parse_corrections_text(text):
             if isinstance(obj, dict) and set(PARTS) & obj.keys():
                 return normalise(obj)
     raise ValueError("The text holds no corrections: no JSON object with \"diagrams\", "
-                     "\"moves\", \"unattached\" or \"glyphs\" was found.")
+                     "\"moves\", \"unattached\", \"glyphs\", \"connect\" or \"disconnect\" "
+                     "was found.")
 
 
 class TokenIndex:

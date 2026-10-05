@@ -35,6 +35,7 @@ import chess.svg
 import pymupdf
 
 from . import corrections, pgnout, style
+from .chess_js import CHESS_JS
 from .review_js import CORRECTIONS_JS, EYE_SVG, REVIEW_CSS, REVIEW_JS
 from .movetext import LETTER_SETS, junk_prefix
 from .selection import EXCLUDED_KINDS
@@ -81,6 +82,11 @@ def page_jpeg(doc, page, dpi, quality, clip=None):
     pix = doc[page - 1].get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY,
                                    clip=pymupdf.Rect(clip) if clip else None)
     return pix.tobytes("jpg", jpg_quality=quality)
+
+
+def thumb(doc, page):
+    """A page thumbnail of the contents page, as base64 JPEG."""
+    return _b64(page_jpeg(doc, page, THUMB_DPI, THUMB_QUALITY))
 
 
 def _b64(data):
@@ -248,15 +254,20 @@ CHAPTER_CSS = r"""
 #pagenum{width:3.6em}
 .notes{padding:8px 24px;border-bottom:1px solid var(--line)}
 .notes p:empty,.notes:not(:has(p:not(:empty))){display:none}
-.reader{display:grid;grid-template-columns:minmax(0,1fr) clamp(400px,33vw,520px);align-items:start}
+.reader{display:grid;grid-template-columns:minmax(0,1fr) 50vw;align-items:start}
 .pagecol{min-width:0;padding:24px 32px 40px 24px}
+.turnhint{margin:0 0 12px}
+.turnhint .tb{margin-left:8px}
 .offpage{margin:0 0 16px;padding-left:12px;border-left:1px solid var(--doubt)}
 .offpage:empty,.diagnote:empty{display:none}
 .diagnote{margin:0 0 16px}
+.provnote{display:none;margin:0 0 16px}
+.reading.first .provnote{display:block}
 .key{display:grid;margin:0 0 16px}
 .key > *{grid-area:1/1}
-.legend{visibility:hidden;display:flex;flex-wrap:wrap;align-content:start;gap:4px 20px}
-.reading .legend{visibility:visible}
+.legend{display:none;flex-wrap:wrap;align-content:start;gap:4px 20px}
+.reading .legend{display:flex}
+body:not(.reading) .key{display:none}
 .reading .key .help{visibility:hidden}
 .legend > span{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
 .legend .ls{white-space:normal}
@@ -312,7 +323,7 @@ padding:16px 24px;min-width:0;display:flex;flex-direction:column}
 .sec:last-child{padding-bottom:0}
 .sec[hidden]{display:none}
 .boardwrap svg{display:block;width:100%;height:auto}
-.boardwrap,.dpanel canvas.pic{margin:0;max-width:min(100%,max(240px,calc(100vh - 400px)))}
+.boardwrap,.dpanel canvas.pic{margin:0 auto;max-width:min(100%,calc(100vh - 140px))}
 svg.board .sl{fill:var(--board-light)}
 svg.board .sd{fill:var(--board-dark)}
 svg.board .lm{fill:none;stroke:var(--accent);stroke-width:1.5px;vector-effect:non-scaling-stroke}
@@ -321,6 +332,12 @@ svg.board .bo{fill:none;stroke:var(--line);stroke-width:1px}
 svg.board .co{fill:var(--muted);font-family:"DM Sans",system-ui,sans-serif}
 canvas.pic{display:block;width:100%;height:auto;outline:1px solid var(--line)}
 .boardnote{margin:8px 0 0}
+/* Outside reading mode the page holds only the book: the program's own
+   explanations show while "Show reading" is on. */
+body:not(.reading) .help,body:not(.reading) .boardnote,body:not(.reading) #linemeta,
+body:not(.reading) .lsec.generic,body:not(.reading) .where h1.generic,
+body:not(.reading) .pagefoot label.use,body:not(.reading) .pgn .muted,
+body:not(.reading) .offpage{display:none}
 .boardnote:empty{display:none}
 .boardarea.diagram #board,.boardarea.diagram #boardnote{display:none}
 .dpanel{display:grid;gap:8px}
@@ -363,7 +380,7 @@ background:var(--muted)}
 .mbar,.mini,.touch{display:none}
 @media (hover:none) and (pointer:coarse){.touch{display:block}.mouse{display:none}
 .mark{border-bottom:1px solid color-mix(in srgb,var(--accent) 45%,transparent)}}
-@media (max-width:900px){
+@media (max-width:700px){
 .bar{flex-wrap:wrap;padding:12px 16px}
 .where{flex-basis:100%;white-space:normal;flex-wrap:wrap;gap:0 12px}
 .where h1{white-space:normal}
@@ -406,7 +423,7 @@ window.READER = D;
 const $ = (id) => document.getElementById(id);
 const S = {page: null, node: null, line: null, flip: false, diagram: null, mini: null, panelSeen: false};
 const imgCache = {};
-const SMALL = window.matchMedia("(max-width:900px)");
+const SMALL = window.matchMedia("(max-width:700px)");
 const ROW = 25.5;  // the height of one row of the move list: 15px type at line height 1.7
 window.readerState = {fen: null, nodeId: null, page: null};
 const kinds = {};
@@ -599,6 +616,7 @@ function showPage(p){
     t += ": " + lcfirst(m.corrected || (n && n.corrected) ? D.words.corrected : (D.words[m.status] || m.status));
     if (m.reason) t += ", because " + m.reason;
     t += ".";
+    if (m.ref && n) t = "“" + shown(m.raw) + "” names " + moveText(m.node, true) + ", a move the line has played.";
     b.title = t;
     b.setAttribute("aria-label", t);
     ov.appendChild(b);
@@ -658,7 +676,8 @@ function renderChips(){
   const ids = linesHere();
   box.innerHTML = "";
   if (!ids.length) {
-    box.innerHTML = "<span class=none>" + (D.lineOrder.length ? "The program found no line on this page." :
+    box.innerHTML = "<span class=none>" + (D.reading === "pages" ? "The program has not read the moves of this chapter yet." :
+      D.lineOrder.length ? "The program found no line on this page." :
       "The program found no line in this chapter.") + "</span>";
     return;
   }
@@ -666,7 +685,8 @@ function renderChips(){
     const b = document.createElement("button");
     b.className = "tl" + (S.line === id ? " on" : "");
     b.dataset.line = id;
-    b.textContent = title(D.lines[id].title);
+    const L = D.lines[id];
+    b.textContent = title(L.title) + (L.page < S.page ? ", from " + pageName(L.page) : "");
     if (S.line === id) b.setAttribute("aria-current", "true");
     box.appendChild(b);
   }
@@ -687,6 +707,9 @@ function highlightMark(scroll){
 // sideways. The page moves only when the move leaves the middle of that
 // space, so stepping through a line does not make it jump.
 function revealMark(el){
+  // On a phone, while the big board below the page is in view, stepping
+  // through the moves keeps the reader at the board.
+  if (SMALL.matches && S.panelSeen) return;
   const bar = $("mbar");
   const barH = bar && getComputedStyle(bar).display !== "none" ? bar.offsetHeight : 0;
   if (!barH) { el.scrollIntoView({block: "nearest", inline: "nearest"}); return; }
@@ -947,6 +970,7 @@ function renderTree(){
   if (!L) {
     box.innerHTML = "<span class=none>No line is chosen. A click on a move on the page chooses its line.</span>";
     $("linetitle").textContent = "No line chosen"; $("linemeta").innerHTML = "";
+    $("lsec").classList.add("generic");
     return;
   }
   const root = D.nodes[L.root];
@@ -954,6 +978,8 @@ function renderTree(){
   box.innerHTML = "<button class='mv start" + (S.node === L.root ? " cur" : "") + "' tabindex='-1' data-node='" +
     L.root + "' title='Start position'>Start</button>" + renderLine(L.root, true) + first;
   $("linetitle").textContent = title(L.title);
+  // a title the program made up ("Page 12") is an explanation, not the book's
+  $("lsec").classList.toggle("generic", !L.header);
   $("linemeta").innerHTML = lineMeta(L);
 }
 function fitTree(){
@@ -1000,6 +1026,8 @@ function statusLines(n){
   if (n.corrected) {
     const why = n.corrected === "move" ? "You gave this move." :
       n.corrected === "placed" ? "You placed this variation here." :
+      n.corrected === "connected" ? "You joined these moves to the line here." :
+      n.corrected === "split" ? "You started a new line with this move." :
       "You named its piece symbol “<span class=n>" + shownHtml(n.symbol || "") + "</span>”.";
     return ["corrected", esc(D.words.corrected), (n.raw ? ["The text recognition read “<span class=n>" +
       shownHtml(n.raw) + "</span>”."] : []).concat([why], out)];
@@ -1033,7 +1061,7 @@ function renderInfo(){
       const [st, lab, more] = statusLines(n);
       h += "<div class='status small muted'><p><i class='dot st-" + esc(st) + "'></i>" + lab + "</p>" +
         more.map(x => "<p>" + x + "</p>").join("") + "</div>";
-      if (n.legal && n.key && !(RV.edit && RV.edit.node === S.node))
+      if (n.key && beforeFen(n) && !(RV.edit && RV.edit.node === S.node))
         h += "<p class=small><button class=tb id=fixthis>Correct this move</button></p>";
     }
   }
@@ -1094,8 +1122,35 @@ function toEnd(dir){
   while ((c = nextMove(id))) id = c;
   selectNode(id, {scrollPage: true});
 }
+function governing(){
+  // a line that began on an earlier page and goes on here: [line, its last move before this page]
+  for (const id of linesHere()) {
+    const L = D.lines[id];
+    if (L.page >= S.page) continue;
+    let last = null, nid = L.root;
+    for (;;) {
+      const c = cont(nid);
+      if (!c) break;
+      const pg = D.nodes[c].page;
+      if (pg && pg >= S.page) break;
+      nid = c;
+      if (pg) last = c;
+    }
+    if (last) return [id, last];
+  }
+  return null;
+}
 function defaultView(){
-  // no move chosen: the first line on the page, at its starting position
+  // no move chosen: the line that goes on from an earlier page, at the position at the top of the
+  // page, or else the first line on the page, at its starting position
+  const g = governing();
+  if (g) {
+    selectNode(g[1], {fromPage: true});
+    // an explanation, so it shows only while "Show reading" is on
+    if (reading()) say("The line “" + title(D.lines[g[0]].title) + "” begins on " + pageName(D.lines[g[0]].page) +
+      " and goes on here. The board shows its position at the top of this page.");
+    return;
+  }
   S.node = null;
   S.line = linesHere()[0] || null;
   renderChips(); renderTree(); renderBoard(); renderInfo(); layoutPanel(false); highlightMark(false);
@@ -1215,8 +1270,10 @@ function closeDiagram(){
   setState();
 }
 function selNote(){
-  $("selnote").textContent = SEL.stored() ?
-    "You have changed the selection. The contents page shows the change and copies it for the chat." : "";
+  $("selnote").textContent = SEL.stored() ? (window.CHESSBOOK_APP ?
+    "You have changed the selection. Read again at the top of the page reads the book with it." :
+    "You have changed the selection. The contents page shows the change and copies it for the chat.") : "";
+  if (window.CHESSBOOK_APP && SEL.stored()) parent.postMessage({selectionChanged: true}, "*");
 }
 function setReading(on){
   document.body.classList.toggle("reading", on);
@@ -1236,10 +1293,18 @@ function fromHash(){
   if (m[1] === "line" && D.lines[m[2]]) { selectNode(D.lines[m[2]].root, {scrollPage: true}); return true; }
   return false;
 }
+function readingState(){
+  // while the app reads the book: "pages" (no moves read yet) or "first" (a first reading)
+  document.body.classList.toggle("first", D.reading === "first");
+  document.body.classList.toggle("pagesonly", D.reading === "pages");
+}
+window.readingState = readingState;
 function init(){
+  readingState();
   $("ov").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
+    if (penClick(b)) return;
     if (b.dataset.eye) { openSymMenu(b); return; }
     if (RV.edit && RV.edit.kind === "seq" && b.dataset.node) {
       const n = D.nodes[b.dataset.node];
@@ -1267,6 +1332,7 @@ function init(){
   });
   $("tree").addEventListener("click", (e) => {
     const t = e.target.closest(".mv");
+    if (t && t.dataset.node && PEN.connect) { finishConnect(t.dataset.node); return; }
     if (t && t.dataset.node) selectNode(t.dataset.node, {scrollTree: false, scrollPage: true});
   });
   $("bstart").addEventListener("click", () => toEnd(-1));
@@ -1285,6 +1351,45 @@ function init(){
       const seen = es[es.length - 1].isIntersecting;
       if (seen !== S.panelSeen) { S.panelSeen = seen; renderMini(); }
     }, {rootMargin: "0px 0px -64px 0px"}).observe($("panel"));
+  // A tablet held upright gets a quiet note that the reader prefers the
+  // tablet held sideways; turning it (or Hide) removes the note.
+  (function(){
+    const tablet = matchMedia("(pointer: coarse)").matches &&
+      Math.min(screen.width, screen.height) >= 700;
+    const upright = matchMedia("(orientation: portrait)");
+    let hidden = false;
+    try { hidden = localStorage.getItem("chessbook-turnhint") === "off"; } catch (e) { hidden = false; }
+    const show = () => { $("turnhint").hidden = !(tablet && upright.matches && !hidden); };
+    $("turnhide").addEventListener("click", () => {
+      hidden = true; show();
+      try { localStorage.setItem("chessbook-turnhint", "off"); } catch (e) { /* no storage */ }
+    });
+    if (upright.addEventListener) upright.addEventListener("change", show);
+    show();
+  })();
+  // A horizontal swipe on the page turns it. An enlarged page that can still
+  // scroll that way scrolls first, and turns only at its edge.
+  (function(){
+    const box = $("pagescroll");
+    let t0 = null;
+    box.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) { t0 = null; return; }
+      const t = e.touches[0];
+      t0 = {x: t.clientX, y: t.clientY, at: Date.now(), left: box.scrollLeft};
+    }, {passive: true});
+    box.addEventListener("touchend", (e) => {
+      if (!t0 || e.changedTouches.length !== 1) { t0 = null; return; }
+      const t = e.changedTouches[0], dx = t.clientX - t0.x, dy = t.clientY - t0.y;
+      const start = t0; t0 = null;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy) || Date.now() - start.at > 700) return;
+      const room = box.scrollWidth - box.clientWidth;
+      if (room > 1) {
+        const atLeft = start.left <= 1, atRight = start.left >= room - 1;
+        if ((dx < 0 && !atRight) || (dx > 0 && !atLeft)) return;
+      }
+      goPage(S.page + (dx < 0 ? 1 : -1));
+    }, {passive: true});
+  })();
   $("prevpage").addEventListener("click", () => goPage(S.page - 1));
   $("nextpage").addEventListener("click", () => goPage(S.page + 1));
   $("pagenum").addEventListener("keydown", (e) => { if (e.key === "Enter") { typedPage(); e.preventDefault(); } });
@@ -1361,24 +1466,28 @@ CHAPTER_HTML = """<!doctype html>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>__PIECES__</defs></svg>
 <header class="bar">
-<div class="where"><span class="book">__BOOK__</span><h1>__H1__</h1></div>
+<div class="where"><span class="book">__BOOK__</span><h1__H1CLASS__>__H1__</h1></div>
 <nav class="tools" aria-label="Pages">
 <span class="pnav"><button class="ib" id="prevpage" aria-label="Previous page" title="Previous page (Page Up)">__ICON_BACK__</button>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number">
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
+<button class="ib" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
 <button class="tb" id="reviewbtn" aria-pressed="false">Review</button>
 <button class="tb" id="showread" aria-pressed="false">Show reading</button>
 <a class="nav" href="index.html">Contents</a>
+__PGNBTN__
 </nav>
 </header>
 <div class="notes small"><p id="pagemsg" role="status"></p><p class="muted" id="selnote" role="status"></p></div>
 <main class="reader">
 <section class="pagecol" aria-label="Book page">
+<p class="turnhint small muted" id="turnhint" hidden>The reader works best with the tablet held sideways. <button class="tb" id="turnhide" type="button">Hide</button></p>
 <p class="offpage small" id="offpage"></p>
 <p class="diagnote small muted" id="diagnote"></p>
+<p class="provnote small muted" id="provnote">The program is still reading the book. The moves of this chapter are a first reading, made with what the program had learnt when it reached them. When it has read the whole book, the final reading replaces them here, and the page and the chosen move stay where they are.</p>
 <div class="key small muted">
 <div class="help"><p class="mouse">A click on a move or a diagram shows it in the panel. The left and right arrow keys step through the moves, the up and down arrow keys switch between the moves the book gives at a branch, and Page Up and Page Down turn the pages.</p>
-<p class="touch">A tap on a move or a diagram shows it on the small board and in the panel below the page.</p></div>
+<p class="touch">A tap on a move or a diagram shows it on the board. A swipe across the page turns it.</p></div>
 <div class="legend" aria-label="What the outlines and marks mean">
 <span class="ls">A move with no outline is read without doubt.</span>
 <span><i class="k doubt"></i>Chosen from several readings</span>
@@ -1386,6 +1495,7 @@ CHAPTER_HTML = """<!doctype html>
 <span><i class="k wait"></i><i class="u"></i>Waits for board reading (Stage 3)</span>
 <span><i class="k unatt"></i>Placed in no line</span>
 <span><i class="k fixed"></i>Corrected by you</span>
+<span class="penk"><i class="k pen"></i>Pencil on: a tap corrects the move, diagram or sequence</span>
 <span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
 </div>
@@ -1399,7 +1509,6 @@ CHAPTER_HTML = """<!doctype html>
 <div class="row"><label class="use"><input type="checkbox" id="usepage" autocomplete="off"> Use this page</label>
 <button class="tb" id="zoom">Enlarge page</button></div>
 <nav class="chnav" aria-label="Chapters">__CHNAV__</nav>
-<div class="pgn">__PGN__</div>
 </div>
 </section>
 <aside class="panel" id="panel" aria-label="Board and moves">
@@ -1422,7 +1531,7 @@ CHAPTER_HTML = """<!doctype html>
 <p class="small muted" id="revsum"></p>
 <ul class="revlist" id="revlist"></ul>
 </section>
-<section class="sec lsec">
+<section class="sec lsec generic" id="lsec">
 <h2 class="ltitle" id="linetitle">No line chosen</h2>
 <p class="small muted" id="linemeta"></p>
 </section>
@@ -1433,7 +1542,8 @@ CHAPTER_HTML = """<!doctype html>
 <div class="mbar" id="mbar" aria-label="Current move">
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
 <div class="mside"><span class="mtxt" id="mtxt"></span>
-<span class="mbtns"><button class="ib" id="mback" aria-label="Previous move">__ICON_BACK__</button>
+<span class="mbtns"><button class="ib" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
+<button class="ib" id="mback" aria-label="Previous move">__ICON_BACK__</button>
 <button class="ib" id="mfwd" aria-label="Next move">__ICON_FWD__</button>
 <button class="tb" id="mboard" aria-pressed="false">Board</button>
 <button class="tb" id="mmoves">Moves</button></span></div>
@@ -1442,6 +1552,7 @@ CHAPTER_HTML = """<!doctype html>
 <script type="application/json" id="images">__IMAGES__</script>
 <script>__SELJS__</script>
 <script>__CORRJS__</script>
+<script>__CHESSJS__</script>
 <script>__JS__</script>
 </body>
 </html>
@@ -1467,17 +1578,21 @@ def chapter_data(book, ch, pgn_text):
                 "folio": pg.get("folio"),
                 "diagrams": pg["diagrams"],
                 "marks": [{k: m[k] for k in ("bbox", "node", "status", "raw", "line", "reason",
-                                             "key", "seq", "symbol", "corrected")
+                                             "key", "seq", "symbol", "corrected", "ref")
                            if k in m} for m in pg["marks"]]}
     lines = {}
     order = []
     for L in book["lines"]:
-        if L["chapter"] == idx:
+        # the chapter's own lines, and lines of other chapters that run onto its pages
+        # (a line the reader joined to one of another chapter)
+        if L["chapter"] == idx or (L["page"] <= ch["end"] and L["end_page"] >= ch["start"]):
             lines[L["id"]] = {k: L[k] for k in ("id", "title", "kind", "page", "end_page",
                                                 "start_fen", "root", "status", "diagram",
                                                 "section", "result", "moves")}
             lines[L["id"]]["event"] = (L.get("header") or {}).get("event")
+            lines[L["id"]]["header"] = bool(L.get("header"))
             lines[L["id"]]["start_note"] = L.get("start_note") or ""
+            lines[L["id"]]["chapter"] = L["chapter"]
             order.append(L["id"])
     nodes = {}
     for nid, n in book["nodes"].items():
@@ -1527,6 +1642,8 @@ def chapter_data(book, ch, pgn_text):
         "corrections": book.get("corrections") or corrections.empty(),
         "letters": LETTER_SETS.get(book.get("letters") or "English", LETTER_SETS["English"]),
         "pieceWords": PIECE_WORDS,
+        # while the browser app reads the book: "pages" or "first" (progressive.py)
+        "reading": book.get("reading"),
     }
 
 
@@ -1541,6 +1658,21 @@ def chapter_heading(ch):
     sub = (ch.get("subtitle") or "").strip()
     label = ch.get("label") or ch["title"]
     return f"{label}, {sub}" if sub and label != sub else (label or ch["title"])
+
+
+def pgn_button(games, waiting):
+    """The download icon at the right of the top bar; what the file holds is
+    its tooltip."""
+    if not games:
+        tip = "Download PGN: no line of this chapter is decoded yet"
+        return (f'<button class="ib" id="pgnbtn" disabled aria-label="{tip}" title="{tip}">'
+                f'{style.icon("download")}</button>')
+    tip = f"Download PGN: the {_plural(games, 'decoded line')} of this chapter"
+    if waiting:
+        tip += (f", without the {_plural(waiting, 'line')} that "
+                f"{'waits' if waiting == 1 else 'wait'} for board reading")
+    return (f'<button class="ib" id="pgnbtn" aria-label="{html.escape(tip)}" '
+            f'title="{html.escape(tip)}">{style.icon("download")}</button>')
 
 
 def pgn_block(games, waiting):
@@ -1571,8 +1703,10 @@ def chapter_html(book, ch, images, pgn_text, pgn_info):
         "__TITLE__": html.escape(f"{ch['label']} Reader"),
         "__BOOK__": html.escape(book["title"]),
         "__H1__": html.escape(chapter_heading(ch)),
+        # "Whole book" names no chapter of the book: shown only in reading mode
+        "__H1CLASS__": ' class="generic"' if ch.get("title") == "Whole book" else "",
         "__CHNAV__": "".join(nav),
-        "__PGN__": pgn_block(games, waiting),
+        "__PGNBTN__": pgn_button(games, waiting),
         "__STYLE__": style.page_css(),
         "__CHAPTER_CSS__": CHAPTER_CSS,
         "__ICON_START__": style.icon("start"),
@@ -1580,10 +1714,12 @@ def chapter_html(book, ch, images, pgn_text, pgn_info):
         "__ICON_FWD__": style.icon("forward"),
         "__ICON_END__": style.icon("end"),
         "__ICON_FLIP__": style.icon("flip"),
+        "__ICON_PENCIL__": style.icon("pencil"),
         "__PIECES__": _pieces_defs(),
         "__EYE__": EYE_SVG,
         "__SELJS__": SELECTION_JS,
         "__CORRJS__": CORRECTIONS_JS,
+        "__CHESSJS__": CHESS_JS,
         "__JS__": CHAPTER_JS,
         # the data last, so that no placeholder inside the book's text is replaced
         "__DATA__": _json_script(data),
@@ -1696,6 +1832,7 @@ function defaultMsg(){
     "The selection is the one the program used for this run.";
 }
 function refresh(){
+  if (window.CHESSBOOK_APP && SEL.stored()) parent.postMessage({selectionChanged: true}, "*");
   for (const el of document.querySelectorAll(".pg")) {
     const p = parseInt(el.dataset.page, 10), on = SEL.pageOn(p);
     el.classList.toggle("off", !on);
@@ -1766,10 +1903,14 @@ const FIX = makeCorrections(D.corrections, {pdf: D.pdf, pageCount: D.pageCount, 
 window.correctionsText = FIX.text;
 function fixNote(){
   const n = FIX.count();
+  if (D.loading) {
+    $("fixnote").textContent = n ? "The program applies your corrections as it reads the book." : "";
+    return;
+  }
   $("fixnote").textContent = !n ? "You have made no corrections. The Review button of a chapter lists " +
     "what the program could not read with certainty, and lets you correct it." :
     (FIX.anyPending() ? "You have corrections that this run did not use yet. " + (D.app ?
-      "Read again at the top of the page applies them." :
+      "Opening a chapter applies them." :
       "Copy corrections puts them on the clipboard, to paste into the chat for the next run.") :
       "This run used all your corrections.");
 }
@@ -1791,6 +1932,15 @@ refresh(); say();
 // the browser may restore the ticks of the boxes when the reader comes back to this page: the
 // stored selection wins
 window.addEventListener("pageshow", () => { refresh(); });
+// the browser app sends the page thumbnails as it draws them, while it reads the book
+window.addEventListener("message", (e) => {
+  const t = e.data && e.data.thumbs;
+  if (!t || e.source !== window.parent) return;
+  for (const p in t) {
+    const img = document.querySelector(".pg[data-page='" + p + "'] img.scan");
+    if (img && !img.getAttribute("src")) img.src = "data:image/jpeg;base64," + t[p];
+  }
+});
 })();
 """
 
@@ -1823,6 +1973,7 @@ __CHAPTERS__
 <script type="application/json" id="data">__DATA__</script>
 <script>__SELJS__</script>
 <script>__CORRJS__</script>
+<script>__CHESSJS__</script>
 <script>__JS__</script>
 </body>
 </html>
@@ -1866,7 +2017,9 @@ def _corrected_sentence(c):
     parts = []
     for key, one, many in (("moves", "move", "moves"), ("diagrams", "diagram", "diagrams"),
                            ("sequences", "sequence placed in no line", "sequences placed in no line"),
-                           ("symbols", "piece symbol", "piece symbols")):
+                           ("symbols", "piece symbol", "piece symbols"),
+                           ("connections", "line joined to another", "lines joined to others"),
+                           ("splits", "line started anew", "lines started anew")):
         k = c.get(key, 0)
         if k:
             parts.append(f"{_n(k)} {one if k == 1 else many}")
@@ -1881,7 +2034,7 @@ def _corrected_sentence(c):
     return out
 
 
-def index_html(book, thumbs, sizes, app=False):
+def index_html(book, thumbs, sizes, app=False, loading=False):
     e = html.escape
     sel = book["selection"]
     total = book["stats"]
@@ -1900,6 +2053,11 @@ def index_html(book, thumbs, sizes, app=False):
                 f"read and {_n(m.get('waiting', 0))} {'waits' if m.get('waiting', 0) == 1 else 'wait'} "
                 f"for board reading (Stage 3).")
     summary += _corrected_sentence(total.get("corrected") or {})
+    if loading:
+        # the browser app shows the contents while it reads the book (progressive.py)
+        summary = ("The program is reading the book. Every chapter opens now as pages, and its "
+                   "moves appear as the program reads them. The counts of lines and moves appear "
+                   "here when it has read the whole book.")
     parts = []
     by_page = {p["page"]: p for p in book["pages"]}
     for ch in book["chapters"]:
@@ -1926,8 +2084,9 @@ def index_html(book, thumbs, sizes, app=False):
             cards.append(
                 f'<div class="pg" data-page="{p}"><div class="thumb" '
                 f'style="aspect-ratio:{pg["width"]}/{pg["height"]}">'
-                f'<img class="scan" loading="lazy" alt="{e(name.capitalize())}" '
-                f'src="data:image/jpeg;base64,{thumbs[p]}">{"".join(ds)}</div>'
+                f'<img class="scan" loading="lazy" alt="{e(name.capitalize())}"'
+                + (f' src="data:image/jpeg;base64,{thumbs[p]}"' if p in thumbs else "")
+                + f'>{"".join(ds)}</div>'
                 f'<div class="cap"><input type="checkbox" class="pcb" data-page="{p}" autocomplete="off" '
                 f'aria-label="Use {e(name)}">{num}</div><p class="pgnote small muted"></p></div>')
         has_lines = ch["counts"]["lines"] > 0
@@ -1951,6 +2110,7 @@ def index_html(book, thumbs, sizes, app=False):
         "selBase": _selection_base(book),
         "corrections": book.get("corrections") or corrections.empty(),
         "app": app,
+        "loading": loading,
         "pages": [{"page": p["page"], "folio": p.get("folio"),
                    "diagrams": [{"id": d["id"], "kind": d["kind"], "label": d.get("label")}
                                 for d in p["diagrams"]]}
@@ -1968,13 +2128,15 @@ def index_html(book, thumbs, sizes, app=False):
                      "includes it or leaves it out. When you have finished, you copy the "
                      "selection and paste it into the chat. The program uses it on its next run.")),
         "__SUMMARY__": summary,
-        "__COLS__": ('<div class="cols small muted" aria-hidden="true"><span></span><span></span>'
-                     + "".join(f"<span>{w}</span>" for w in COUNT_COLUMNS) + "</div>"),
+        "__COLS__": "" if loading else (
+            '<div class="cols small muted" aria-hidden="true"><span></span><span></span>'
+            + "".join(f"<span>{w}</span>" for w in COUNT_COLUMNS) + "</div>"),
         "__CHAPTERS__": "\n".join(parts),
         "__STYLE__": style.page_css(),
         "__INDEX_CSS__": INDEX_CSS,
         "__SELJS__": SELECTION_JS,
         "__CORRJS__": CORRECTIONS_JS,
+        "__CHESSJS__": CHESS_JS,
         "__JS__": INDEX_JS,
         "__DATA__": _json_script(data),
     }
@@ -1991,9 +2153,13 @@ def _chevron():
 # ---------------------------------------------------------------- build
 
 def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_index=True,
-                 app=False):
+                 app=False, thumbs=None, loading=False):
     """Write index.html and chNN.html into out_dir. chapters limits the chapter
     readers to those indices (the contents page always covers the whole book).
+    thumbs, when given, holds the page thumbnails drawn already ({page: base64
+    JPEG}); the contents page then leaves the others blank (the browser app
+    draws them while it reads the book). loading marks the contents page of a
+    book the app is still reading.
     Returns {"files": {name: bytes}, "pgn": pgnout report, "sizes": {index: bytes}}."""
     say = progress or (lambda *_: None)
     out_dir = Path(out_dir)
@@ -2032,9 +2198,9 @@ def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_ind
         say(f"{ch['file']}: {len(data) / 1048576:.1f} MB (JPEG quality {quality}, {dpi} dpi)")
     if not with_index:
         return {"files": files, "pgn": pgn_report, "sizes": sizes}
-    thumbs = {p: _b64(page_jpeg(doc, p, THUMB_DPI, THUMB_QUALITY))
-              for p in range(1, doc.page_count + 1)}
-    text = index_html(book, thumbs, sizes, app=app)
+    if thumbs is None:
+        thumbs = {p: thumb(doc, p) for p in range(1, doc.page_count + 1)}
+    text = index_html(book, thumbs, sizes, app=app, loading=loading)
     data = text.encode("utf-8")
     (out_dir / "index.html").write_bytes(data)
     files["index.html"] = len(data)

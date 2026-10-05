@@ -33,7 +33,9 @@ A line dict from page_lines has these fields:
             block that spans both columns, or a running head
     spans   [{text, font, size, bbox, role}]: the PDF spans; text keeps its own
             spaces, and role is the font's role from book_fonts ("text" for the
-            body font, "moves", "heading", "coord", "figurine" or "other")
+            body font, "moves", "note_moves" (a second style of the move font,
+            such as italic, that sets moves named in the notes), "heading",
+            "coord", "figurine" or "other")
     words   [{text, bbox, xs}]: one entry per word, so that a reader can lay a
             clickable box over a single move; xs holds the left edge of each
             character and, last, the right edge of the word
@@ -270,7 +272,8 @@ def _raw_page(doc, i):
                 if y1 <= y0:
                     y0, y1 = bx[1], bx[3]
                 si = len(spans)
-                spans.append({"font": s["font"], "size": size, "y0": y0, "y1": y1, "base": base})
+                spans.append({"font": s["font"], "size": size, "y0": y0, "y1": y1, "base": base,
+                              "flags": s.get("flags", 0)})
                 for c in s["chars"]:
                     ch = fig.get((s["font"], c["c"]), c["c"]) if fig else c["c"]
                     chars.append((ch, c["bbox"][0], c["bbox"][2], si))
@@ -323,6 +326,7 @@ def _make_line(chars, spans, line_bbox):
         x1 = p["x1"] if p["x1"] is not None else x0
         out_spans.append({"text": p["text"], "font": s["font"], "size": s["size"],
                           "bbox": [x0, s["y0"], x1, s["y1"]], "base": s["base"],
+                          "flags": s.get("flags", 0),
                           "vis": sum(ch not in _SPACE_SET for ch in p["text"])})
     used = [s for s in out_spans if s["vis"]]
     x0 = min(c[1] for c in vis)
@@ -566,6 +570,10 @@ def _compute_fonts(doc):
                 if s["vis"]:
                     stats[k]["spans"] += 1
                     pages_of[k].add(p)
+                    if s.get("flags", 0) & pymupdf.TEXT_FONT_ITALIC:
+                        stats[k]["italic_chars"] += s["vis"]
+                    if s.get("flags", 0) & pymupdf.TEXT_FONT_BOLD:
+                        stats[k]["bold_chars"] += s["vis"]
             src = ln["span_src"]
             for w in ln["words"]:
                 sp = src[w["si"]]
@@ -639,8 +647,20 @@ def _compute_fonts(doc):
         if (st["move"] >= max(5, 0.03 * all_moves) and r >= 0.35 and r >= 2 * body_ratio
                 and st["coord_spans"] < 0.5 * st["spans"]):
             moves.append(k)
+    # The main line has one style. A second move font in another style of
+    # the type (italic where the main moves are upright, another weight, a
+    # smaller size) sets moves named in the notes: its moves are notes.
+    note_moves = []
+    if len(moves) > 1:
+        primary = max(moves, key=lambda k: chars[k])
+        ps = _font_style(primary, stats[primary], chars[primary])
+        for k in moves:
+            if k != primary and _font_style(k, stats[k], chars[k]) != ps or (
+                    k != primary and k[1] < 0.9 * primary[1]):
+                note_moves.append(k)
+        moves = [k for k in moves if k not in note_moves]
     for k, st in stats.items():
-        if k == body or k in moves:
+        if k == body or k in moves or k in note_moves:
             continue
         if st["spans"] and st["coord_spans"] >= max(5, 0.5 * st["spans"]):
             coords.append(k)
@@ -651,8 +671,8 @@ def _compute_fonts(doc):
     def role(k):
         if k == body:
             return "text"
-        for name, group in (("moves", moves), ("coord", coords), ("figurine", figs),
-                            ("heading", headings)):
+        for name, group in (("moves", moves), ("note_moves", note_moves), ("coord", coords),
+                            ("figurine", figs), ("heading", headings)):
             if k in group:
                 return name
         return "other"
@@ -674,6 +694,7 @@ def _compute_fonts(doc):
         "page_count": n,
         "body": {"font": body[0], "size": body[1]},
         "moves": pack(moves),
+        "note_moves": pack(note_moves),
         "headings": pack(headings),
         "coords": pack(coords),
         "figurines": pack(figs),
@@ -688,6 +709,19 @@ def _compute_fonts(doc):
                    "text_width": text_width or column_width},
         "fonts": entries,
     }
+
+
+_ITALIC_NAME_RE = re.compile(r"(?i)italic|oblique|slanted|kursiv|(?:[-,_]|(?<=[a-z]))It\b")
+_BOLD_NAME_RE = re.compile(r"(?i)bold|black|heavy|semibold|demibold|(?:[-,_]|(?<=[a-z]))(?:Bd|Sb|Hv)\b")
+
+
+def _font_style(key, st, chars):
+    """(italic, bold) of a font: from the style words of its name ("Arial-ItalicMT",
+    "Times-BoldItalic"), or else from the flags the PDF gives its spans."""
+    name = key[0].split("+", 1)[-1]
+    italic = bool(_ITALIC_NAME_RE.search(name)) or st["italic_chars"] > 0.5 * max(chars, 1)
+    bold = bool(_BOLD_NAME_RE.search(name)) or st["bold_chars"] > 0.5 * max(chars, 1)
+    return italic, bold
 
 
 def _figurine_fonts(raws, key_of, body, moves):
@@ -716,7 +750,8 @@ def _move_ratio(st):
 
 
 def _empty_fonts(n):
-    return {"version": 1, "page_count": n, "body": None, "moves": [], "headings": [],
+    return {"version": 1, "page_count": n, "body": None, "moves": [], "note_moves": [],
+            "headings": [],
             "coords": [], "figurines": [], "common_letters": "",
             "layout": {"page_width": None, "page_height": None, "head_base_max": None,
                        "folio_offset": None,
@@ -736,7 +771,9 @@ def _fonts_internal(doc):
 def book_fonts(doc):
     """Font roles and page layout of the whole book, as a JSON-serialisable dict.
 
-    Keys: version, page_count, body {font, size}, moves [{font, size}],
+    Keys: version, page_count, body {font, size}, moves [{font, size}] (the
+    main line's move font), note_moves [...] (move fonts in another style of
+    the type, italic, another weight or a smaller size: moves of the notes),
     headings [...], coords [...], figurines [...], common_letters (the lower-case
     letters that make up 99.9 % of body text), layout {page_width, page_height,
     head_base_max, foot_base_min, folio_offset (PDF page minus printed page
@@ -812,10 +849,28 @@ def join_year(text):
     return _YEAR_SPLIT_RE.sub(lambda m: "1" + m.group(2) + m.group(3) + m.group(4), text)
 
 
+_COLOUR_HEADER_RE = re.compile(rf"^(White|Black)\s*:\s*({_NAMES})\s*$")
+
+
+def colour_header(text):
+    """("white" or "black", name) for a line that names one player of a game
+    ("White: V. Kramnik"), else None."""
+    m = _COLOUR_HEADER_RE.match(text.strip())
+    if m is None or len(text.split()) > 6 or not m.group(2)[0].isupper():
+        return None
+    return m.group(1).lower(), m.group(2).strip()
+
+
 def _name_side(name):
     words = name.split()
     return name.replace(" ", "") in ("N.N.", "NN.", "N.N") or (
         len(words) >= 2 and all(w[0].isupper() for w in words if w[0].isalpha()))
+
+
+# Lower-case words that belong to players' names ("J.Van der Wiel", "R. de Vries",
+# "Duke of Brunswick and Count Isouard").
+_NAME_PARTICLES = {"van", "der", "den", "de", "del", "della", "di", "da", "dos", "du", "la", "le",
+                   "von", "zu", "ter", "ten", "y", "al", "el", "bin", "ibn", "of", "and"}
 
 
 def _game_header(text, name_font_is_body):
@@ -826,6 +881,9 @@ def _game_header(text, name_font_is_body):
     white, black = m.group("white"), m.group("black")
     if not (white[0].isupper() and black[0].isupper()):
         return False
+    if any(w.isalpha() and w.islower() and w not in _NAME_PARTICLES
+           for w in (white + " " + black).split()):
+        return False                # a sentence that names a game: "This was A-B, ..."
     if m.group("year"):
         return True
     if name_font_is_body:
@@ -1101,6 +1159,28 @@ def page_lines(doc, page_index, fonts=None):
                     and len(rj["text"]) <= 40 and re.search(r"(?:1[5-9]|20)\d\d\s*\)?\s*$",
                                                            join_year(rj["text"]))):
                 role[j] = "game_header"
+                break
+
+    # A game header set as one line per player ("White: V. Kramnik" over
+    # "Black: D. Sadvakasov"), and the line of place and year under it.
+    for k, rl in enumerate(rls):
+        if role[k] != "text" or colour_header(rl["text"]) is None:
+            continue
+        side = colour_header(rl["text"])[0]
+        for j, rj in enumerate(rls):
+            gap = rj["bbox"][1] - rl["bbox"][3]
+            other = colour_header(rj["text"]) if role[j] == "text" else None
+            if (other is not None and other[0] != side and -1 <= gap <= 0.8 * bs
+                    and min(rl["bbox"][2], rj["bbox"][2]) > max(rl["bbox"][0], rj["bbox"][0])):
+                role[k] = role[j] = "game_header"
+                low = rj if rj["bbox"][1] > rl["bbox"][1] else rl
+                for i, ri in enumerate(rls):
+                    g = ri["bbox"][1] - low["bbox"][3]
+                    if (role[i] == "text" and -1 <= g <= 0.8 * bs and len(ri["text"]) <= 40
+                            and min(low["bbox"][2], ri["bbox"][2]) > max(low["bbox"][0], ri["bbox"][0])
+                            and re.search(r"(?:1[5-9]|20)\d[\dlI\]]\W{0,2}$", join_year(ri["text"]))):
+                        role[i] = "game_header"
+                        break
                 break
 
     # Reading order and columns.
