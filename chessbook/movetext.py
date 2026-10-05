@@ -100,20 +100,25 @@ COMMON_GLYPH_JUNK: dict[str, list[str]] = {
 }
 
 # What an OCR'd character in the file slot of a square can stand for, with the
-# cost of that reading. Exact readings cost nothing.
+# cost of that reading. Exact readings cost nothing. A "k" is a c joined to the
+# last stroke of the glyph before it (":k7", "Jk1" for Rc7, Rc1), and only
+# when no c fits, an h (".!k8" for Kh8).
 FILE_READ: dict[str, dict[int, float]] = {
     "a": {0: 0.0}, "b": {1: 0.0, 7: 0.6}, "c": {2: 0.0, 4: 0.5}, "d": {3: 0.0},
     "e": {4: 0.0, 2: 0.5}, "f": {5: 0.0}, "g": {6: 0.0}, "h": {7: 0.0, 1: 0.6},
     "o": {0: 0.6}, "t": {5: 0.5}, "£": {5: 0.15}, "q": {6: 0.5}, "r": {5: 0.9},
-    "9": {6: 0.9}, "€": {4: 0.6}, "ƒ": {5: 0.3},
+    "9": {6: 0.9}, "€": {4: 0.6}, "ƒ": {5: 0.3}, "k": {2: 0.6, 7: 1.6},
 }
 # The same for the rank slot. 'l', 'I', 'i' and '!' read as 1 (and as the
 # 7 whose hook was lost), 'B', 'S' and 's' as 8 and 5, 'b' and 'G' as 6.
+# "fl" is OCR's "fl" ligature, which it reads for an "f" and the digit after
+# it: the 'l' of an f-file square is also a 2 ("i>fl" for Kf2), and is looked
+# up (and learnt) apart from other 'l's.
 RANK_READ: dict[str, dict[int, float]] = {
     "1": {0: 0.0, 6: 0.8}, "2": {1: 0.0}, "3": {2: 0.0, 7: 0.8}, "4": {3: 0.0},
     "5": {4: 0.0, 5: 0.9}, "6": {5: 0.0, 7: 0.9, 4: 0.9}, "7": {6: 0.0, 0: 0.8},
     "8": {7: 0.0, 2: 0.8, 5: 0.9},
-    "l": {0: 0.3, 6: 0.7}, "I": {0: 0.3, 6: 0.8}, "i": {0: 0.4, 6: 0.7},
+    "l": {0: 0.3, 6: 0.7}, "fl": {0: 0.3, 6: 0.7, 1: 1.2}, "I": {0: 0.3, 6: 0.8}, "i": {0: 0.4, 6: 0.7},
     "!": {0: 0.6}, "|": {0: 0.4}, "]": {0: 0.7}, "j": {0: 0.9},
     "B": {7: 0.3, 2: 0.9}, "S": {7: 0.4, 4: 0.5}, "s": {7: 0.4, 4: 0.6},
     "b": {5: 0.5}, "G": {5: 0.5}, "Z": {1: 0.6}, "z": {1: 0.7}, "T": {6: 0.7},
@@ -699,6 +704,8 @@ def _enumerate_parses(core: str) -> list:
             for fread, fch, rest in file_opts:
                 if fread is None and rread is None:
                     continue
+                if fch == "f" and rch == "l":
+                    rread, rch = RANK_READ["fl"], "fl"      # the "fl" ligature
                 dest = _dest_costs(fread, rread)
                 for cap, rest2 in _capture_opts(rest):
                     for dfile, drank, prefix in _disamb_opts(rest2):
@@ -1016,15 +1023,16 @@ _LEAD_DOTS_RE = re.compile(r"^([.…•·]+)(.+)$", re.S)
 _GLUE_AFTER = set("12345678t+#!?)")
 _GLUED_NUM_RE = re.compile(r"([0-9][0-9lIOo]{0,2}|[lI][0-9lIOo]{0,2}|[sS])(?=[.…•·]+\S)")
 _DOTLESS_RE = re.compile(r"^(\d{1,3})(?=[^\d.…•·])(.+)$", re.S)
-_ONE_GLYPH_RE = re.compile(r"^[1Il](?=J[^ ])")
+_ONE_GLYPH_RE = re.compile(r"^(?:[1Il](?=J[^ ])|U(?=[:J][^ ]))")
 # Words after which a number names a diagram, a page or an exercise.
 _REF_WORD_RE = re.compile(r"^(?:[DO][il1]a?gr[ae](?:m|rn|in)s?|Diag\.?|Positions?|Pos\.?|Nos?\.|"
                           r"[Pp]ages?|pp?\.|Fig(?:ure)?s?\.?|Exercises?|Problems?|Games?|"
                           r"Chapters?|Studies|Study)$")
+_CHECK_SIGN_RE = re.compile(r"^(?:tt?|[+#†‡])$")
 _ANNOT_RE = re.compile(r"^(?:[!?]{1,2}|\([!?]{1,2}\)|[+#†‡]|tt?|=|±|∓|\+-|-\+|=\+|\+=)$")
 _LAYOUT_RE = re.compile(r"^(?:\d{1,3}[a-d]?|[a-h]|[A-H])$")
 _PIECE_WORD_RE = re.compile(r"^[A-Z][a-z]?[a-h1-8]?[x:]?[a-h£tqo][lIiSsBbGZz]$")
-_STRONG_RE = re.compile(r"([a-h£tqo])['`’]?([1-8])(?:=\S{0,4}|[^\d\s]{1,3})?$")
+_STRONG_RE = re.compile(r"([a-h£tqo]|(?<![a-z])k)['`’]?([1-8])(?:=\S{0,4}|[^\d\s]{1,3})?$")
 _DIGIT_MAP = str.maketrans({"l": "1", "I": "1", "|": "1", "O": "0", "o": "0",
                             "S": "8", "s": "8", "B": "8"})
 # Short English words that end like a square ("as" = a8, "del" = d1); in other
@@ -1199,19 +1207,20 @@ _BARE_SQUARE_RE = re.compile(r"^[a-h][1-8]$")
 @lru_cache(maxsize=20000)
 def _glued_moves(w: str) -> Optional[int]:
     """Where a second move starts in a word that holds two moves printed without
-    a space ("lDc4lDg6", "Nf3Nc6"), if it does. Both parts must look clearly
-    like moves; two bare squares ("e2e4") are one move in long notation."""
+    a space ("lDc4lDg6", "Nf3Nc6", "qa4ltlf6"), if it does. Both parts must
+    look clearly like moves; a square after a square ("e2e4", "Ng1f3") is one
+    move in long notation."""
     if len(w) < 5:
         return None
-    for m in _SQUARE_END_RE.finditer(w, 2):
+    for m in _SQUARE_END_RE.finditer(w, 1):
         p = m.end()
         left, right = w[:p], w[p:]
         if len(right) < 3 or right[0] in "-–—x:×=+#!?.,;()" or right[0].isdigit():
             continue
         if _shape(left) != "strong" or _shape(right) != "strong":
             continue
-        if _BARE_SQUARE_RE.match(left) and _BARE_SQUARE_RE.match(_strip_suffix(right)[0]):
-            continue
+        if _BARE_SQUARE_RE.match(_strip_suffix(right)[0]):
+            continue                # long notation without its dash: "e2e4", "Qd1h5+"
         return p
     return None
 
@@ -1515,6 +1524,14 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
     def next_is_strong(j):
         return j < len(pieces) and _shape(text[pieces[j][0]:pieces[j][1]]) == "strong"
 
+    def check_sign_next(j, e):
+        """True when piece j is a check or mate sign printed apart from the
+        word that ends at e, and a number or a clear move follows it
+        ("\x14d3 '!Wfl t 24.\x14c2": the sign belongs to the move)."""
+        return (j < len(pieces) and 0 < pieces[j][0] - e <= 2
+                and bool(_CHECK_SIGN_RE.match(text[pieces[j][0]:pieces[j][1]]))
+                and (next_is_boundary(j + 1) or next_is_strong(j + 1)))
+
     def after_number(s, e, j):
         """Classify the word right after a move number; returns the next index."""
         w = text[s:e]
@@ -1699,7 +1716,8 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
         mj = _ONE_GLYPH_RE.match(w)
         if mj and not (st.in_seq and st.prev == "move") and _shape(w[1:]) == "strong":
             # "1." printed with its dot lost before a glyph that starts with
-            # "J" ("IJ\x1dd2!", "1J\x1dg4!" for 1.Rd2!, 1.Rg4!)
+            # "J" ("IJ\x1dd2!", "1J\x1dg4!" for 1.Rd2!, 1.Rg4!), or "1." and the
+            # first stroke of a rook's "E:" merged into a "U" ("U:g6" for 1.Rg6)
             number(Token("number", text[s:s + 1], s, s + 1, 1, False, True))
             move(s + 1, e)
             i += 1
@@ -1722,8 +1740,11 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             alone = (len(mg.group(1)) >= 2 and _shape(rest_w) == "strong"
                      and not rest_w[0].islower() and not rest_w[0].isdigit())
             if dotless and not alone and _shape(rest_w) == "strong" \
-                    and not rest_w[0].isdigit() and val <= MAX_DOTLESS:
+                    and not rest_w[0].isdigit() and val <= MAX_DOTLESS \
+                    and not (st.in_seq and st.prev == "move" and exp_n is not None):
                 # a dotless book glues numbers to junk glyphs too: "25lt)c4"
+                # (but within a run, a digit that the numbering does not expect
+                # is a glyph: "22 Bxg7 6xg7" for Kxg7)
                 alone = not re.match(r"[a-h]x?[a-h]?[1-8]", rest_w) or len(mg.group(1)) >= 2
             if in_ctx or alone:
                 ds = s + len(mg.group(1))
@@ -1766,7 +1787,8 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
                 shp = None                       # "Answer:" after a move is no move
             if shp == "strong" or (shp == "weak" and (
                     next_is_boundary(i + 1) or next_is_strong(i + 1) or _move_like(w)
-                    or (i + 1 < len(pieces) and text[pieces[i + 1][0]] == "("))):
+                    or (i + 1 < len(pieces) and text[pieces[i + 1][0]] == "(")
+                    or check_sign_next(i + 1, e))):
                 move(s, e)
                 i += 1
                 continue

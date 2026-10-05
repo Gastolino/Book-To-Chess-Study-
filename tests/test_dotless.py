@@ -114,6 +114,10 @@ def test_numbers_in_a_run_must_follow_on():
         ("hs", 16, True), ("tl)1h2", 17, False), ("tl)fS", 17, True)]
     assert runs("8 ... Nes g Nxes Bxes 10 Qhs!")[0][2] == [
         ("Nes", 8, True), ("Nxes", 9, False), ("Bxes", 9, True), ("Qhs!", 10, False)]
+    # a digit that is the book's king glyph, glued to a capture, is no move
+    # number the run does not expect ("6xg7" for Kxg7)
+    assert runs("22 .*.xg7 6xg7 23 lld4")[0][2] == [
+        (".*.xg7", 22, False), ("6xg7", 22, True), ("lld4", 23, False)]
 
 
 def test_narrow_table_layout():

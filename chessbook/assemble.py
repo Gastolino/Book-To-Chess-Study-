@@ -10,7 +10,7 @@ It writes output/<stem>/book.json and returns the same dict:
                 "diagrams": [{"id", "rect", "label", "kind", "selected", "fen",
                               "status", "reading"?, "after_node", "checked", "lines"}],
                 "marks": [{"bbox", "node", "status", "raw", "line", "reason"?, "key",
-                           "seq"?, "symbol"?, "corrected"?}]}],
+                           "seq"?, "symbol"?, "known"?, "corrected"?}]}],
      "chapters": [{..book_structure chapter.., "index", "file", "counts"}],
      "lines": [{"id", "title", "kind", "chapter", "page", "end_page", "start_fen",
                 "root", "status", "diagram", "section", "header", "result",
@@ -45,7 +45,8 @@ The reader's corrections
 corrections.py keeps the reader's corrections of a book. A token's "key"
 ("page:x,y:raw") names a move token on the page; a mark's "seq" is the key
 of the sequence placed in no line that it belongs to, and its "symbol" the
-piece symbol the text recognition could not name. A node's or mark's
+piece symbol the text recognition could not name ("known" when the book
+taught the program that symbol well, so that no eye marks it). A node's or mark's
 "corrected" says what the reader corrected: "move" (the token reads as the
 move given), "symbol" (its piece symbol), or "placed" (the first move of a
 sequence the reader placed), "connected" (the first move of a run the reader
@@ -225,7 +226,7 @@ from . import selection as sel
 from .movetext import GlyphModel, Token, clean_run, decode, find_sequences, numbering_counts
 from .movetext import DOTLESS_MIN, DOTLESS_SHARE
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
-from .movetext import _ocr_digit_slip, junk_prefix
+from .movetext import CAPTURE_CHARS, _ocr_digit_slip, junk_prefix
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -345,6 +346,20 @@ def _tokens_text(tokens):
         glue = out.endswith((".", "…")) and t.kind == "move"
         out += ("" if glue or not out else " ") + t.raw.strip()
     return out
+
+
+def _open_bracket(text, lo, off):
+    """Offset of the innermost bracket left open between lo and off, or None."""
+    level = 0
+    for k in range(off - 1, lo - 1, -1):
+        ch = text[k]
+        if ch in ")]":
+            level += 1
+        elif ch in "([":
+            if level == 0:
+                return k
+            level -= 1
+    return None
 
 
 def _first_moves(tokens, n):
@@ -698,6 +713,7 @@ class _Run:
     context: Optional[tuple] = None  # the solution context it was held in
     ci: int = -1                # the chapter whose text holds the run
     text: str = ""              # the run's text, for messages
+    bracket: Optional[int] = None   # offset of the bracket the run stands in (depth > 0)
 
 
 class _Stream:
@@ -821,6 +837,7 @@ class _Line:
     close_at: Optional[int] = None
     broken: bool = False        # a gap in the text ended the decoded part of the line
     hold: Optional[int] = None  # a diagram that may end the line (see _Builder.hold)
+    hold_inside: bool = False   # that diagram stands among the moves of the line's last run
     start_note: str = ""        # how the starting position was chosen, in plain words
     spec: dict = field(default_factory=dict)          # where the line starts (see _Builder.replay_line)
     ops: list = field(default_factory=list)           # how the line was built, for replaying it
@@ -1287,7 +1304,9 @@ class _Builder:
                         res = next((_norm_result(t.raw) for t in part if t.kind == "result"),
                                    None)
                         out.append(_Run(kind, part, moves, part[0].start, part[-1].end, s.depth,
-                                        _ply(moves[0]), res))
+                                        _ply(moves[0]), res,
+                                        bracket=_open_bracket(text, a, part[0].start)
+                                        if s.depth else None))
         out.sort(key=lambda r: (r.start, r.kind))
         return out
 
@@ -2294,6 +2313,11 @@ class _Builder:
             if cont is not None:
                 L.hold = None                   # the line goes on past the diagram
                 run = cont
+            elif self.variation_across_hold(L, run):
+                # a diagram printed among the line's own moves did not end it:
+                # here a variation in the main font follows, where its
+                # numbering puts it
+                L.hold = None
             else:
                 self.close(run.start)
         if self.suspended is not None:
@@ -2331,6 +2355,16 @@ class _Builder:
             if L is not None:
                 self.close(run.start)
             accept, _, did = self.initial_accept(run)
+            cut = (self.diagram_cut(run) if not (accept or self.replaying
+                                                 or self.deferred is not None) else None)
+            if cut is not None:
+                # moves that do not read from the initial position: those after
+                # a diagram printed among them are taken up at the diagram,
+                # which shows their position if the moves before it do not
+                # reach it (see the chapter loop)
+                run, tail, off = cut
+                self.deferred = (off, tail)
+                accept, _, did = self.initial_accept(run)
             self.release_pre_notes(None if accept else did)
             self.adopt_pre_notes(self.start_from_initial(run, "main"))
             return
@@ -2373,7 +2407,9 @@ class _Builder:
                 if P - L.next_ply <= GAP_MAX:
                     self.gap(L, run, P)
                     return
-            else:
+            elif not self.reads_at(L, run, P):
+                # (a run that reads as legal play where its numbering puts it
+                # is a variation there, however it may read at the line's end)
                 decs = self.dec.run(L.last_fen, run.tokens)
                 if _fit(decs)[0] == 0:
                     self.extend(L, run, decs)
@@ -2407,6 +2443,24 @@ class _Builder:
             self.extend(L2, run)
             self.adopt_pre_notes(L2)
 
+    def variation_across_hold(self, L, run):
+        """True when the run after a diagram printed among the moves of the
+        held line L is a variation of L in the main font: it reads where its
+        numbering puts it, a full move or more before the line's next move
+        ("25...fxe5" after the game reached move 34). A run that only offers
+        another move for the line's last one is not: that move is more likely
+        a stray of the text before the diagram (a move named in a note), and
+        the run the line itself, going on from the diagram."""
+        return (L.hold_inside and run.ply is not None and run.ply < L.next_ply - 1
+                and self.reads_at(L, run, run.ply))
+
+    def reads_at(self, L, run, P):
+        """True when the run reads cleanly from the position of L's main line
+        before ply P."""
+        nid = L.ply_node.get(P - 1)
+        fen = self.nodes[nid]["fen"] if nid is not None else None
+        return bool(fen) and _fit(self.dec.run(fen, run.tokens))[0] == 0
+
     def lost(self, L):
         """True when the line's main line no longer reads: a gap in the text,
         or its last two moves failed (the position after them is a guess)."""
@@ -2422,6 +2476,19 @@ class _Builder:
         start from the position it shows (on_main, resync), else None."""
         if L.waiting or self.replaying:
             return None
+        cut = self.diagram_cut(run)
+        if cut is None:
+            return None
+        if not L.broken:
+            decs = self.dec.run(L.last_fen, cut[0].tokens) if L.last_fen else []
+            if len(decs) < 2 or not all(d.status == "failed" for d in decs[-2:]):
+                return None
+        return cut
+
+    def diagram_cut(self, run):
+        """(head, tail, offset): the run cut at the first diagram of the
+        selection printed among its moves, when moves stand on both sides and
+        the tail starts at a numbered move; else None."""
         cuts = [off for off, _, kind, did in self.st.events
                 if kind == "diagram" and run.start < off < run.end and self.diagram_selected(did)]
         if not cuts:
@@ -2433,10 +2500,6 @@ class _Builder:
         tm = [t for t in tail if t.kind == "move"]
         if not hm or not tm or _ply(tm[0]) is None:
             return None
-        if not L.broken:
-            decs = self.dec.run(L.last_fen, head) if L.last_fen else []
-            if len(decs) < 2 or not all(d.status == "failed" for d in decs[-2:]):
-                return None
         a = replace(run, tokens=head, moves=hm, end=head[-1].end, result=None, text="")
         b = replace(run, tokens=tail, moves=tm, start=tail[0].start, ply=_ply(tm[0]), text="")
         return a, b, off
@@ -3065,7 +3128,15 @@ class _Builder:
 
         cont = [v for v in vars_ if v["depth"] == run.depth]
         inner = [v for v in vars_ if v["depth"] < run.depth]
+        # a run whose numbering goes on from the variation before it in the
+        # same bracket continues that variation ("(1...Kh6 is met by the
+        # waiting move 2.Rb7"), before it branches from the move the bracket
+        # follows
+        sibling = (cont[-1] if run.depth > 0 and cont and run.bracket is not None
+                   and cont[-1].get("bracket") == run.bracket else None)
         for ply in plies:
+            if sibling is not None and sibling["next"] == ply:
+                add(sibling["last"], "continue")
             if run.depth > 0 and inner:
                 v = inner[-1]
                 if ply in v["plies"]:
@@ -3142,7 +3213,7 @@ class _Builder:
                 plies[ply] = nid
         last = nodes[-1] if nodes else parent
         vars_.append({"depth": run.depth, "plies": plies, "last": last,
-                      "next": (max(plies) + 1) if plies else None})
+                      "next": (max(plies) + 1) if plies else None, "bracket": run.bracket})
         return True
 
     def unread_reason(self, L, run, decs):
@@ -3288,6 +3359,7 @@ class _Builder:
             self.request_close(off)
         elif a.hold is None:
             a.hold = max(off, a.busy_until)     # a run may go on across the diagram
+            a.hold_inside = off < a.busy_until
 
     def continues_held(self, L, run):
         """The run read as the continuation of the held line L, or None."""
@@ -4458,9 +4530,12 @@ def _diagram_reading(did, fen, reading, corrected=False):
     return out
 
 
-def _symbol_counts(book_marks, letters, fixed):
+def _symbol_counts(book_marks, letters, fixed, glyphs=None):
     """{symbol: times printed} for every piece symbol of the book's move tokens
-    that is neither a letter of the notation nor a figurine."""
+    that is neither a letter of the notation nor a figurine. With the book's
+    glyph model, a mark whose symbol the book has taught well (the same junk
+    read nearly always as one piece) is marked "known": the reader puts no
+    eye on it, since a doubt about such a move is not about its piece."""
     out = Counter()
     for marks in book_marks.values():
         for m in marks:
@@ -4468,13 +4543,26 @@ def _symbol_counts(book_marks, letters, fixed):
             if sym:
                 out[sym] += 1
                 m["symbol"] = sym
+                if glyphs is not None and _symbol_known(glyphs, m["raw"], sym):
+                    m["known"] = True
     return out
+
+
+def _symbol_known(glyphs, raw, sym):
+    """True when the glyph model trusts its reading of the symbol, or of the
+    symbol with the capture sign after it that the book prints as part of
+    the piece ("E:" for the rook in "E:h7#")."""
+    if glyphs.strong(sym):
+        return True
+    k = raw.find(sym)
+    nxt = raw[k + len(sym):k + len(sym) + 1] if k >= 0 else ""
+    return bool(nxt) and nxt in CAPTURE_CHARS and glyphs.strong(sym + nxt)
 
 
 def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structure, readings=None,
                fix=None, letters=None):
     fix = fix or fixes.empty()
-    symbols = _symbol_counts(b.marks, letters, fix["glyphs"])
+    symbols = _symbol_counts(b.marks, letters, fix["glyphs"], glyphs)
     ids = sel.diagram_ids(diagrams)
     kinds = b.kinds
     chapter_of = {}

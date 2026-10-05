@@ -690,3 +690,81 @@ def test_unreadable_moves_before_a_run_are_not_skipped(tmp_path):
     first = book["nodes"][_main_line(book, line)[0]]
     assert first["status"] == "failed" and "move 14" in first["reason"]
     assert line["start_fen"].endswith(" w - - 0 14")
+
+
+def test_a_run_in_a_bracket_continues_the_variation_before_it(tmp_path):
+    """"(1...Kh7 is met by the waiting move 2.Rb7, ...)": 2.Rb7 goes on from
+    1...Kh7, the variation before it in the same bracket, not from the move
+    the bracket follows, whose own continuation comes after the bracket."""
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(1)
+    b.pictures("Diagram 1")
+    b.line("1.Rd8+ Kh7 2.Rd7", bold=True)
+    b.line("Also possible is 1.Rd7 Kh8 (1...Kh7 is met by the waiting")
+    b.line("move 2.Rb7, while if 1...f5 then 2.Rd8+) 2.Rxf7 and wins.")
+    b.prose(1)
+    book = _build(tmp_path, b, {"p3-1": ENDING})
+    nodes = book["nodes"]
+    rd7 = next(n for n in nodes.values() if n["san"] == "Rd7" and n["number"] == 1)
+    replies = {nodes[c]["san"]: c for c in rd7["children"]}
+    assert set(replies) == {"Kh8", "Kh7", "f5"}
+    assert [nodes[c]["san"] for c in nodes[replies["Kh8"]]["children"]] == ["Rxf7"]
+    assert [nodes[c]["san"] for c in nodes[replies["Kh7"]]["children"]] == ["Rb7"]
+    assert [nodes[c]["san"] for c in nodes[replies["f5"]]["children"]] == ["Rd8+"]
+
+
+def test_moves_after_a_diagram_in_a_run_that_starts_nowhere(tmp_path):
+    """A run from move 1 that does not read from the initial position, with
+    no diagram before it, goes on across a diagram: the moves after the
+    diagram start from the position it shows. The diagram, printed among the
+    moves the line has read, does not end the line, and a later run of the
+    main font that reads where its numbering puts it is a variation there,
+    even when it would also read at the line's end."""
+    import pymupdf
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(1)
+    b.line("1.Rd1 Kg8 2.Rd2 Kh7 3.Rd3 Kg8 4.Rd7", bold=True)
+    b.pg.insert_image(pymupdf.Rect(300, b.y - 11, 400, b.y + 89), pixmap=b.board)
+    b.line("4...Kh8 5.Rxf7 Kg8 6.Rf3", bold=True)
+    b.y += 90
+    b.prose(1)
+    b.line("4...Kh7 5.h3", bold=True)
+    b.prose(1)
+    fen = "6k1/3R1pp1/7p/8/8/8/5PPP/6K1 b - - 0 4"
+    book = _build(tmp_path, b, {"p3-1": fen})
+    line = _line_with(book, "Rxf7")
+    assert line["diagram"] == "p3-1"
+    assert _sans(book, line) == ["Kh8", "Rxf7", "Kg8", "Rf3"]
+    nodes = book["nodes"]
+    root = nodes[line["root"]]
+    assert [nodes[c]["san"] for c in root["children"]] == ["Kh8", "Kh7"]
+    kh7 = nodes[root["children"][1]]
+    assert [nodes[c]["san"] for c in kh7["children"]] == ["h3"]
+
+
+
+def test_a_run_that_replaces_only_the_last_move_is_no_variation_across_a_diagram():
+    """After a diagram printed among the moves of the line, a run of the main
+    font that reads where its numbering puts it is a variation there when it
+    starts a full move or more before the line's next move ("25...fxe5" after
+    move 34), but not when it only offers another move for the line's last
+    one: that move is likely a stray of a note before the diagram ("22 Rf1
+    Qb5." read as the game's 20...Qb5), and the run the game going on."""
+    from types import SimpleNamespace
+    from chessbook.assemble import _Builder
+    b = _Builder.__new__(_Builder)
+    b.reads_at = lambda L, run, P: True
+    line = SimpleNamespace(hold_inside=True, next_ply=40)   # the line played 20...Qb5
+    assert not b.variation_across_hold(line, SimpleNamespace(ply=39))   # "20...Kh8"
+    assert b.variation_across_hold(line, SimpleNamespace(ply=38))       # "20.Nd5"
+    assert b.variation_across_hold(line, SimpleNamespace(ply=29))       # "15...fxe5"
+    # a diagram after the line's moves, and a run without a number, are no case
+    assert not b.variation_across_hold(SimpleNamespace(hold_inside=False, next_ply=40),
+                                       SimpleNamespace(ply=29))
+    assert not b.variation_across_hold(line, SimpleNamespace(ply=None))
+    b.reads_at = lambda L, run, P: False
+    assert not b.variation_across_hold(line, SimpleNamespace(ply=29))

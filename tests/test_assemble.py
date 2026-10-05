@@ -554,6 +554,20 @@ def test_glyph_ending_in_digit_and_dot_stays_whole():
     assert [t.raw for t in tokenize("9.\x18xd4t10.®c3")] == ["9.", "\x18xd4t", "10.", "®c3"]
 
 
+def test_well_taught_symbols_get_no_eye():
+    """A mark whose piece symbol the book taught well is "known" (the reader
+    draws no eye on it); the symbol of "E:h7#" counts as known through the
+    "E:" the book prints for the rook, and a symbol taught as two pieces is not."""
+    from chessbook.assemble import _symbol_counts
+    from chessbook.movetext import GlyphModel
+    g = GlyphModel()
+    g.learn([("i>", "K")] * 20 + [("E:", "R")] * 20 + [("W", "K")] * 8 + [("W", "Q")] * 5)
+    marks = {40: [{"raw": "i>fl"}, {"raw": "E:h7#"}, {"raw": "Wf6"}, {"raw": "e4"}]}
+    counts = _symbol_counts(marks, None, {}, g)
+    assert set(counts) == {"i>", "E", "W"}
+    assert [m.get("known", False) for m in marks[40]] == [True, True, False, False]
+
+
 # ------------------------------------------------------------------ fixes after the audit
 
 def test_rook_junk_is_not_white_space():
