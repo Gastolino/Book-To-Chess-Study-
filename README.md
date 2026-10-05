@@ -95,6 +95,13 @@ a live board. The book is processed in your own browser (Python runs there
 through Pyodide) and is never uploaded. The first visit downloads about 30 MB;
 later visits start at once.
 
+The reader names the book by its title in words. It takes the title the PDF
+records (without the "Microsoft Word -" that some converters put before it),
+else the title page's largest type with its subtitle ("The Art of Planning in
+Chess: Move by Move"), else a title made from the file's name, without the
+underscores and the author's names in front ("lakdawala_cyrus_the_alekhine_defence"
+gives "The Alekhine Defence").
+
 The book can be read while it is processed. As soon as the program knows the
 book's chapters (a few seconds), the contents page shows, and every chapter
 opens as pages that can be turned and swiped. The top bar says how far the

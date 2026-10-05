@@ -30,9 +30,11 @@ def test_chapter_links_reach_the_app(tmp_path):
     assert '<${"/"}script>' in nav.group(1)
 
 
-def test_book_name_wraps(tmp_path):
+def test_top_bar_shows_no_file_name(tmp_path):
+    # the reader gives the book's title in words; the top bar holds the status only
     page = build(tmp_path)
-    assert "flex-wrap:wrap" in page and "overflow-wrap:anywhere" in page
+    assert 'id="bookname"' not in page and "textContent = file.name" not in page
+    assert "flex-wrap:wrap" in page
 
 
 def test_read_again_passes_the_stored_corrections(tmp_path):

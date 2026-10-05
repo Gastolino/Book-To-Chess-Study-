@@ -4619,14 +4619,103 @@ def book_numbering(doc):
     return {"dotless": dotless, "counts": counts}
 
 
+TITLE_PAGES = 5            # pages searched for the title page
+TITLE_BODY_RATIO = 1.5     # a title is printed at least this much larger than the body text
+_SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "of",
+                "on", "or", "the", "to", "vs", "with"}
+_NOT_TITLES = re.compile(r"(?i)^(?:contents|table of contents|introduction|foreword|preface|"
+                         r"bibliography|index|acknowledge?ments|symbols|by|about the authors?)\b|"
+                         r"www\.|\.com\b|©|\bisbn\b")
+_META_JUNK = re.compile(r"(?i)^(?:microsoft\s+word|word|untitled|document\d*)\s*-\s*|"
+                        r"\.(?:docx?|pdf|rtf|odt|indd)$")
+
+
+def _title_case(part):
+    """A part of a title in the case of a title: every word but the short ones
+    ("of", "by") starts with a capital, so that "THE ART OF" and "move by
+    move" read "The Art of" and "Move by Move". Words with a capital or a
+    digit inside ("McDonald", "e4") stay as printed."""
+    if part.isupper():
+        part = part.lower()
+    out = []
+    for i, w in enumerate(part.split()):
+        if w == w.lower() and not any(c.isdigit() for c in w) and (not i or w not in _SMALL_WORDS):
+            w = w[:1].upper() + w[1:]
+        out.append(w)
+    return " ".join(out)
+
+
+def _join_title(title, subtitle=""):
+    title, subtitle = _title_case(title.strip(" :")), _title_case(subtitle.strip())
+    return f"{title}: {subtitle}" if subtitle else title
+
+
+def _title_page(doc):
+    """The title as the title page prints it: the largest line of type on the
+    first pages (headings such as "Contents" and addresses aside), printed
+    clearly larger than the body text, with the lines of the same size right
+    below it ("THE ART OF" over "PLANNING IN CHESS") and a smaller line close
+    under them as the subtitle ("move by move"). None when no page has one."""
+    body = pt._ctx(pt._fonts_internal(doc)).body_size
+    best = None
+    for i in range(min(doc.page_count, TITLE_PAGES)):
+        lines = []
+        for b in doc[i].get_text("dict")["blocks"]:
+            for l in b.get("lines", []):
+                text = " ".join("".join(sp["text"] for sp in l["spans"]).split())
+                if sum(c.isalpha() for c in text) < 2:
+                    continue
+                size = max(sp["size"] for sp in l["spans"])
+                lines.append((l["bbox"][1], l["bbox"][3], size, text))
+        lines.sort()
+        for k, (y0, y1, size, text) in enumerate(lines):
+            if size < TITLE_BODY_RATIO * body or _NOT_TITLES.search(text):
+                continue
+            if best is None or size > best[0] + 0.5:
+                best = (size, i, k, lines)
+    if best is None:
+        return None
+    size, _, k, lines = best
+    parts, bottom = [lines[k][3]], lines[k][1]
+    sub = ""
+    for y0, y1, sz, text in lines[k + 1:]:
+        gap = y0 - bottom
+        if abs(sz - size) <= 0.5 and gap <= 0.6 * size and not _NOT_TITLES.search(text):
+            parts.append(text)
+            bottom = y1
+            continue
+        if (sz < size and sz >= 0.5 * size and gap <= 0.6 * size
+                and not _NOT_TITLES.search(text) and len(text) <= 60):
+            sub = text
+        break
+    title = " ".join(parts)
+    return _join_title(title, sub) if len(title) <= 120 else None
+
+
+def _file_title(stem):
+    """A title made from the file's name: "Brunthaler, Heinz - My daily
+    exercise" gives "My Daily Exercise", and an author's names before an
+    article ("lakdawala_cyrus_the_alekhine_defence") are left out."""
+    name = stem.replace("_", " ").replace("+", " ")
+    if " - " in name:
+        name = name.split(" - ", 1)[1]
+    words = name.split()
+    for i in range(1, min(4, len(words))):
+        if words[i].lower() in ("the", "a", "an"):
+            words = words[i:]
+            break
+    return _title_case(" ".join(words).lower()) or stem
+
+
 def _book_title(doc, structure, pdf_path):
+    """The book's title in words: the title the PDF records (without the
+    "Microsoft Word - " that some converters put before it), else the title
+    page's (_title_page), else one made from the file's name."""
     t = (doc.metadata or {}).get("title") or ""
-    if t.strip():
-        return t.strip()
-    for s in structure.get("front_matter") or []:
-        if len(s["title"]) >= 6:
-            return s["title"]
-    return pdf_path.stem
+    t = _META_JUNK.sub("", _META_JUNK.sub("", t.strip())).strip()
+    if t and "_" not in t and t.lower() != pdf_path.stem.lower():
+        return t
+    return _title_page(doc) or _file_title(pdf_path.stem)
 
 
 def _diagram_reading(did, fen, reading, corrected=False):

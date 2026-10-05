@@ -55,7 +55,6 @@ body{margin:0;display:flex;flex-direction:column}
 #view{flex:1;border:0;width:100%;display:none}
 #top{display:none;flex-wrap:wrap;align-items:baseline;gap:4px 20px;padding:10px 16px;
   border-bottom:1px solid var(--line);font-size:13px;color:var(--muted);position:relative}
-#top b{font-weight:500;color:var(--fg);min-width:0;overflow-wrap:anywhere}
 #note{flex-basis:100%}
 #note:empty{display:none}
 #note.error{color:var(--fail)}
@@ -69,7 +68,7 @@ body{margin:0;display:flex;flex-direction:column}
 #top button[hidden]{display:none}
 </style></head>
 <body>
-<div id="top"><b id="bookname"></b><span id="took"></span><span class="gap"></span>
+<div id="top"><span id="took"></span><span class="gap"></span>
 <button id="again" type="button" hidden>Read again</button>
 <button id="another" type="button">Open another book</button>
 <span id="note" role="status"></span><div id="topbar"><i></i></div></div>
@@ -243,7 +242,6 @@ async function take(file) {
   busy = true;
   lastFile = file;
   $("again").hidden = true;
-  $("bookname").textContent = file.name.replace(/\\.pdf$/i, "");
   $("bar").classList.add("on");
   status("Reading " + file.name);
   const bytes = await file.arrayBuffer();
