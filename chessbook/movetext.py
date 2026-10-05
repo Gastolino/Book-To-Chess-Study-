@@ -26,7 +26,9 @@ token (piece glyph, disambiguation, capture mark, destination square,
 promotion, check sign), the OCR confusions that would be needed are charged,
 and a beam search over the whole run prefers the readings under which the
 following moves stay decodable. Within a run, junk already read as one piece
-is more likely that piece again.
+is more likely that piece again. A token may also carry the piece that the
+picture of its figurine shows (Token.shape, read by figshapes.py), which
+then counts for more than the junk.
 
 A token that no legal move explains is marked 'failed', and the search goes
 on as if the token were not a move, or as if a move had been played there
@@ -57,6 +59,7 @@ __all__ = [
     "Token", "Sequence", "Decoded", "GlyphModel", "LETTER_SETS", "FIGURINES",
     "COMMON_GLYPH_JUNK", "tokenize", "find_sequences", "decode", "decode_sequence",
     "clean_run", "parse_move_text", "numbering_counts", "uses_dotless_numbers",
+    "junk_prefix", "symbol_span", "letter_symbol",
 ]
 
 PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING = (chess.PAWN, chess.KNIGHT, chess.BISHOP,
@@ -169,6 +172,9 @@ WEAK_SPREAD = 0.7       # most a weakly learnt glyph may favour one piece over a
 C_IMPLIED_NONCAP = 1.0  # a junk glyph that includes the capture mark, on a non-capture
 C_LONG_FROM = 9.0       # long notation whose from-square is not the square the piece leaves
 C_PAWN_DISAMB = 1.5     # a file letter before a pawn move that captures nothing ("gg4")
+C_SHAPE_OTHER = 1.6     # a piece other than the one its figurine's shape shows (Token.shape)
+SHAPE_SURE = 0.7        # a shape read this surely sets a reading apart as a letter does
+SHAPE_KNOWN = 0.8       # a symbol whose shape was read this surely needs no eye in the reader
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +195,10 @@ class Token:
     tokenize() reads only when asked to (books that number moves that way).
     forced holds the SAN that a reader's correction gives a move token: the
     decoder then reads the token as that move, and as nothing else, where it
-    is legal.
+    is legal. shape holds (piece letter, confidence) when the picture of the
+    token's figurine was read (figshapes.py): a reading of that piece costs
+    nothing for the symbol, a reading of another piece about as much as a
+    symbol that cannot be read.
     """
     kind: str
     raw: str
@@ -201,6 +210,7 @@ class Token:
     layout: bool = False
     dotless: bool = False
     forced: Optional[str] = None    # the SAN a reader's correction gives this move token
+    shape: Optional[tuple] = None   # (piece letter, confidence) read from the figurine's picture
 
 
 @dataclass
@@ -819,6 +829,13 @@ class _Scorer:
         if not prefix or prefix in self.letters:
             return False
         return not (len(self.glyphs) and self.glyphs.strong(prefix))
+
+    def glyph_agrees(self, prefix: str, piece: str) -> bool:
+        """True when the glyph model has learnt prefix well, as piece."""
+        if not len(self.glyphs) or not self.glyphs.strong(prefix):
+            return False
+        pri = self.glyphs.prior(prefix)
+        return max(pri, key=pri.get) == piece
 
     def implies_capture(self, prefix: str) -> bool:
         hit = self._capture_cache.get(prefix)
@@ -2007,7 +2024,44 @@ def _forced_candidates(board: chess.Board, san: str):
 def _token_candidates(scorer, board, tok, parsed, gmap):
     if getattr(tok, "forced", None):
         return _forced_candidates(board, tok.forced)
-    return _adjusted(scorer.candidates(board, parsed), board, gmap, scorer)
+    return _adjusted(_shape_candidates(scorer, board, tok, parsed), board, gmap, scorer)
+
+
+def _shape_candidates(scorer, board, tok, parsed):
+    """scorer.candidates() with the piece that the token's figurine shows
+    (Token.shape): a reading of that piece costs what the glyph model asks
+    for the symbol only in proportion to the doubt about the shape (a
+    reading the glyph model priced out comes back), and a reading of
+    another piece about C_SHAPE_OTHER, as for a symbol that cannot be read;
+    when the glyph model has learnt the symbol well as the same piece, a
+    reading of another piece costs what the glyph model asks, if more."""
+    shape = getattr(tok, "shape", None)
+    if not shape:
+        return scorer.candidates(board, parsed)
+    want, conf = LETTER_PIECE[shape[0]], shape[1]
+    out = []
+    for m, c, glyph, pc, b2, prs in scorer.candidates(board, parsed, MAX_COST + 6.0):
+        if glyph and glyph not in scorer.letters:
+            pt = board.piece_type_at(m.from_square)
+            if pt == want:
+                new = (1 - conf) * pc
+            elif pt != PAWN:
+                new = conf * C_SHAPE_OTHER + (1 - conf) * pc
+                if scorer.glyph_agrees(glyph, shape[0]):
+                    new = max(new, pc)      # two readings of the symbol agree
+            else:
+                new = pc
+            c, pc = c - pc + new, new
+        if c <= MAX_COST:
+            out.append((m, c, glyph, pc, b2, prs))
+    out.sort(key=lambda t: t[1])
+    return out
+
+
+def _shape_sure(tok, pt) -> bool:
+    """True when the token's figurine was read surely as piece type pt."""
+    shape = getattr(tok, "shape", None)
+    return bool(shape) and shape[1] >= SHAPE_SURE and LETTER_PIECE[shape[0]] == pt
 
 
 def junk_prefix(raw: str, letters=None) -> Optional[str]:
@@ -2033,6 +2087,28 @@ def junk_prefix(raw: str, letters=None) -> Optional[str]:
     if prefix in known or prefix in _FILE_LETTERS:
         return None
     return prefix
+
+
+def letter_symbol(sym: str, letters) -> bool:
+    """True for a symbol that starts with a piece letter of the notation and
+    goes on with file or rank characters only ("Ra" of "Rae1")."""
+    return bool(sym) and sym[0] in letters and all(c in "abcdefgh12345678" for c in sym[1:])
+
+
+def symbol_span(raw: str, sym: str) -> Optional[tuple]:
+    """(a, b): the characters of raw that hold sym, which junk_prefix gives
+    without the spaces that raw may hold; None when sym is not in raw."""
+    for a in range(len(raw)):
+        i, k = a, 0
+        while i < len(raw) and k < len(sym):
+            if raw[i] == sym[k]:
+                k += 1
+            elif raw[i] != " " or k == 0:
+                break
+            i += 1
+        if k == len(sym):
+            return a, i
+    return None
 
 
 def _board_key(b: chess.Board):
@@ -2340,13 +2416,14 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
                                b.fen(), "ok", [], 0.0, None, parsed.annotation, (None, None),
                                missing, None, False))
             continue
-        cands = _adjusted(scorer.candidates(b, parsed), b, gmap, scorer)
+        cands = _adjusted(_shape_candidates(scorer, b, tok, parsed), b, gmap, scorer)
         mine_c = next((cc for mm, cc, *_ in cands if mm == m), c)
         lo = min([cc for _, cc, *_ in cands] + [mine_c])
         others = [(mm, cc, gg) for mm, cc, gg, *_ in cands
                   if mm != m and cc <= max(lo, mine_c) + FIT_MARGIN]
         score_c = mine_c
-        if not others and mine_c <= lo + FIT_MARGIN and scorer.weak_glyph(glyph):
+        if not others and mine_c <= lo + FIT_MARGIN and scorer.weak_glyph(glyph) \
+                and not _shape_sure(tok, b.piece_type_at(m.from_square)):
             # The learnt glyph alone set this reading apart. Unless the text
             # does so as well, the move is not read with certainty: compare
             # the readings that fit equally under no glyph knowledge.

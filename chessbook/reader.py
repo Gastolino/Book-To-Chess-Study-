@@ -404,12 +404,16 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
 #mboard[aria-pressed="true"]{color:var(--accent)}
-.mini.on{display:block;flex:none;width:188px}
-.mbar.withboard{align-items:stretch}
-.mbar.withboard .mside{flex-direction:column;align-items:stretch;justify-content:space-between}
-.mbar.withboard .mtxt{flex:none;padding-top:4px}
-.mbar.withboard .mbtns{justify-content:flex-start;margin-left:-6px;flex-wrap:wrap;gap:0 12px}
-.mbar.withboard .mside{min-width:0}
+.mini.on{display:block;flex:none;width:var(--mini)}
+.mbar{--mini:min(376px,calc(100vw - 32px),55vh)}
+.mbar.withboard{flex-direction:column;align-items:center;gap:4px}
+.mbar.withboard .mside{width:var(--mini);flex:none}
+.mbar.withboard .mbtns{margin-right:-6px}
+.mbar.withboard.small{--mini:188px;flex-direction:row;align-items:stretch;gap:16px}
+.mbar.withboard.small .mside{width:auto;flex:1;flex-direction:column;align-items:stretch;
+justify-content:space-between}
+.mbar.withboard.small .mtxt{flex:none;padding-top:4px}
+.mbar.withboard.small .mbtns{justify-content:flex-start;margin:0 0 0 -6px;flex-wrap:wrap}
 .mini svg,.mini canvas{display:block;width:100%;height:auto}
 .mini .co{display:none}}
 """ + REVIEW_CSS
@@ -858,10 +862,14 @@ function renderMini(){
     !(RV.edit && RV.edit.kind === "diagram");
   mini.classList.toggle("on", show);
   bar.classList.toggle("withboard", show);
+  // the board is large while reading, and keeps to the side of the bar while a correction is open
+  bar.classList.toggle("small", show && editing);
   const box = $("minibox");
-  if (!show) { box.innerHTML = ""; return; }
-  if (kind === "svg") box.innerHTML = x;
+  if (!show) box.innerHTML = "";
+  else if (kind === "svg") box.innerHTML = x;
   else { box.innerHTML = PIC; cropInto(box.querySelector("canvas"), x); }
+  // the end of the page can be scrolled above the bar (an open editor places itself: placeSheet)
+  if (!editing) document.body.style.paddingBottom = show ? bar.offsetHeight + 16 + "px" : "";
 }
 
 /* ---------------------------------------------------------------- moves */

@@ -775,3 +775,58 @@ def test_primer_pgn_keeps_notes_out_of_the_score(pbook, tmp_path):
     caps = [g for g in games if g.headers["White"] == "Capablanca"]
     assert any(g.headers["Result"] == "*" and "lacks" in g.end().comment for g in caps)
     assert all(g.headers["BookPage"] != g.headers["PDFPage"] for g in games)
+
+
+# ---------------------------------------------------------------- the book's title
+def _titled_pdf(tmp_path, meta_title="", title_lines=()):
+    """A PDF with body text over a few pages; title_lines [(text, size, y)] on
+    its first page."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for text, size, y in title_lines:
+        page.insert_text((60, y), text, fontsize=size)
+    for _ in range(3):
+        p = doc.new_page()
+        for k in range(30):
+            p.insert_text((60, 60 + 20 * k), "White plays for the centre and Black for the wings.",
+                          fontsize=10)
+    doc.set_metadata({"title": meta_title})
+    path = tmp_path / "some_file_name.pdf"
+    doc.save(path)
+    return pymupdf.open(path), path
+
+
+def test_title_from_the_title_page(tmp_path):
+    from chessbook.assemble import _book_title
+    doc, path = _titled_pdf(tmp_path, title_lines=[
+        ("Neil McDonald", 18, 80), ("THE ART OF", 28, 180), ("PLANNING IN CHESS", 28, 212),
+        ("move by move", 18, 240), ("Contents", 30, 700)])
+    # the largest type with the same size right below it, the subtitle close under them;
+    # the author's name stands apart and "Contents" is a heading
+    assert _book_title(doc, {}, path) == "The Art of Planning in Chess: Move by Move"
+
+
+def test_title_from_the_pdf_without_converter_words(tmp_path):
+    from chessbook.assemble import _book_title
+    doc, path = _titled_pdf(tmp_path, meta_title="Microsoft Word - Ivanchuk-Kasparov, Linares 1991.doc",
+                            title_lines=[("Big Words", 30, 100)])
+    assert _book_title(doc, {}, path) == "Ivanchuk-Kasparov, Linares 1991"
+
+
+def test_title_from_the_file_name(tmp_path):
+    from chessbook.assemble import _book_title, _file_title
+    doc, path = _titled_pdf(tmp_path)          # no recorded title, no title page
+    assert _book_title(doc, {}, path) == "Some File Name"
+    # an author's names before an article, and "Author - Title", are left out
+    assert _file_title("lakdawala_cyrus_the_alekhine_defence_move_by_move") == \
+        "The Alekhine Defence Move by Move"
+    assert _file_title("Brunthaler, Heinz - My daily exercise 365 tactical tests") == \
+        "My Daily Exercise 365 Tactical Tests"
+
+
+def test_title_case():
+    from chessbook.assemble import _title_case
+    assert _title_case("THE ART OF PLANNING IN CHESS") == "The Art of Planning in Chess"
+    assert _title_case("The King's Indian attack") == "The King's Indian Attack"
+    # capitals and digits inside a word stay as printed
+    assert _title_case("beating the 1 e4 e5 by McDonald") == "Beating the 1 e4 e5 by McDonald"

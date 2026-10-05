@@ -56,12 +56,51 @@ when a board is drawn from Black's side, and a caption such as "(B)" or
 `chessbook/assets/pieces.npz`; `tests/data/board_truth.json` holds 76
 positions checked by eye against the pictures of five books.
 
+## Reading figurines by their shape
+
+Scanned books print their moves with piece figurines, and the text
+recognition turns each figurine into junk: "i>" or "\x14" for a king, "tLl"
+for a knight, "i." for a bishop. The program learns from the book which junk
+stands for which piece, but junk that it sees seldom, or junk that stands for
+two pieces, would leave the piece to legal play alone. So the program also
+reads the picture of every such figurine (`chessbook/figshapes.py`), as it
+reads the pieces of the diagrams, without any labelling by hand:
+
+- it finds where the junk characters stand on the page, draws that part of
+  the page as it is displayed (the redrawn type of a ClearScan page, the
+  picture of a scanned page) and cuts the figurine out of the ink;
+- it groups the cuts of the whole book, since a book prints each figurine
+  the same way every time (five pieces, in each style of figurine the book
+  uses);
+- it names each group from the moves it already reads with certainty (a move
+  whose square only one kind of piece can reach in that position), and a
+  group with too few such moves from reference figurines of other books
+  (`chessbook/assets/figurines.npz`);
+- the decoder then reads the piece that the picture shows unless legal play
+  rules it out, and the reader puts no eye on a symbol whose picture names
+  its piece surely.
+
+Books whose text names the pieces (letters, or a figurine font) are left as
+they are, and so is every book when OpenCV is missing. The figurines are
+read after the first reading of the moves (in the app, with the board
+pictures, before the final reading) and add about six seconds to the
+reading of the Primer. `tools/make_figurine_refs.py` collects the reference
+figurines from books that name their figurines well;
+`tests/data/figurine_truth.json` holds 240 cuts of four books checked by eye.
+
 ## Using the app
 
 Open the published site, drop a chess book PDF on the page, and read it beside
 a live board. The book is processed in your own browser (Python runs there
 through Pyodide) and is never uploaded. The first visit downloads about 30 MB;
 later visits start at once.
+
+The reader names the book by its title in words. It takes the title the PDF
+records (without the "Microsoft Word -" that some converters put before it),
+else the title page's largest type with its subtitle ("The Art of Planning in
+Chess: Move by Move"), else a title made from the file's name, without the
+underscores and the author's names in front ("lakdawala_cyrus_the_alekhine_defence"
+gives "The Alekhine Defence").
 
 The book can be read while it is processed. As soon as the program knows the
 book's chapters (a few seconds), the contents page shows, and every chapter
