@@ -1,8 +1,9 @@
 """Build the browser app: a static site where a reader drops a chess book PDF
 and reads it beside a live board. Every book is processed on the reader's own
-device. Served by the Cloudflare site (wrangler.toml, docs/CLOUDFLARE.md), the
-start page is the user's library (web/library.js), which stores the books and
-their readings there; served anywhere else, nothing is uploaded anywhere.
+device. The start page is the user's library (web/library.js): served by the
+Cloudflare site (wrangler.toml, docs/CLOUDFLARE.md), the site stores the books
+and their readings; served anywhere else (GitHub Pages), the browser keeps
+them on the device, and nothing is uploaded anywhere.
 
 Usage:
     python3 tools/build_web.py [--out output/site] [--local PYODIDE_DIR]
@@ -14,9 +15,12 @@ and --pymupdf copies the PyMuPDF wheel, for hosts or tests without those
 networks.
 """
 import argparse
+import json
 import shutil
+import struct
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +38,11 @@ SHELL = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Chess Book Reader</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Chess books">
 <style>__CSS__
 html,body{height:100%}
 body{margin:0;display:flex;flex-direction:column}
@@ -68,7 +77,7 @@ body{margin:0;display:flex;flex-direction:column}
 #top button:hover{text-decoration:underline}
 #top .gap{flex:1}
 #top button[hidden]{display:none}
-/* the library (web/library.js), when the Cloudflare site serves the app */
+/* the library (web/library.js): the Cloudflare site's, or the one in this browser */
 body.library #start{max-width:760px;padding-top:40px}
 #lib{margin-top:24px}
 #books{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
@@ -83,12 +92,20 @@ body.library #start{max-width:760px;padding-top:40px}
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .book .meta{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
 .book .open:hover .title{color:var(--accent)}
-.book .remove{font-size:13px;color:var(--muted)}
+.book .acts{display:flex;gap:4px 20px;align-items:baseline}
+.book .acts .tb{font-size:13px;color:var(--muted)}
+.book .acts .tb:hover{color:var(--accent)}
 .book .confirm{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 20px;
   margin-top:10px;font-size:13px}
 .book .confirm span{flex-basis:100%}
 .book .confirm .yes{color:var(--fail)}
 #libempty{color:var(--muted);padding:16px 0;border-bottom:1px solid var(--line)}
+#libhint{font-size:13px;color:var(--muted);margin:0 0 16px}
+#libhint button{margin-left:8px;font-size:13px;color:var(--fg);white-space:nowrap}
+#libspace{font-size:13px;color:var(--muted);margin:12px 0 0;font-variant-numeric:tabular-nums}
+@media (max-width:560px){
+  .book .acts{flex-basis:100%;padding-left:58px;margin-top:6px}
+}
 body.library #drop{margin-top:0;border-top:0;padding:28px 0;text-align:left}
 body.library #drop .small{max-width:46em}
 @media (min-width:900px){
@@ -110,14 +127,16 @@ live board that follows the moves and variations.</p>
 <p>Your book stays on this device. The page reads it here and sends it nowhere.</p>
 </div>
 <section id="lib" hidden aria-label="Your library">
+<p id="libhint" hidden><span></span><button class="tb" type="button">Hide this note</button></p>
 <ul id="books"></ul>
 <p id="libempty" hidden>Your library holds no books yet. Add a chess book below: the program
 reads it once, and every device you sign in on opens it at once.</p>
+<p id="libspace" hidden></p>
 </section>
 <div id="drop" tabindex="0" role="button" aria-label="Choose a chess book PDF">
 <div class="big">Drop a chess book here</div>
 <div class="small">or click to choose a PDF file</div></div>
-<input id="file" type="file" accept="application/pdf,.pdf">
+<input id="file" type="file" accept="application/pdf,.pdf,.chessbook,application/zip,.zip">
 <div id="status">Preparing the reader. The first visit downloads about 40 MB; later visits
 start at once.</div>
 <div id="bar" class="on"><i></i></div>
@@ -285,11 +304,12 @@ window.addEventListener("message", (e) => {
     : { type: "chapter", name: e.data.open, hash: e.data.hash,
         small: window.matchMedia("(max-width: 700px)").matches });
 });
-// A book the user chose: added to the library first when the site keeps one.
+// A book the user chose: added to the library first (the site's, or the one
+// in this browser), which takes a book file saved from a library as well.
 async function take(file) {
   if (!file || busy) return;
-  if (!/\\.pdf$/i.test(file.name)) { status("Please choose a PDF file.", true); return; }
   if (LIB.on) { LIB.add(file); return; }
+  if (!/\\.pdf$/i.test(file.name)) { status("Please choose a PDF file.", true); return; }
   read(file, file.name);
 }
 // The program reads the book (file, a File or Blob, named fileName).
@@ -309,7 +329,8 @@ async function read(file, fileName) {
 }
 $("drop").addEventListener("click", () => $("file").click());
 $("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") $("file").click(); });
-$("file").addEventListener("change", (e) => take(e.target.files[0]));
+// the chooser forgets the file, so that choosing the same file again is noticed
+$("file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; take(f); });
 ["dragenter", "dragover"].forEach((t) => $("drop").addEventListener(t, (e) => {
   e.preventDefault(); $("drop").classList.add("over"); }));
 ["dragleave", "drop"].forEach((t) => $("drop").addEventListener(t, (e) => {
@@ -348,11 +369,42 @@ function storedCorrections(name) {
   return null;
 }
 worker.postMessage({ type: "init", cfg: CFG });
-// served by the Cloudflare site, the start page becomes the library
+// the start page becomes the library: the Cloudflare site's, or the one in this browser
 LIB.start();
 </script>
 </body></html>
 """
+
+
+def icon_png(size):
+    """The Home Screen icon: a corner of a chess board in the board colours of
+    DESIGN.md, flat, as a PNG of size by size pixels."""
+    light, dark, bg = (0xec, 0xeb, 0xe6), (0xbd, 0xba, 0xb2), (0xfb, 0xfb, 0xfa)
+    margin, cells = size // 6, 4
+    cell = (size - 2 * margin) // cells
+    rows = []
+    for y in range(size):
+        row = bytearray([0])
+        for x in range(size):
+            cx, cy = (x - margin) // cell, (y - margin) // cell
+            inside = 0 <= x - margin < cell * cells and 0 <= y - margin < cell * cells
+            row += bytes(bg if not inside else light if (cx + cy) % 2 == 0 else dark)
+        rows.append(bytes(row))
+
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data +
+                struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
+
+
+# Added to the Home Screen of an iPhone or iPad, the app opens on its own
+# (without Safari's bars) and keeps its library apart from Safari, which may
+# clear the storage of a site left unused for a week.
+MANIFEST = {"name": "Chess Book Reader", "short_name": "Chess books", "start_url": "./", "scope": "./",
+            "display": "standalone", "background_color": "#fbfbfa", "theme_color": "#fbfbfa",
+            "icons": [{"src": "icon-180.png", "sizes": "180x180", "type": "image/png"},
+                      {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"}]}
 
 
 def app_zip(dest):
@@ -381,6 +433,9 @@ def main(argv=None):
     (out / "wheels").mkdir(exist_ok=True)
     shutil.copyfile(ROOT / "web" / "worker.js", out / "worker.js")
     shutil.copyfile(ROOT / "web" / "library.js", out / "library.js")
+    (out / "manifest.webmanifest").write_text(json.dumps(MANIFEST, indent=1), encoding="utf-8")
+    for size in (180, 512):
+        (out / f"icon-{size}.png").write_bytes(icon_png(size))
     app_zip(out / "app.zip")
     shutil.copyfile(args.chess, out / "wheels" / args.chess.name)
     wheels = ["wheels/" + args.chess.name]
