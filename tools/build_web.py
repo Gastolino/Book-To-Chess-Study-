@@ -326,9 +326,15 @@ function workNow() {
   if (!parts.length && workingNow) parts.push(workWords);
   return parts.filter(Boolean).join(" ").replace(/([^.])( Drawing| Saving)/g, "$1.$2");
 }
+// a tap shows them in the status line itself for a few seconds (a second line would repeat it and
+// push the reader down), unless the reading has written newer words there meanwhile
+let busyTimer = 0;
 $("busy").addEventListener("click", () => {
-  $("note").classList.remove("error");
-  $("note").textContent = workNow() || "The program has nothing to do now.";
+  const el = $("took"), before = el.textContent;
+  const words = workNow() || "The program has nothing to do now.";
+  el.textContent = words;
+  clearTimeout(busyTimer);
+  busyTimer = setTimeout(() => { if (el.textContent === words) el.textContent = before; }, 4000);
 });
 // The flag goes first in the head, so that the page's own script sees it
 // while it starts (the stored corrections it sends, the words it chooses).
