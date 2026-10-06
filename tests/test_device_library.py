@@ -119,6 +119,9 @@ def test_device_library_end_to_end(tmp_path):
             "the book file holds the book, its reading, its cover and its record",
             "the book from the file opens without being read",
             "the book from the file holds the correction",
+            "the book file carries the bookmark",
+            "the library on the other device lists the bookmark under the book",
+            "the bookmark in the library opens the book at its page and move",
             "the newer corrections of a book file win, and the user is told",
             "a removed book leaves nothing behind"} <= names
     print(json.dumps(res["timings"], indent=1))

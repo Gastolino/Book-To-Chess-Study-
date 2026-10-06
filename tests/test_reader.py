@@ -128,6 +128,38 @@ def test_index_page(little):
     assert data["excludedKinds"] == ["partial", "illustration", "icon", "front"]
 
 
+def test_bookmarks_on_the_contents_page(little, tmp_path):
+    """A build given bookmarks lists them on the contents page, each a link
+    that opens the chapter at that page and move; one per page at most, in
+    page order; and both pages carry the bookmark store and the warm yellow
+    token, used by the icon and the ribbon alone."""
+    out, book, _ = little
+    plain = (out / "index.html").read_text(encoding="utf-8")
+    assert '<p class="summary small" id="bmlist"></p>' in plain
+    assert "chessbook-bookmarks:" in plain and "makeBookmarks(" in plain
+    chapter = (out / "ch01.html").read_text(encoding="utf-8")
+    for needle in ('id="bmbtn"', 'id="mbm"', 'id="ribbon"', 'id="bmnote"', "chessbook-bookmarks:",
+                   "Bookmark removed.", 'aria-label="Bookmark this page"', style.ICONS["bookmark"]):
+        assert needle in chapter, needle
+    assert "--bookmark:#f2b705" in chapter and "--bookmark:#f2b705" in plain
+    css = re.sub(r"/\*.*?\*/", "", _css_of(chapter), flags=re.S)
+    uses = re.findall(r"[^{}]*\{[^}]*var\(--bookmark\)[^}]*\}", css)
+    assert uses and all(re.match(r"\s*(#bmbtn|#mbm|\.ribbon)", u) for u in uses), uses
+    assert "var(--bookmark)" not in _css_of(plain) and "var(--bookmark)" not in style.base_css()
+    node = next(nid for nid, n in book["nodes"].items() if n.get("page") == 4 and n.get("san"))
+    marked = dict(book, bookmarks=[{"page": 9, "node": None, "at": 2}, {"page": 4, "node": node, "at": 1},
+                                   {"page": 4, "node": None, "at": 3}, {"page": 99, "at": 4}, "x"])
+    reader.build_reader(marked, out.parent.parent.parent / "little.pdf", tmp_path / "reader", chapters=set())
+    index = (tmp_path / "reader" / "index.html").read_text(encoding="utf-8")
+    line = re.search(r'<p class="summary small" id="bmlist">(.*?)</p>', index).group(1)
+    assert line == (f'Bookmarks: <a href="ch01.html#at=4:{node}">page 4</a>, '
+                    '<a href="ch01.html#at=9:">page 9</a>.'), line
+    data = script_json(index, "data")
+    assert [b["page"] for b in data["bookmarks"]] == [4, 9]
+    assert data["chapters"][1]["file"] == "ch01.html" and len(data["folios"]) == book["page_count"]
+    assert reader.bookmarks_of({"bookmarks": None, "page_count": 3}) == []
+
+
 def test_writing_style(little):
     out, _, _ = little
     for name in ("index.html", "ch01.html"):
@@ -225,6 +257,39 @@ def test_primer_reader_in_chromium(tmp_path, monkeypatch):
         assert (screens / shot).stat().st_size > 10000, shot
     print(json.dumps({k: res[k] for k in ("chapter", "clicked", "advanced", "diagram", "symbol")}))
     _read_again_from_the_command_line(res, tmp_path, monkeypatch)
+
+
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_bookmarks_in_chromium(tmp_path):
+    """Setting, keeping and removing bookmarks (tests/bookmark_e2e.js) on the
+    generated book, on a desktop, an iPhone 13 and an iPad held sideways: the
+    icon, the ribbon, Undo, the contents page's links, and the warm yellow on
+    no other element."""
+    pdf = make_book(tmp_path / "little.pdf", second=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    out = tmp_path / "output" / "little" / "reader"
+    reader.build_reader(book, pdf, out)
+    screens = ROOT / "output" / "screens"
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "bookmark_e2e.js"), str(out), str(screens)],
+                          capture_output=True, text=True, env=env, timeout=600)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    assert res["errors"] == []
+    names = {c["name"] for c in res["checks"]}
+    assert {"the icon fills in the warm yellow", "the ribbon covers no move box or diagram",
+            "the warm yellow colours no element but the icon and the ribbon",
+            "the bookmark persists after a reload", "a tap on the ribbon removes the bookmark",
+            "Undo brings the bookmark back", "the contents page lists the bookmarks",
+            "the link opens the chapter at the bookmarked page and move",
+            "the phone bar holds the bookmark icon within the screen"} <= names
+    for name in ("bookmark_1280_light.png", "bookmark_1280_dark.png", "bookmark_removed_1280_light.png",
+                 "bookmark_390_light.png", "bookmark_390_dark.png", "bookmark_removed_390_light.png",
+                 "bookmark_1194_light.png", "bookmark_1194_dark.png", "bookmark_index_1280_light.png"):
+        assert (screens / name).stat().st_size > 10000, name
 
 
 @pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")

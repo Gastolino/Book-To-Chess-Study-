@@ -152,6 +152,21 @@ again, with the corrections. If the library holds the book already (the same
 PDF), the newer of the two sets of corrections wins, and the page says which.
 The file is an ordinary zip archive; `book.pdf` inside it is the book.
 
+### Bookmarks
+
+The bookmark icon in the reader's top bar (and in the bar at the foot of a
+phone screen) marks the page shown, with the move chosen on it. The icon
+fills in a warm yellow on a bookmarked page, and a yellow ribbon hangs from
+the top edge of the page picture, in the margin beside the moves. A tap on
+the ribbon (or on the filled icon) removes the bookmark; one line over the
+page's corner says "Bookmark removed" with Undo for a few seconds. A book
+holds any number of bookmarks, one per page. The contents page lists them
+("Bookmarks: page 31, page 57"), each a link that opens the chapter at that
+page and move, and the library lists them under each book ("Bookmarks on
+pages 31 and 57"), where a tap opens the book there. The bookmarks are kept
+with the corrections: in the browser, in the site's library, and in the book
+file, so that they travel to another device; the newer copy wins.
+
 The reader names the book by its title in words. It takes the title the PDF
 records (without the "Microsoft Word -" that some converters put before it),
 else the title page's largest type with its subtitle ("The Art of Planning in
