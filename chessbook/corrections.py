@@ -15,6 +15,9 @@ selection (selection.py), and in the browser under
                     "204:90,410:Rd1": {"start": "p204-1"},
                     "205:60,90:Kf2":  {"remove": true}},
      "gaps":       {"7:28,664:e5": {"san": ["Bd7"]}},
+     "added":      {"201:118,342:Nf3": [{"san": ["Nc6", "Bb5"]},
+                                        {"san": ["d6"], "note": "Quieter."}],
+                    "201:80,300:e4":   [{"san": ["d4", "d5"], "before": true}]},
      "note": "Corrections made in the book reader."}
 
 diagrams     a diagram id (selection.py) and the position it shows; it wins
@@ -50,6 +53,20 @@ gaps         the key of the first printed move after a gap in the text (moves
              legal there; when they fill the whole gap the line reads on from
              them, else a smaller gap follows them. The program never
              supplies such a move itself.
+added        the key of a move of a line and the variations the reader added
+             after it (by moving pieces on the board): a list, each entry a
+             list of moves in SAN played from the position after that move
+             ("san"), with an optional "note". {"before": true} plays them
+             from the position before the move instead, as alternatives to
+             it: the reader's variations at the start of a line (where no
+             move stands before them) or after a move the reader gave for a
+             gap are stored so. The key is that of a printed move, so the
+             variations survive a rebuild like the other corrections.
+             Variations that begin with the same moves share them in the
+             move list, so a variation that branches inside another one is
+             stored whole (the shared moves and its own). The moves are
+             played while they are legal; the rest of a variation is left
+             out, with the reason.
 
 The corrections are applied after the book is assembled, by replaying the
 lines they touch (assemble._Builder.apply_fix), so that the browser app can
@@ -66,7 +83,7 @@ import chess
 from .selection import BOOKS_DIR, ID_RE, _FENCE_RE, _objects
 
 VERSION = 1
-PARTS = ("diagrams", "moves", "unattached", "glyphs", "connect", "disconnect", "gaps")
+PARTS = ("diagrams", "moves", "unattached", "glyphs", "connect", "disconnect", "gaps", "added")
 PIECES = "KQRBNP"
 KEY_RE = re.compile(r"^(\d+):(-?\d+),(-?\d+):(.*)$", re.S)
 TOLERANCE = 2.5             # points a token may move between builds and keep its key
@@ -110,7 +127,7 @@ def normalise(data):
     if not isinstance(data, dict):
         raise ValueError("Corrections must be a JSON object.")
     out = {"version": VERSION, "diagrams": {}, "moves": {}, "unattached": {}, "glyphs": {},
-           "connect": {}, "disconnect": {}, "gaps": {}}
+           "connect": {}, "disconnect": {}, "gaps": {}, "added": {}}
     for did, v in (data.get("diagrams") or {}).items():
         if not ID_RE.match(str(did)):
             raise ValueError(f"{did!r} is not a diagram id such as 'p201-1'.")
@@ -162,6 +179,26 @@ def normalise(data):
                 not all(isinstance(x, str) and x.strip() for x in sans):
             raise ValueError(f"The moves given for the gap at {key!r} are not a list of moves.")
         out["gaps"][key] = {"san": [x.strip() for x in sans]}
+    for key, v in (data.get("added") or {}).items():
+        parse_key(key)
+        entries = v if isinstance(v, list) else [v]
+        kept = []
+        for e in entries:
+            sans = e.get("san") if isinstance(e, dict) else e
+            if isinstance(sans, str):
+                sans = sans.split()
+            if not isinstance(sans, list) or not sans or \
+                    not all(isinstance(x, str) and x.strip() for x in sans):
+                raise ValueError(f"A variation added at {key!r} is not a list of moves.")
+            entry = {"san": [x.strip() for x in sans]}
+            if isinstance(e, dict) and e.get("before"):
+                entry["before"] = True
+            if isinstance(e, dict) and e.get("note"):
+                entry["note"] = str(e["note"])
+            if entry not in kept:
+                kept.append(entry)
+        if kept:
+            out["added"][key] = kept
     if data.get("note"):
         out["note"] = str(data["note"])
     return out
@@ -202,8 +239,8 @@ def parse_corrections_text(text):
             if isinstance(obj, dict) and set(PARTS) & obj.keys():
                 return normalise(obj)
     raise ValueError("The text holds no corrections: no JSON object with \"diagrams\", "
-                     "\"moves\", \"unattached\", \"glyphs\", \"connect\", \"disconnect\" or "
-                     "\"gaps\" was found.")
+                     "\"moves\", \"unattached\", \"glyphs\", \"connect\", \"disconnect\", "
+                     "\"gaps\" or \"added\" was found.")
 
 
 class TokenIndex:
