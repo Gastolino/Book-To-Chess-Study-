@@ -62,6 +62,7 @@ STATUS_WORDS = {
     "waiting": "Waits for board reading (Stage 3)",
     "unattached": "Placed in no line",
     "corrected": "Corrected by you",
+    "added": "Added by you",
 }
 
 # What each kind of picture is, in words for the reader.
@@ -743,7 +744,8 @@ function boardSvg(fen, flip, uci, doubt){
   const rows = fen.split(" ")[0].split("/");
   const W = BW, H = TOP + 8 * SQ + M;
   let s = "<svg class='board' xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' " +
-    "viewBox='0 0 " + W + " " + H + "' role='img' aria-label='Chess board: " + esc(fen) + "'>";
+    "viewBox='0 0 " + W + " " + H + "' role='img' aria-label='Chess board: " + esc(fen) + "'" +
+    (flip ? " data-flip='1'" : "") + ">";
   const hl = [];
   for (let i = 0; i < 8; i++) {
     for (let f = 0; f < 8; f++) {
@@ -766,7 +768,8 @@ function boardSvg(fen, flip, uci, doubt){
       const color = ch === ch.toUpperCase() ? "white" : "black";
       const x = M + (flip ? 7 - f : f) * SQ, y = TOP + (flip ? 7 - i : i) * SQ;
       s += "<use href='#" + color + "-" + names[ch.toLowerCase()] + "' xlink:href='#" + color + "-" +
-        names[ch.toLowerCase()] + "' transform='translate(" + x + "," + y + ")'/>";
+        names[ch.toLowerCase()] + "' data-at='" + "abcdefgh"[f] + (8 - i) + "' transform='translate(" + x + "," +
+        y + ")'/>";
       f += 1;
     }
   });
@@ -888,6 +891,7 @@ function renderMini(){
   else { box.innerHTML = PIC; cropInto(box.querySelector("canvas"), x); }
   // the end of the page can be scrolled above the bar (an open editor places itself: placeSheet)
   if (!editing) document.body.style.paddingBottom = show ? bar.offsetHeight + 16 + "px" : "";
+  paintBoards();
 }
 
 /* ---------------------------------------------------------------- moves */
@@ -928,13 +932,15 @@ function moveText(id, needNumber){ return moveNumber(id, needNumber) + moveBody(
 function moveHtml(id, needNumber){ return esc(moveNumber(id, needNumber)) + moveBodyHtml(id); }
 function mvHtml(id, needNumber){
   const n = D.nodes[id];
-  let tip = n.corrected ? D.words.corrected : (D.words[n.status] || n.status);
+  let tip = n.corrected === "added" ? D.words.added : n.corrected ? D.words.corrected : (D.words[n.status] || n.status);
   if (n.status === "failed" && n.assumed) tip += "; the program assumed " + n.assumed;
   if (n.raw && n.status !== "ok") tip += "; the text recognition read “" + shown(n.raw) + "”";
   const num = moveNumber(id, needNumber);
   const cls = "mv" + (decoded(n) ? "" : " raw");
+  // the first move of a variation the reader added on the board carries a dot
+  const mine = n.corrected === "added" && !(D.nodes[n.parent] && D.nodes[n.parent].corrected === "added");
   return "<button class='" + cls + "' tabindex='-1' data-node='" + id + "' title='" + esc(tip) + "'>" +
-    (n.status === "failed" ? "<i class='dot st-failed'></i>" : "") +
+    (n.status === "failed" ? "<i class='dot st-failed'></i>" : "") + (mine ? "<i class='dot st-added'></i>" : "") +
     (num ? "<span class=mn>" + esc(num) + "</span>" : "") + "<span class=san>" + moveBodyHtml(id) +
     "</span></button>";
 }
@@ -1049,6 +1055,8 @@ function statusLines(n){
   const mine = n.key ? FIX.get("moves", n.key) : null;
   if (mine && FIX.pending("moves", n.key))
     out.push("You corrected this move to <span class=n>" + esc(mine.san) + "</span>. " + esc(applyWords()));
+  if (n.corrected === "added")
+    return ["added", esc(D.words.added), ["You added this move on the board, in a variation of your own."].concat(out)];
   if (n.corrected) {
     const why = n.corrected === "move" ? "You gave this move." :
       n.corrected === "placed" ? "You placed this variation here." :
@@ -1067,6 +1075,7 @@ function statusLines(n){
     out.push(n.assumed ? "The program assumed <span class=n>" + esc(n.assumed) +
       "</span> here so that the line goes on." : "The program could not read this move.");
   if (n.reason) out.push(esc(n.reason));
+  if (n.added_stale) out.push(esc(n.added_stale));
   const known = beforeGap(n.id);
   if (known) out.push("The board shows the position before the gap" + (D.nodes[known].parent != null ?
     ", after <span class=n>" + esc(moveText(known, true)) + "</span>" : ", at the start of the line") + ".");
@@ -1086,7 +1095,7 @@ function renderInfo(){
     if (S.node === L.root || n.parent == null) {
       if (L.diagram && !L.start_fen)
         h += "<div class='status small muted'><p><i class=dot></i>" + esc(D.words.waiting) + "</p></div>";
-    } else if (n.status !== "ok" || reading() || n.corrected) {
+    } else if (n.status !== "ok" || reading() || n.corrected || n.added_stale) {
       // a move read without doubt needs no word, except while Show reading is on
       const [st, lab, more] = statusLines(n);
       h += "<div class='status small muted'><p><i class='dot st-" + esc(st) + "'></i>" + lab + "</p>" +
@@ -1097,11 +1106,14 @@ function renderInfo(){
           gapTitle(gk)) + "</button></p>";
       else if (n.key && beforeFen(n) && !(RV.edit && RV.edit.node === S.node))
         h += "<p class=small><button class=tb id=fixthis>Correct this move</button></p>";
+      else if (n.corrected === "added" && !(RV.edit && RV.edit.node === S.node))
+        h += "<p class=small><button class=tb id=fixadded>Change your variation</button></p>";
     }
   }
   box.innerHTML = h;
   $("infosec").hidden = !h;
   if ($("fixthis")) $("fixthis").addEventListener("click", () => openMove(S.node));
+  if ($("fixadded")) $("fixadded").addEventListener("click", () => openAdded(S.node));
   if ($("fixgapbtn")) $("fixgapbtn").addEventListener("click", () => openGap(gapKeyOf(S.node)));
 }
 
@@ -1257,6 +1269,7 @@ function showDiagram(id){
   $("boardarea").classList.add("diagram");
   cropInto(box.querySelector("canvas"), id);
   sizeCoords(box);
+  paintBoards();
   diagramState(id);
   $("dclose").addEventListener("click", () => { closeDiagram(); renderBoard(); layoutPanel(false); });
   if ($("dfix")) $("dfix").addEventListener("click", () => openDiagramFix(id));
@@ -1543,7 +1556,8 @@ __PGNBTN__
 </div>
 <div class="key small muted">
 <div class="help"><p class="mouse">A click on a move or a diagram shows it in the panel. The left and right arrow keys step through the moves, the up and down arrow keys switch between the moves the book gives at a branch, and Page Up and Page Down turn the pages.</p>
-<p class="touch">A tap on a move or a diagram shows it on the board. A swipe across the page turns it.</p></div>
+<p class="touch">A tap on a move or a diagram shows it on the board. A swipe across the page turns it.</p>
+<p>A piece moved on the board, by dragging it or by tapping it and then its new square, goes on with the line. A move that the line does not hold corrects the line or adds a variation, as you choose.</p></div>
 <div class="legend" aria-label="What the outlines and marks mean">
 <span class="ls">A move with no outline is read without doubt.</span>
 <span><i class="k doubt"></i>Chosen from several readings</span>
@@ -1551,6 +1565,7 @@ __PGNBTN__
 <span><i class="k wait"></i><i class="u"></i>Waits for board reading (Stage 3)</span>
 <span><i class="k unatt"></i>Placed in no line</span>
 <span><i class="k fixed"></i>Corrected by you</span>
+<span><i class="dot st-added"></i>Added by you on the board</span>
 <span class="penk"><i class="k pen"></i>Pencil on: a tap corrects the move, diagram or sequence</span>
 <span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
@@ -1656,7 +1671,7 @@ def chapter_data(book, ch, pgn_text):
                 nn["alternatives"] = n["alternatives"]
             if n.get("reason"):
                 nn["reason"] = n["reason"]
-            for k in ("key", "corrected", "gap"):
+            for k in ("key", "corrected", "gap", "added", "added_before", "added_stale"):
                 if n.get(k):
                     nn[k] = n[k]
             if n.get("gap") and not n.get("san"):
@@ -2076,7 +2091,8 @@ def _corrected_sentence(c):
                            ("symbols", "piece symbol", "piece symbols"),
                            ("connections", "line joined to another", "lines joined to others"),
                            ("splits", "line started anew", "lines started anew"),
-                           ("gap_moves", "move the text lacks", "moves the text lacks")):
+                           ("gap_moves", "move the text lacks", "moves the text lacks"),
+                           ("added_moves", "move you added", "moves you added")):
         k = c.get(key, 0)
         if k:
             parts.append(f"{_n(k)} {one if k == 1 else many}")

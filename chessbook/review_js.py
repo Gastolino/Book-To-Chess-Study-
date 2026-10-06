@@ -5,14 +5,16 @@ the chapter readers (browser storage, one entry per book). REVIEW_JS runs
 inside the chapter reader's script and uses its functions: it lists the
 chapter's uncertainties, and its editors correct a diagram, a move, a
 sequence that found no place, or a piece symbol that the text recognition
-could not name. REVIEW_CSS styles both, following DESIGN.md.
+could not name; a piece moved on the board goes on with the line, or
+corrects the main line or a variation, or adds a variation of the reader's
+own (corrections.py "added"). REVIEW_CSS styles both, following DESIGN.md.
 """
 
 CORRECTIONS_JS = r"""
 function makeCorrections(applied, opts){
   // applied: the corrections the build used ({diagrams, moves, unattached, glyphs}).
   const key = "chessbook-corrections:" + opts.pdf + ":" + opts.pageCount;
-  const PARTS = ["diagrams", "moves", "unattached", "glyphs", "connect", "disconnect", "gaps"];
+  const PARTS = ["diagrams", "moves", "unattached", "glyphs", "connect", "disconnect", "gaps", "added"];
   function canon(src){
     const o = {version: 1};
     for (const p of PARTS) {
@@ -141,6 +143,15 @@ svg.board .hit{fill:transparent;cursor:pointer}
 .lineacts{display:grid;gap:6px;border-top:1px solid var(--line);padding-top:8px}
 .lineacts p{margin:0}
 #diagpick[hidden]{display:none}
+.dot.st-added{background:var(--ok)}
+.boardacts{display:grid;justify-items:start;gap:6px}
+.boardacts .n{font-family:"Geist Mono",ui-monospace,Menlo,Consolas,monospace;font-variant-ligatures:none}
+svg.board.movable use[data-mine]{cursor:grab}
+svg.board use.lifted{opacity:.35}
+svg.board .ghost{cursor:grabbing}
+svg.board .pk{fill:none;stroke:var(--accent);stroke-width:1.5px;vector-effect:non-scaling-stroke}
+svg.board .tg{fill:var(--accent);fill-opacity:.45}
+svg.board .tgc{fill:none;stroke:var(--accent);stroke-opacity:.55;stroke-width:1.5px;vector-effect:non-scaling-stroke}
 @media (max-width:700px){
 .pencil .legend{display:flex}
 .tools{flex-wrap:wrap;row-gap:4px}
@@ -308,6 +319,15 @@ function buildItems(){
     const i = D.pages[n.page].marks.findIndex(m => m.key === n.gap);
     out.push({kind: "gap", key: n.gap, page: n.page, order: i >= 0 ? i - 0.5 : 1e5, y: 0});
   }
+  // the variations the reader added on the board, at the printed move they branch from
+  const added = new Set(Object.keys(FIX.all("added")));
+  for (const id in D.nodes) if (D.nodes[id].added) added.add(D.nodes[id].added);
+  for (const key of added) {
+    const at = nodeByKey(key), n = at ? D.nodes[at] : null;
+    if (!n || !(n.page in D.pages) || !D.pages[n.page].selected) continue;
+    const i = D.pages[n.page].marks.findIndex(m => m.key === key);
+    out.push({kind: "added", key, page: n.page, order: i >= 0 ? i + 0.5 : 1e5, y: 0});
+  }
   out.sort((a, b) => a.page - b.page || a.order - b.order);
   return symbolsHere().concat(out);
 }
@@ -339,6 +359,13 @@ function itemState(it){
     if (g.hole) return ["failed", "The book's text lacks " + (g.missing === 1 ? "this move" : words(g.missing) + " moves here")];
     return ["corrected", "Given by you"];
   }
+  if (it.kind === "added") {
+    const f = FIX.get("added", it.key), at = nodeByKey(it.key);
+    if (FIX.pending("added", it.key))
+      return f ? ["corrected", "Added by you. " + pend] : ["corrected", "You removed your variation. " + pend];
+    if (at && D.nodes[at].added_stale) return ["failed", D.nodes[at].added_stale];
+    return ["corrected", "Added by you"];
+  }
   if (it.kind === "move") {
     const n = D.nodes[it.node];
     if (n.key && FIX.get("moves", n.key) && FIX.pending("moves", n.key))
@@ -367,6 +394,7 @@ function itemLabel(it){
   if (it.kind === "diagram") { const {p, d} = diagInfo2(it.id); return esc(cap(diagramName(d, p))); }
   if (it.kind === "move") return moveLabel(it.node);
   if (it.kind === "gap") return esc(gapTitle(it.key, true));
+  if (it.kind === "added") return esc(addedTitle(it.key));
   const u = seqInfo(it.key);
   return "“<span class=n>" + shownHtml(u ? u.text : "") + "</span>”";
 }
@@ -418,6 +446,7 @@ function openItem(i){
   else if (it.kind === "diagram") { openDiagramFix(it.id); }
   else if (it.kind === "seq") { openSeq(it.key); }
   else if (it.kind === "gap") { openGap(it.key); }
+  else if (it.kind === "added") { openAddedAt(it.key); }
   else openSymbol(it.sym);
 }
 
@@ -428,13 +457,13 @@ function fixNav(){
     "<button class=tb id=fixnext" + (RV.cur >= RV.items.length - 1 ? " disabled" : "") + ">Next item</button>" +
     "<span class=gap></span><button class=tb id=fixclose>Close</button></div>";
 }
-function showFix(html, kind){
+function showFix(html, kind, nav){
   const box = $("fix");
-  box.innerHTML = "<div class=fix>" + html + fixNav() + "</div>";
+  box.innerHTML = "<div class=fix>" + html + (nav === false ? "" : fixNav()) + "</div>";
   box.hidden = false;
   RV.edit = Object.assign(RV.edit || {}, {kind});
   $("panel").classList.toggle("editing-diagram", kind === "diagram");
-  $("fixclose").addEventListener("click", () => closeFix());
+  if ($("fixclose")) $("fixclose").addEventListener("click", () => closeFix());
   if ($("fixprev")) $("fixprev").addEventListener("click", () => openItem(RV.cur - 1));
   if ($("fixnext")) $("fixnext").addEventListener("click", () => openItem(RV.cur + 1));
   renderMini();
@@ -490,6 +519,8 @@ function openMove(id){
   if (!n) return;
   // a gap in the text, or a move the reader gave for one: the gap's own editor
   if (n.gap) { openGap(n.gap); return; }
+  // a move the reader added on the board: the editor of the variation
+  if (n.corrected === "added") { openAdded(id); return; }
   if (S.node !== id) selectNode(id, {scrollPage: false});
   RV.edit = {kind: "move", node: id};
   const legal = legalOf(n);
@@ -1169,6 +1200,12 @@ function applyPatch(p){
     if (g.hole || g.filled.length) { openGap(edit.key); setMsg("Your correction is applied.", "good"); }
     else closeFix();
   }
+  if (edit && edit.kind === "added" && !$("fix").hidden) {
+    if (edit.node) { openAdded(edit.node); setMsg("Your correction is applied.", "good"); }
+    else closeFix();
+  }
+  // the move made on the board: it is chosen once the book holds it
+  if (p.corrections) boardMoveApplied();
   const pgn = $("pgnbtn");
   if (pgn) pgn.disabled = !D.pgn;
   if (S.node) history.replaceState(null, "", "#node=" + S.node);
@@ -1192,9 +1229,423 @@ function initPencil(){
   });
 }
 
+/* ---------------- moving pieces on the board */
+// A piece moved on the board (dragged, or tapped and then its square tapped) is a move from the
+// position the board shows. The move the line already holds there is stepped to; a move into a
+// gap in the text fills it; any other move asks whether it corrects the main line or the
+// variation, or adds a variation of the reader's own (corrections.py "added").
+const BM = {pick: null, down: null, want: null};
+function samePos(a, b){ return !!a && !!b && a.split(" ").slice(0, 2).join(" ") === b.split(" ").slice(0, 2).join(" "); }
+function moveSource(box){
+  // what a move on the board in box starts from: {id: the node shown, at: the node whose position it
+  // is, fen, gap: the gap in the text the move fills, or null}, or null when the board takes no move
+  if (S.preview || (RV.edit && RV.edit.kind === "diagram")) return null;
+  if (box.id === "dpanel") {
+    // the diagram view: its position, when it starts the line the panel names
+    const L = S.diagram && S.line ? D.lines[S.line] : null, d = S.diagram ? diagramInfo(S.diagram)[1] : null;
+    const fen = L ? nodeFen(L.root) : null;
+    return fen && d && d.fen && d.fen.split(" ")[0] === fen.split(" ")[0] ? {id: L.root, at: L.root, fen, gap: null} : null;
+  }
+  if (S.diagram) return null;
+  const id = S.node || (S.line && D.lines[S.line] ? D.lines[S.line].root : null);
+  const n = id ? D.nodes[id] : null;
+  if (!n) return null;
+  if (n.fen && n.status !== "waiting") {
+    const c = cont(id), hole = c && D.nodes[c].gap && !D.nodes[c].san ? D.nodes[c].gap : null;
+    return {id, at: id, fen: n.fen, gap: hole};
+  }
+  // a gap in the text, or a move after it: the board shows the position before the gap
+  const known = beforeGap(id);
+  return known ? {id, at: known, fen: nodeFen(known), gap: gapKeyOf(id)} : null;
+}
+function boardBoxes(){ return [$("board"), $("minibox"), $("dpanel")].filter(Boolean); }
+function srcSig(src){ return src ? src.at + "|" + src.fen : ""; }
+function squareAt(svg, x, y){
+  const r = svg.getBoundingClientRect(), H = TOP + 8 * SQ + M;
+  if (!r.width) return null;
+  const c = Math.floor(((x - r.left) * BW / r.width - M) / SQ), row = Math.floor(((y - r.top) * H / r.height - TOP) / SQ);
+  if (c < 0 || c > 7 || row < 0 || row > 7) return null;
+  const flip = svg.dataset.flip === "1";
+  return "abcdefgh"[flip ? 7 - c : c] + (flip ? row + 1 : 8 - row);
+}
+function pieceOn(fen, sq){ const [r, c] = sqRC(sq); return fenRows(fen)[r][c]; }
+function ownPiece(fen, sq){
+  const p = pieceOn(fen, sq);
+  return !!p && (p === p.toUpperCase()) === ((fen.split(" ")[1] || "w") === "w");
+}
+function targetsOf(fen, from){ return CJ.legalMoves(fen).filter(m => m[1].slice(0, 2) === from); }
+function boardSvgOf(box){ return box.id === "dpanel" ? box.querySelector(".boardwrap svg.board") : box.querySelector("svg.board"); }
+function sqXY(svg, sq){
+  const flip = svg.dataset.flip === "1", f = "abcdefgh".indexOf(sq[0]), r = 8 - parseInt(sq[1], 10);
+  return [M + (flip ? 7 - f : f) * SQ, TOP + (flip ? 7 - r : r) * SQ];
+}
+function paintBoards(){
+  // the piece chosen and the squares it can go to, on each board that shows the position
+  for (const box of boardBoxes()) {
+    const svg = boardSvgOf(box);
+    if (!svg) continue;
+    for (const el of svg.querySelectorAll(".bmx")) el.remove();
+    const src = moveSource(box);
+    svg.classList.toggle("movable", !!src);
+    for (const u of svg.querySelectorAll("use[data-at]"))
+      if (src && ownPiece(src.fen, u.dataset.at)) u.setAttribute("data-mine", ""); else u.removeAttribute("data-mine");
+    if (!src || !BM.pick || BM.pick.sig !== srcSig(src)) continue;
+    const NS = "http://www.w3.org/2000/svg";
+    const add = (tag, attrs) => {
+      const el = document.createElementNS(NS, tag);
+      for (const k in attrs) el.setAttribute(k, attrs[k]);
+      el.setAttribute("pointer-events", "none");
+      svg.insertBefore(el, svg.querySelector("use"));
+      return el;
+    };
+    const [x, y] = sqXY(svg, BM.pick.sq);
+    add("rect", {class: "bmx pk", x: x + 1.5, y: y + 1.5, width: SQ - 3, height: SQ - 3});
+    const seen = new Set();
+    for (const m of targetsOf(src.fen, BM.pick.sq)) {
+      const to = m[1].slice(2, 4);
+      if (seen.has(to)) continue;
+      seen.add(to);
+      const [tx, ty] = sqXY(svg, to);
+      if (pieceOn(src.fen, to)) add("circle", {class: "bmx tgc", cx: tx + SQ / 2, cy: ty + SQ / 2, r: SQ / 2 - 3});
+      else add("circle", {class: "bmx tg", cx: tx + SQ / 2, cy: ty + SQ / 2, r: 5});
+    }
+  }
+}
+function pathOf(id){
+  // the moves from the start of the line to node id: a printed move by its key, another by its SAN
+  const out = [];
+  for (let cur = id; cur != null && D.nodes[cur] && D.nodes[cur].parent != null; cur = D.nodes[cur].parent)
+    out.unshift(D.nodes[cur].key ? {key: D.nodes[cur].key} : {san: D.nodes[cur].san});
+  return out;
+}
+function nodeAt(line, steps){
+  const L = D.lines[line];
+  let cur = L ? L.root : null;
+  for (const st of steps) {
+    if (!cur) return null;
+    const kids = D.nodes[cur].children;
+    cur = (st.key ? kids.find(c => D.nodes[c].key === st.key) : kids.find(c => D.nodes[c].san === st.san)) || null;
+  }
+  return cur;
+}
+function boardMoveApplied(){
+  const w = BM.want;
+  BM.want = null;
+  const id = w ? nodeAt(w.line, w.steps) : null;
+  if (id && id !== S.node) selectNode(id, {scrollPage: false});
+}
+function addedTop(id){
+  // the first move of the variation (as the move list shows it) that a move the reader added belongs to
+  let cur = id;
+  for (;;) {
+    const par = D.nodes[cur].parent;
+    if (par == null || D.nodes[par].corrected !== "added" || cont(par) !== cur) return cur;
+    cur = par;
+  }
+}
+function addedPath(id){
+  // where a move the reader added is stored: {key, before, san: the moves from the branch to it}
+  const san = [];
+  let cur = id;
+  while (cur != null && D.nodes[cur].corrected === "added") { san.unshift(D.nodes[cur].san); cur = D.nodes[cur].parent; }
+  return {key: D.nodes[id].added, before: !!D.nodes[id].added_before, san};
+}
+function anchorOf(at){
+  // where a new variation from the position after node at is stored, or null
+  const n = D.nodes[at];
+  if (n.corrected === "added") return addedPath(at);
+  if (n.key && n.parent != null && n.fen) return {key: n.key, before: false, san: []};
+  // no printed move here (the start of the line, or a move given for a gap): before the next printed move
+  const c = n.children.find(x => D.nodes[x].key && D.nodes[x].main) || n.children.find(x => D.nodes[x].key);
+  return c ? {key: D.nodes[c].key, before: true, san: []} : null;
+}
+const isPrefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i]);
+function storeAdded(key, entries){
+  // the variations stored at one printed move: no duplicates, and none that another one holds whole
+  const out = [];
+  for (const e of entries) {
+    if (!e.san.length) continue;
+    const before = !!e.before;
+    if (entries.some(o => o !== e && !!o.before === before && o.san.length > e.san.length && isPrefix(e.san, o.san))) continue;
+    if (out.some(o => !!o.before === before && o.san.join(" ") === e.san.join(" "))) continue;
+    out.push(e);
+  }
+  FIX.set("added", key, out.length ? out : null);
+}
+function entry(san, before, note){
+  const e = {san};
+  if (before) e.before = true;
+  if (note) e.note = note;
+  return e;
+}
+function addVariation(anchor, san){
+  // a new variation, or the one it goes on from made longer
+  const path = anchor.san.concat([san]);
+  const list = (FIX.get("added", anchor.key) || []).map(e => Object.assign({}, e));
+  const i = list.findIndex(e => !!e.before === anchor.before && isPrefix(e.san, path));
+  if (i >= 0) list[i].san = path; else list.push(entry(path, anchor.before));
+  storeAdded(anchor.key, list);
+}
+function changeAdded(next, san){
+  // a move the reader added, replaced by another: the variations through it now play that move
+  const p = addedPath(next), path = p.san.slice(0, -1).concat([san]);
+  const list = (FIX.get("added", p.key) || []).map(e => Object.assign({}, e));
+  let done = false;
+  const out = [];
+  for (const e of list) {
+    if (!!e.before === p.before && isPrefix(p.san, e.san)) {
+      if (!done) { out.push(entry(path, p.before, e.note)); done = true; }
+    } else out.push(e);
+  }
+  if (!done) out.push(entry(path, p.before));
+  storeAdded(p.key, out);
+}
+function removeAdded(id){
+  // the moves the reader added from node id to the end of every variation through it
+  const p = addedPath(id), cut = p.san.slice(0, -1);
+  const list = (FIX.get("added", p.key) || []).map(e => (!!e.before === p.before && isPrefix(p.san, e.san)) ?
+    Object.assign({}, e, {san: cut}) : e);
+  storeAdded(p.key, list);
+}
+function addedTitle(key){
+  const at = nodeByKey(key), f = FIX.get("added", key) || [];
+  const before = f.length ? !!f[0].before : Object.values(D.nodes).some(n => n.added === key && n.added_before);
+  return "Your variation " + (before ? "before " : "after ") + (at ? moveText(at, true) : "a move");
+}
+function openAddedAt(key){
+  // the Review list's item: the first move the reader added there, or the move it branches from
+  const id = Object.keys(D.nodes).find(k => D.nodes[k].added === key &&
+    D.nodes[D.nodes[k].parent].corrected !== "added");
+  if (id) { openAdded(id); return; }
+  const at = nodeByKey(key);
+  if (!at) return;
+  selectNode(at, {scrollPage: false});
+  RV.edit = {kind: "addedkey", key};
+  const f = FIX.get("added", key) || [];
+  let h = "<div class=fh><h3>" + esc(addedTitle(key)) + "</h3></div>";
+  h += "<p class='small muted'>" + (f.length ? "You added <span class=n>" + esc(f.map(e => e.san.join(" ")).join("; ")) +
+    "</span> here on the board. " + esc(D.nodes[at].added_stale || applyWords()) :
+    "You removed your variation. " + esc(applyWords())) + "</p>";
+  h += "<p class='fixmsg small' id=fixmsg role=status></p>";
+  if (f.length) h += "<div class=fixacts><button class=tb id=fixundo>Remove this variation</button></div>";
+  showFix(h, "addedkey");
+  if ($("fixundo")) $("fixundo").addEventListener("click", () => {
+    FIX.set("added", key, null); afterFix(); openAddedAt(key);
+    setMsg("Your variation is removed. " + applyWords(), "good");
+  });
+}
+function openAdded(id){
+  const n = D.nodes[id];
+  if (!n) return;
+  if (S.node !== id) selectNode(id, {scrollPage: false});
+  RV.edit = {kind: "added", node: id};
+  const top = addedTop(id), at = nodeByKey(n.added);
+  let moves = [], cur = top;
+  while (cur) { moves.push(moveText(cur, cur === top || !D.nodes[cur].black)); cur = cont(cur); }
+  let h = "<div class=fh><h3>Your variation</h3></div>";
+  h += "<p class='small muted'>You added <span class=n>" + esc(moves.join(" ")) + "</span> on the board" +
+    (at ? ", " + (n.added_before ? "before " : "after ") + "<span class=n>" + moveHtml(at, true) + "</span>" : "") +
+    ". A move on the board from one of its positions goes on with it or changes it.</p>";
+  h += "<p class='fixmsg small' id=fixmsg role=status></p>";
+  h += "<div class=fixacts><button class=tb id=addrm>Remove this variation</button>" +
+    (top !== id ? "<button class=tb id=addrmhere>Remove from <span class=n>" + esc(moveText(id, true)) +
+      "</span> on</button>" : "") + "</div>";
+  showFix(h, "added");
+  const gone = (from, what) => {
+    const par = D.nodes[from].parent;
+    BM.want = {line: n.line, steps: pathOf(par)};
+    removeAdded(from);
+    afterFix();
+    closeFix();
+    if (inApp()) say(what + " " + applyWords());
+    else { selectNode(par, {scrollPage: false}); say(what + " " + applyWords()); }
+  };
+  $("addrm").addEventListener("click", () => gone(top, "Your variation is removed."));
+  if ($("addrmhere")) $("addrmhere").addEventListener("click", () =>
+    gone(id, "Your variation is removed from " + moveText(id, true) + " on."));
+}
+function playedText(src, m){
+  const f = src.fen.split(" ");
+  return f[5] + (f[1] === "b" ? "…" : ".") + m[0];
+}
+function boardDone(src, m, steps, said){
+  // the change is stored: the board shows the position after the move until the book holds it
+  const at = D.nodes[src.at];
+  BM.want = {line: at.line, steps: pathOf(src.at).concat(steps)};
+  afterFix();
+  closeFix();
+  if (inApp()) preview(CJ.after(src.fen, m[1]), m[1], said);
+  else preview(CJ.after(src.fen, m[1]), m[1], said + " " + applyWords());
+  say(said + " " + applyWords());
+}
+function boardMove(src, m){
+  BM.pick = null;
+  // a move on the board of the diagram view: the panel shows the line's board again
+  if (S.diagram) { closeDiagram(); renderBoard(); }
+  const at = D.nodes[src.at];
+  // the move the line holds here: a step, as the arrow makes it
+  const hit = at.children.find(c => D.nodes[c].uci === m[1] && decoded(D.nodes[c]));
+  if (hit) { selectNode(hit, {scrollPage: true}); openIfFailed(hit); return; }
+  // a gap in the text: the move fills it
+  if (src.gap && samePos(gapMoves(src.gap)[0], src.fen)) {
+    BM.want = {line: at.line, steps: pathOf(src.at).concat([{san: m[0]}])};
+    chooseGap(src.gap, m);
+    return;
+  }
+  const text = playedText(src, m);
+  // the end of a variation the reader added: it goes on
+  if (at.corrected === "added" && !at.children.length) {
+    addVariation(anchorOf(src.at), m[0]);
+    boardDone(src, m, [{san: m[0]}], "Your variation goes on with " + text + ".");
+    return;
+  }
+  const next = cont(src.at) ? D.nodes[cont(src.at)] : null;
+  const opts = [];
+  if (next && next.parent != null) {
+    const what = next.main ? "Correct the main line" : "Correct this variation";
+    const instead = ": <span class=n>" + esc(text) + "</span> instead of <span class=n>" + esc(moveText(next.id, true)) + "</span>";
+    if (next.corrected === "added")
+      opts.push(["bmvar", what + instead, () => { changeAdded(next.id, m[0]);
+        boardDone(src, m, [{san: m[0]}], "Your variation now plays " + text + " instead of " + moveText(next.id, true) + "."); }]);
+    else if (next.key && (next.main || !at.main))
+      opts.push([next.main ? "bmmain" : "bmvar", what + instead, () => { FIX.set("moves", next.key, {san: m[0]});
+        boardDone(src, m, [{key: next.key}], (next.main ? "The main line" : "The variation") + " now plays " + text +
+          " instead of " + moveText(next.id, true) + ". The program reads the rest of the line from this move."); }]);
+    else if (next.gap && next.san && next.main) {
+      // a move the reader gave for a gap: the moves given are changed from it on
+      const g = gapInfo(next.gap), k = g.filled.indexOf(next.id);
+      opts.push(["bmmain", what + instead, () => {
+        FIX.set("gaps", next.gap, {san: g.filled.slice(0, k).map(x => D.nodes[x].san).concat([m[0]])});
+        boardDone(src, m, [{san: m[0]}], "The main line now plays " + text + " instead of " + moveText(next.id, true) + "."); }]);
+    }
+  }
+  const anchor = anchorOf(src.at);
+  if (anchor) opts.push(["bmadd", "Add a new variation", () => { addVariation(anchor, m[0]);
+    boardDone(src, m, [{san: m[0]}], "You added " + text + " as a new variation."); }]);
+  let h = "<div class=fh><h3>Your move <span class=n>" + esc(text) + "</span></h3></div>";
+  h += "<p class='small muted'>" + (next ? (next.main ? "The book's line plays" : "The variation plays") +
+    " <span class=n>" + esc(moveText(next.id, true)) + "</span> here." : "The line ends here.") +
+    (opts.length ? " Choose what your move does." : " The program has no printed move here to keep your move with.") + "</p>";
+  h += "<div class=boardacts>" + opts.map(o => "<button class=tb id=" + o[0] + ">" + o[1] + "</button>").join("") +
+    "<button class=tb id=bmcancel>Cancel</button></div>";
+  h += "<p class='fixmsg small' id=fixmsg role=status></p>";
+  RV.edit = {kind: "boardmove"};
+  showFix(h, "boardmove", false);
+  preview(CJ.after(src.fen, m[1]), m[1], "");
+  for (const o of opts) $(o[0]).addEventListener("click", o[2]);
+  $("bmcancel").addEventListener("click", () => closeFix());
+  keepChooserInView();
+}
+function keepChooserInView(){
+  // on a wide screen the chooser sits below the board: the panel scrolls until it shows whole
+  if (SMALL.matches) return;
+  const panel = $("panel"), f = $("fix").getBoundingClientRect(), p = panel.getBoundingClientRect();
+  const bottom = Math.min(p.bottom, window.innerHeight);
+  if (f.bottom > bottom) panel.scrollTop += Math.min(f.bottom - bottom + 16, f.top - Math.max(p.top, 0));
+}
+function askPromotion(src, moves){
+  const white = (src.fen.split(" ")[1] || "w") === "w";
+  let h = "<div class=fh><h3>Promote the pawn</h3></div>";
+  h += "<div class='pieces six' id=bmpromo role=group aria-label='Pieces'>" + "QRBN".split("").map(c =>
+    "<button data-piece='" + c + "'>" + pieceSvg(c, white) + "<span>" + esc(D.pieceWords[c]) + "</span></button>").join("") +
+    "</div><div class=boardacts><button class=tb id=bmcancel>Cancel</button></div>";
+  RV.edit = {kind: "boardmove"};
+  showFix(h, "boardmove", false);
+  $("bmcancel").addEventListener("click", () => closeFix());
+  keepChooserInView();
+  $("bmpromo").addEventListener("click", (e) => {
+    const t = e.target.closest("button[data-piece]");
+    if (!t) return;
+    const m = moves.find(x => x[1][4] === t.dataset.piece.toLowerCase());
+    closeFix();
+    if (m) boardMove(src, m);
+  });
+}
+function playFrom(src, from, to){
+  const moves = targetsOf(src.fen, from).filter(m => m[1].slice(2, 4) === to);
+  BM.pick = null;
+  if (!moves.length) { paintBoards(); return; }
+  if (moves.length > 1) { renderBoard(); askPromotion(src, moves); return; }
+  boardMove(src, moves[0]);
+}
+function viewXY(svg, x, y){
+  const r = svg.getBoundingClientRect(), H = TOP + 8 * SQ + M;
+  return [(x - r.left) * BW / r.width, (y - r.top) * H / r.height];
+}
+function initBoardMoves(){
+  for (const box of boardBoxes()) {
+    box.addEventListener("pointerdown", (e) => {
+      if (e.button > 0 || !e.isPrimary) return;
+      const svg = e.target.closest("svg.board");
+      const src = svg && boardSvgOf(box) === svg ? moveSource(box) : null;
+      const sq = src ? squareAt(svg, e.clientX, e.clientY) : null;
+      if (!sq) return;
+      const own = ownPiece(src.fen, sq);
+      const picked = BM.pick && BM.pick.sig === srcSig(src) ? BM.pick.sq : null;
+      if (!own && !picked) return;
+      BM.down = {box, svg, src, sq, own, was: picked === sq, x: e.clientX, y: e.clientY, id: e.pointerId, ghost: null};
+      if (own) {
+        BM.pick = {sq, sig: srcSig(src)};
+        paintBoards();
+        try { svg.setPointerCapture(e.pointerId); } catch (err) { /* the pointer is gone */ }
+        e.preventDefault();
+      }
+    });
+    box.addEventListener("pointermove", (e) => {
+      const d = BM.down;
+      if (!d || d.box !== box || e.pointerId !== d.id || !d.own) return;
+      if (!d.ghost) {
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return;
+        const piece = d.svg.querySelector("use[data-at='" + d.sq + "']");
+        if (!piece) return;
+        d.ghost = piece.cloneNode(true);
+        d.ghost.removeAttribute("data-at");
+        d.ghost.setAttribute("class", "bmx ghost");
+        d.ghost.setAttribute("pointer-events", "none");
+        piece.classList.add("lifted");
+        d.svg.appendChild(d.ghost);
+      }
+      const [x, y] = viewXY(d.svg, e.clientX, e.clientY);
+      d.ghost.setAttribute("transform", "translate(" + (x - SQ / 2) + "," + (y - SQ / 2) + ")");
+      e.preventDefault();
+    });
+    const up = (e, cancel) => {
+      const d = BM.down;
+      if (!d || d.box !== box || e.pointerId !== d.id) return;
+      BM.down = null;
+      const dragged = !!d.ghost;
+      if (d.ghost) { d.ghost.remove(); const p = d.svg.querySelector("use.lifted"); if (p) p.classList.remove("lifted"); }
+      if (cancel) { paintBoards(); return; }
+      const sq = squareAt(d.svg, e.clientX, e.clientY);
+      if (d.own && dragged) {
+        // a drop on a square the piece can reach plays the move; any other drop puts it back
+        if (sq && sq !== d.sq && targetsOf(d.src.fen, d.sq).some(m => m[1].slice(2, 4) === sq)) playFrom(d.src, d.sq, sq);
+        else { if (sq !== d.sq) BM.pick = null; paintBoards(); }
+      } else if (d.own) {
+        if (d.was) BM.pick = null;
+        paintBoards();
+      } else if (sq === d.sq && targetsOf(d.src.fen, BM.pick.sq).some(m => m[1].slice(2, 4) === sq)) {
+        playFrom(d.src, BM.pick.sq, sq);
+      } else { BM.pick = null; paintBoards(); }
+    };
+    box.addEventListener("pointerup", (e) => up(e, false));
+    box.addEventListener("pointercancel", (e) => up(e, true));
+    // a touch on a piece that can move moves it, and does not scroll the page
+    box.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      const svg = e.target.closest && e.target.closest("svg.board");
+      const src = svg && boardSvgOf(box) === svg ? moveSource(box) : null;
+      const t = e.touches[0], sq = src ? squareAt(svg, t.clientX, t.clientY) : null;
+      if (sq && ownPiece(src.fen, sq)) e.preventDefault();
+    }, {passive: false});
+  }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && BM.pick) { BM.pick = null; paintBoards(); } });
+}
+
 function initReview(){
   $("reviewbtn").addEventListener("click", () => setReview(!RV.on));
   initPencil();
+  initBoardMoves();
   // corrections stored in this browser that the book does not hold yet (made
   // while the worker was busy elsewhere, or that never reached it) are applied
   // now, without reading the book again

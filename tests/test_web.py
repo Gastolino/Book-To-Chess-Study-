@@ -137,6 +137,31 @@ def test_a_gap_correction_reaches_the_open_chapter(tmp_path, monkeypatch):
     assert game[:len(SANS)] == SANS
 
 
+def test_a_variation_added_on_the_board_reaches_the_open_chapter(tmp_path, monkeypatch):
+    """A piece moved on the board adds a variation (corrections.py "added"): the
+    worker's driver replays its line at once, the patch holds the new moves,
+    and a longer variation keeps the reader's place on its moves."""
+    import json
+    driver = _driver(tmp_path, monkeypatch)
+    from test_assemble import make_book
+    pdf = make_book(tmp_path / "little.pdf")
+    driver.process(str(pdf), lambda *_: None)
+    name = next(c["file"] for c in driver.STATE["book"]["chapters"] if c["start"] <= 4 <= c["end"])
+    driver.chapter(name, lambda *_: None)
+    key = next(n["key"] for n in driver.STATE["book"]["nodes"].values() if n["san"] == "Nf3" and n["main"])
+    out = json.loads(driver.correct(json.dumps({"version": 1, "added": {key: [{"san": ["d6"]}]}}), name))
+    (d6, node), = [(k, n) for k, n in out["patch"]["nodes"].items() if n.get("corrected") == "added"]
+    assert node["san"] == "d6" and node["added"] == key and not node["main"]
+    assert out["patch"]["corrections"]["added"] == {key: [{"san": ["d6"]}]}
+    out = json.loads(driver.correct(json.dumps({"version": 1, "added": {key: [{"san": ["d6", "d4"]}]}}), name))
+    added = {k: n["san"] for k, n in out["patch"]["nodes"].items() if n.get("corrected") == "added"}
+    assert sorted(added.values()) == ["d4", "d6"]
+    assert added[out["patch"]["renamed"].get(d6, d6)] == "d6"
+    out = json.loads(driver.correct(json.dumps({"version": 1, "added": {}}), name))
+    assert not [n for n in out["patch"]["nodes"].values() if n.get("corrected") == "added"]
+    assert driver.STATE["book"]["stats"]["corrected"]["added_moves"] == 0
+
+
 GPA = ROOT / "corpus" / "gpa.pdf"
 
 

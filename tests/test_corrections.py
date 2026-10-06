@@ -63,7 +63,7 @@ def test_the_garbled_book_needs_corrections(garbled):
     assert u["text"] == "12.Qh5+ g6" and u["key"].endswith(":Qh5+")
     assert book["stats"]["corrected"] == {"moves": 0, "symbol_moves": 0, "diagrams": 0,
                                           "sequences": 0, "symbols": 0, "connections": 0,
-                                          "splits": 0, "gap_moves": 0}
+                                          "splits": 0, "gap_moves": 0, "added_moves": 0}
 
 
 def test_corrected_move_decodes_and_the_line_goes_on(garbled):
@@ -172,7 +172,7 @@ def test_schema_and_pasted_text():
     assert data["glyphs"] == {"tLl": "N"} and data["moves"]["4:116,496:Zq9"] == {"san": "Nxd5"}
     assert data["unattached"]["4:258,68:Qh5+"] == {"attach_to": "dismiss"}
     assert fixes.count(data) == {"diagrams": 1, "moves": 1, "unattached": 1, "glyphs": 1,
-                                 "connect": 0, "disconnect": 0, "gaps": 0}
+                                 "connect": 0, "disconnect": 0, "gaps": 0, "added": 0}
     for bad in ({"diagrams": {"p5-1": {"fen": "8/8/8/8/8/8/8/8 w - - 0 1"}}},
                 {"diagrams": {"page five": {"fen": ENDING_FEN}}},
                 {"moves": {"Zq9": {"san": "Nxd5"}}},
@@ -404,3 +404,157 @@ def test_a_named_symbol_binds_its_moves_as_a_certain_shape():
     assert dec.named(tokenize("1.e4")[1]).shape is None
     out = dec.run("4k3/8/8/8/8/8/8/R3K1N1 w - - 0 1", tokenize("1.1:'!:f3"))
     assert [d.san for d in out] == ["Nf3"]
+
+
+# ------------------------------------------------------------------ variations added on the board
+
+@pytest.fixture(scope="module")
+def clean(tmp_path_factory):
+    """The little book with a clean game (4.c3 and 5...Na5 are the book's variations)."""
+    from test_assemble import make_book as mk
+    tmp = tmp_path_factory.mktemp("clean")
+    pdf = mk(tmp / "clean.pdf")
+    state = {}
+    book = build_book(pdf, output_dir=tmp / "output", books_dir=tmp / "books", state=state)
+    return tmp, pdf, book, state
+
+
+def game_tree(book):
+    """[(depth, SAN, main, corrected)] of the game, depth first."""
+    g = line_titled(book, "Smith - Jones")
+    out = []
+
+    def walk(nid, d):
+        n = book["nodes"][nid]
+        out.append((d, n["san"], n["main"], n.get("corrected")))
+        for c in n["children"]:
+            walk(c, d + 1)
+    walk(g["root"], 0)
+    return out
+
+
+def node_with(book, san, **kw):
+    return next(k for k, n in book["nodes"].items() if n["san"] == san
+                and all(n.get(a) == b for a, b in kw.items()))
+
+
+def test_added_variations_round_trip(tmp_path):
+    data = {"added": {"4:79,458:Nf3": [{"san": ["d6", " d4 "]}, {"san": "d6 Bc4", "note": "Quiet."},
+                                       {"san": ["d6", "d4"]}],
+                      "4:48,458:e4": [{"san": ["d4"], "before": True}]}}
+    fix = fixes.normalise(data)
+    assert fix["added"] == {"4:79,458:Nf3": [{"san": ["d6", "d4"]},
+                                             {"san": ["d6", "Bc4"], "note": "Quiet."}],
+                            "4:48,458:e4": [{"san": ["d4"], "before": True}]}
+    assert fixes.count(fix)["added"] == 2
+    path = fixes.save(fix, tmp_path / "corrections.json")
+    assert fixes.normalise(json.loads(path.read_text(encoding="utf-8"))) == fix
+    assert fixes.parse_corrections_text("Mine:\n```json\n" + json.dumps(data) + "\n```")["added"] == fix["added"]
+    for bad in ({"added": {"Nf3": [{"san": ["d6"]}]}}, {"added": {"4:79,458:Nf3": [{"san": []}]}},
+                {"added": {"4:79,458:Nf3": [{"san": [""]}]}}):
+        with pytest.raises(ValueError):
+            fixes.normalise(bad)
+
+
+def test_the_builder_adds_the_readers_variations(clean):
+    tmp, pdf, book, _ = clean
+    nf3 = book["nodes"][node_with(book, "Nf3", main=True)]["key"]
+    e4 = book["nodes"][node_with(book, "e4", main=True)]["key"]
+    fix = {"added": {nf3: [{"san": ["d6", "d4"]}, {"san": ["d6", "Bc4"], "note": "Quiet."}],
+                     e4: [{"san": ["d4", "d5"], "before": True}]}}
+    fixed = rebuild(tmp, pdf, fix)
+    added = [t for t in game_tree(fixed) if t[3] == "added"]
+    assert [(t[1], t[2]) for t in added] == [("d6", False), ("d4", False), ("Bc4", False),
+                                             ("d4", False), ("d5", False)]
+    d6 = fixed["nodes"][node_with(fixed, "d6", corrected="added")]
+    # variations that begin alike share their first move
+    assert [fixed["nodes"][c]["san"] for c in d6["children"]] == ["d4", "Bc4"]
+    assert d6["added"] == nf3 and not d6.get("added_before") and not d6["comment"]
+    assert fixed["nodes"][node_with(fixed, "Bc4", corrected="added")]["comment"] == "Quiet."
+    assert d6["number"] == 2 and d6["black"]
+    d4 = fixed["nodes"][node_with(fixed, "d4", corrected="added", added=e4)]
+    assert d4["added_before"] and fixed["nodes"][d4["parent"]]["parent"] is None
+    assert fixed["stats"]["corrected"]["added_moves"] == 5
+    # the moves the reader added are not moves of the book
+    assert fixed["stats"]["moves"] == book["stats"]["moves"]
+    assert fixed["stats"]["variation_moves"] == book["stats"]["variation_moves"]
+    # the PGN has them as variations
+    from chessbook import pgnout
+    text = pgnout.chapter_pgn(fixed, 1)[0]
+    flat = " ".join(text.split())
+    assert "( 2... d6 { Added by the reader. } 3. d4 ( 3. Bc4 { Quiet. } ) )" in flat, text
+    assert "( 1. d4 { Added by the reader. } 1... d5 )" in flat, text
+    assert pgnout.validate(text, pgnout.chapter_pgn(fixed, 1)[1]) == []
+    # the contents page counts them
+    from chessbook import reader as rd
+    import re
+    assert "5 moves you added" in re.sub(r"<[^>]+>", "", rd._corrected_sentence(fixed["stats"]["corrected"]))
+
+
+def test_an_added_variation_extends_and_its_illegal_tail_is_left_out(clean):
+    tmp, pdf, book, _ = clean
+    nf3 = book["nodes"][node_with(book, "Nf3", main=True)]["key"]
+    fixed = rebuild(tmp, pdf, {"added": {nf3: [{"san": ["d6", "d4", "exd4"]}]}})
+    assert [t[1] for t in game_tree(fixed) if t[3] == "added"] == ["d6", "d4", "exd4"]
+    fixed = rebuild(tmp, pdf, {"added": {nf3: [{"san": ["d6", "d4", "Qxf7", "exd4"]}]}})
+    assert [t[1] for t in game_tree(fixed) if t[3] == "added"] == ["d6", "d4"]
+    node = fixed["nodes"][node_with(fixed, "Nf3", main=True)]
+    assert "goes on with Qxf7, which is not a legal move for Black" in node["added_stale"]
+    fixed = rebuild(tmp, pdf, {"added": {nf3: [{"san": ["Qxf7", "d4"]}]}})
+    assert not [t for t in game_tree(fixed) if t[3] == "added"]
+    node = fixed["nodes"][node_with(fixed, "Nf3", main=True)]
+    assert "The variation you added after 2.Nf3 starts with Qxf7, which is not a legal move " \
+        "for Black there, so the program leaves it out." == node["added_stale"]
+
+
+def test_a_variation_that_repeats_the_books_move_is_left_out(clean):
+    tmp, pdf, book, _ = clean
+    nf3 = book["nodes"][node_with(book, "Nf3", main=True)]["key"]
+    fixed = rebuild(tmp, pdf, {"added": {nf3: [{"san": ["Nc6", "Bb5"]}, {"san": ["Qxf7"]}]}})
+    assert not [t for t in game_tree(fixed) if t[3] == "added"]
+    stale = fixed["nodes"][node_with(fixed, "Nf3", main=True)]["added_stale"]
+    assert "The line plays Nc6 after 2.Nf3 itself" in stale
+    assert "starts with Qxf7, which is not a legal move for Black" in stale
+
+
+def test_correcting_a_main_line_and_a_variation_move_on_the_board(clean):
+    """The board's "Correct the main line" and "Correct this variation" store a
+    "moves" correction on the printed move, which the line replays from."""
+    tmp, pdf, book, _ = clean
+    nc3 = book["nodes"][node_with(book, "Nc3", main=True)]["key"]
+    c3 = book["nodes"][node_with(book, "c3", main=False)]["key"]
+    fixed = rebuild(tmp, pdf, {"moves": {nc3: {"san": "d3"}, c3: {"san": "d3"}}})
+    main = fixed["nodes"][node_with(fixed, "d3", main=True)]
+    var = fixed["nodes"][node_with(fixed, "d3", main=False)]
+    assert main["key"] == nc3 and main["corrected"] == "move"
+    assert var["key"] == c3 and var["corrected"] == "move"
+    # the variation reads on from the corrected move: 4...Nf6 is legal after 4.d3
+    assert [fixed["nodes"][c]["san"] for c in var["children"]] == ["Nf6"]
+
+
+def test_added_variations_apply_live_as_a_fresh_build(clean):
+    import copy
+    from chessbook import live
+    tmp, pdf, book, state = clean
+    book = copy.deepcopy(book)
+    ch = book["chapters"][1]
+    old = reader.chapter_data(book, ch, "")
+    nf3 = book["nodes"][node_with(book, "Nf3", main=True)]["key"]
+    fix = {"added": {nf3: [{"san": ["d6"]}]}}
+    res = live.apply(state, book, fix)
+    g = line_titled(book, "Smith - Jones")
+    assert res["lines"] == [g["id"]]
+    patch, new = live.chapter_patch(book, ch, old)
+    d6 = node_with(book, "d6", corrected="added")
+    assert patch["nodes"][d6]["corrected"] == "added" and patch["corrections"]["added"] == fix["added"]
+    assert new["nodes"][d6]["added"] == nf3
+    # extending the variation: its move keeps its place in the reader
+    fix = {"added": {nf3: [{"san": ["d6", "d4"]}]}}
+    live.apply(state, book, fix)
+    patch, _ = live.chapter_patch(book, ch, new)
+    assert patch["renamed"].get(d6, d6) == node_with(book, "d6", corrected="added")
+    fresh = rebuild(tmp, pdf, fix)
+    assert game_tree(book) == game_tree(fresh)
+    assert book["stats"]["corrected"]["added_moves"] == fresh["stats"]["corrected"]["added_moves"] == 2
+    live.apply(state, book, {})
+    assert not [t for t in game_tree(book) if t[3] == "added"]
