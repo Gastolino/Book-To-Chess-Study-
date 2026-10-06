@@ -17,8 +17,8 @@
 // reading was made by another version of the program or with another
 // selection: then the book is read again and its reading replaced.
 //
-// Corrections, the selection and the place last read are written to the
-// browser's storage (localStorage) as before. With the server they are sent
+// Corrections, the selection, the bookmarks and the place last read are
+// written to the browser's storage (localStorage) as before. With the server they are sent
 // to it as well, a moment after each change. A record
 // "chessbook-library:<id>" in the browser's storage says when each was last
 // changed here and when the server last took it, so that a change made
@@ -31,8 +31,9 @@
 // holding book.json, book.pdf, reading.gz and cover.jpg): the share sheet
 // on an iPhone or iPad (Save to Files, AirDrop), a download elsewhere.
 // "Add a book" takes such a file as well as a PDF, and restores the book
-// with its reading, corrections, selection and place; a book the library
-// holds already keeps the newer of the two sets of corrections.
+// with its reading, corrections, selection, bookmarks and place; a book the
+// library holds already keeps the newer of the two sets of corrections (and
+// of bookmarks).
 //
 // The page's own script (tools/build_web.py) calls LIB.message() with every
 // message of the worker, LIB.fromReader() with every message of the reader,
@@ -45,6 +46,8 @@ const LIB = (() => {
   const RETRY = 30000;
   const META = "chessbook-library:";
   const HINT = "chessbook-homehint";
+  // what the reader keeps in localStorage under "chessbook-<kind>:<file>:<pages>"
+  const KINDS = ["corrections", "selection", "bookmarks"];
   let readyWaiters = [];
   let store = null;
 
@@ -103,7 +106,7 @@ const LIB = (() => {
   // the server's record of it (server/app.js, publicBook).
   const serverStore = {
     kind: "server",
-    syncs: true,                  // corrections and the selection go to the server too
+    syncs: true,                  // corrections, the selection and the bookmarks go to the server too
     maxPdf: 95 * 1048576,
     async probe() {
       let data;
@@ -253,7 +256,7 @@ const LIB = (() => {
     }
     return {
       kind: "device",
-      syncs: false,               // the corrections and the selection stay in localStorage
+      syncs: false,               // corrections, the selection and the bookmarks stay in localStorage
       maxPdf: Infinity,
       async list() {
         const recs = await tx(["books"], "readonly", (s, keep) => {
@@ -418,8 +421,8 @@ const LIB = (() => {
     return titleOf(b).replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) ||
       "Chess book";
   }
-  // What the browser holds for book b of the kind "corrections" or "selection":
-  // {data, updated} (updated is 0 when it holds nothing).
+  // What the browser holds for book b of the kind "corrections", "selection"
+  // or "bookmarks": {data, updated} (updated is 0 when it holds nothing).
   function localData(b, kind) {
     const mm = meta(b.id);
     const key = storageKey({ name: mm.name || safeName(b.fileName), pages: b.pages || mm.pages }, kind);
@@ -445,6 +448,7 @@ const LIB = (() => {
     const position = local && (!b.position || local.updated > b.position.updated)
       ? Object.assign({}, local.data, { updated: local.updated }) : b.position;
     const corr = localData(b, "corrections"), sel = localData(b, "selection");
+    const marks = bookmarksOf(b);
     const info = {
       format: "chessbook", formatVersion: 1, saved: Date.now(), id: b.id, fileName: b.fileName,
       title: b.title || null, pages: b.pages || null, size: pdf.length, added: b.added, opened: b.opened,
@@ -452,6 +456,7 @@ const LIB = (() => {
       reading: reading ? { version: b.reading.version, size: b.reading.size } : null,
       corrections: { data: corr.data, updated: corr.updated },
       selection: { data: sel.data, updated: sel.updated },
+      bookmarks: { data: marks.data, updated: marks.updated },
     };
     const entries = [{ name: "book.json", bytes: new TextEncoder().encode(JSON.stringify(info, null, 1)) },
                      { name: "book.pdf", bytes: pdf }];
@@ -487,7 +492,8 @@ const LIB = (() => {
     }
     btn.disabled = false;
     const done = () => say("The book file " + file.name + " (" + mb(file.size) + ") holds the book, the program's " +
-                           "reading, your corrections and your place. Add it to the library on another device.");
+                           "reading, your corrections, your bookmarks and your place. Add it to the library on " +
+                           "another device.");
     if (shares() && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({ files: [file], title: file.name });
@@ -550,6 +556,34 @@ const LIB = (() => {
     const pos = local && (!kept || local.updated > kept.updated) ? local.data : kept;
     return pos && pos.page ? pos : null;
   }
+  // The bookmarks of book b: the newer of the browser's copy and the store's
+  // (the server lists them with the book), as {data: {bookmarks: [...]}, updated}.
+  function bookmarksOf(b) {
+    const here = localData(b, "bookmarks");
+    const there = b.bookmarks && b.bookmarks.updated ? b.bookmarks : null;
+    if (there && there.updated > here.updated) return { data: there.data, updated: there.updated };
+    return { data: here.data, updated: here.updated };
+  }
+  // "Bookmarks on pages 31 and 57", each page a button that opens the book there.
+  function bookmarkLine(b) {
+    const list = ((bookmarksOf(b).data || {}).bookmarks || []).filter((m) => m && m.page);
+    if (!list.length) return null;
+    const el = document.createElement("span");
+    el.className = "bms";
+    el.append(list.length === 1 ? "Bookmark on page " : "Bookmarks on pages ");
+    list.forEach((m, i) => {
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "tb";
+      go.textContent = String(m.page);
+      go.setAttribute("aria-label", "Open " + titleOf(b) + " at the bookmark on page " + m.page);
+      go.addEventListener("click", () => api.open(b, null, { chapter: m.chapter || null, page: m.page, node: m.node || null }));
+      el.appendChild(go);
+      if (i < list.length - 2) el.append(", ");
+      else if (i === list.length - 2) el.append(" and ");
+    });
+    return el;
+  }
   function describe(b) {
     const parts = [];
     const pos = placeOf(b);
@@ -610,6 +644,8 @@ const LIB = (() => {
       }
       acts.appendChild(button("Remove", "remove", () => confirmRemove(li, b)));
       li.append(open, acts);
+      const bms = bookmarkLine(b);
+      if (bms) li.appendChild(bms);
       list.appendChild(li);
     }
     space();
@@ -657,7 +693,8 @@ const LIB = (() => {
     li.appendChild(box);
     yes.focus();
   }
-  // What the browser keeps for a removed book: its record, its corrections and its selection.
+  // What the browser keeps for a removed book: its record, its corrections, its
+  // selection and its bookmarks.
   function forget(b) {
     const name = meta(b.id).name || safeName(b.fileName);
     try {
@@ -665,8 +702,7 @@ const LIB = (() => {
       const keys = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && (k.startsWith("chessbook-corrections:" + name + ":") ||
-                  k.startsWith("chessbook-selection:" + name + ":"))) keys.push(k);
+        if (k && KINDS.some((kind) => k.startsWith("chessbook-" + kind + ":" + name + ":"))) keys.push(k);
       }
       keys.forEach((k) => localStorage.removeItem(k));
     } catch (e) { /* no storage */ }
@@ -864,11 +900,11 @@ const LIB = (() => {
                         : "The book could not be added to your library (" + err.message + "). ") +
           "It opens for now, and is not kept.", true);
     }
-    // the corrections, the selection and the place, as the reader keeps them
+    // the corrections, the selection, the bookmarks and the place, as the reader keeps them
     const mm = meta(id);
     mm.name = name;
     if (info.pages) mm.pages = info.pages;
-    for (const kind of ["corrections", "selection"]) {
+    for (const kind of KINDS) {
       const d = info[kind];
       if (!d || !d.data || !info.pages) continue;
       const v = JSON.stringify(d.data);
@@ -900,7 +936,7 @@ const LIB = (() => {
     mm.pages = mm.pages || b.pages || info.pages;
     const pages = b.pages || info.pages;
     let verdict = "same";
-    for (const kind of ["corrections", "selection"]) {
+    for (const kind of KINDS) {
       const here = localData(Object.assign({}, b, { pages }), kind);
       const there = info[kind] || { data: null, updated: 0 };
       const v = there.data ? JSON.stringify(there.data) : null;
@@ -934,13 +970,15 @@ const LIB = (() => {
   }
 
   // Open book b: from the store, or from given = {pdf, reading} (a book file
-  // the store could not keep).
-  api.open = async function (b, given) {
+  // the store could not keep); at = {chapter, page, node} opens it at a
+  // bookmark instead of the place last read.
+  api.open = async function (b, given, at) {
     if (busy) return;
     busy = true;
     $("bar").classList.add("on");
     const name = safeName(b.fileName);
-    api.current = { id: b.id, book: b, name, restored: false, position: null, t0: Date.now(), ephemeral: !!given };
+    api.current = { id: b.id, book: b, name, restored: false, position: null, t0: Date.now(), ephemeral: !!given,
+                    at: at || null };
     try {
       if (!given) say(store.kind === "device" ? "Opening the book." : "Downloading the book.");
       const pdf = given ? given.pdf : await store.pdf(b.id, (text) => say(text));
@@ -948,6 +986,13 @@ const LIB = (() => {
       if (!given) await syncIn(b, name);
       const local = meta(b.id).position;
       api.current.position = local && (!b.position || local.updated > b.position.updated) ? local.data : b.position;
+      if (at) {
+        // a bookmark names its chapter; one whose chapter is unknown opens at the page last read
+        const marks = ((bookmarksOf(b).data || {}).bookmarks || []).filter((m) => m && m.page);
+        const same = marks.find((m) => m.page === at.page);
+        api.current.position = { chapter: at.chapter || (same && same.chapter) || (api.current.position || {}).chapter,
+                                 page: at.page, node: at.node || null };
+      }
       if (!given) store.update(b.id, { opened: Date.now() }).catch(() => {});
       if (!ready) say("The reader is still starting. The book opens in a moment.");
       await whenReady();
@@ -1079,8 +1124,13 @@ const LIB = (() => {
       saveMeta(cur.id, mm);
       schedule(POSITION_DELAY);
     }
-    // a correction or a changed selection: the reader has written it to the storage already
-    if (d.correct || d.selectionChanged) setTimeout(() => seen(api.current.id), 0);
+    // a correction, a changed selection or a bookmark: the reader has written it to the storage already
+    if (d.correct || d.selectionChanged || d.bookmarksChanged) setTimeout(() => seen(api.current.id), 0);
+    if (d.bookmarksChanged) {
+      // the library page shows the bookmarks under the book
+      const b = api.books.find((x) => x.id === api.current.id);
+      if (b && b.bookmarks) b.bookmarks = null;
+    }
   };
 
   // ---------------------------------------------------------------- sync
@@ -1106,7 +1156,7 @@ const LIB = (() => {
   function seen(id) {
     const mm = meta(id);
     let changed = false;
-    for (const kind of ["corrections", "selection"]) {
+    for (const kind of KINDS) {
       const key = storageKey(mm, kind);
       if (!key) continue;
       const v = localValue(key);
@@ -1122,7 +1172,7 @@ const LIB = (() => {
     }
   }
   function noticeKey(key) {
-    const m = /^chessbook-(corrections|selection):/.exec(key);
+    const m = /^chessbook-(corrections|selection|bookmarks):/.exec(key);
     if (!m || !api.current) return;
     seen(api.current.id);
   }
@@ -1132,8 +1182,8 @@ const LIB = (() => {
     timer = setTimeout(() => flush(), ms);
   }
   // Send every change the store has not taken yet, for every book: to the
-  // server the corrections, the selection and the place; on the device the
-  // place (the rest stays in localStorage).
+  // server the corrections, the selection, the bookmarks and the place; on
+  // the device the place (the rest stays in localStorage).
   let flushing = false;
   async function flush(leaving) {
     if (!api.on || flushing) return;
@@ -1149,7 +1199,7 @@ const LIB = (() => {
       for (const id of ids) {
         const mm = meta(id);
         if (store.syncs) {
-          for (const kind of ["corrections", "selection"]) {
+          for (const kind of KINDS) {
             const st = mm[kind];
             if (!st || !(st.updated > (st.sent || 0))) continue;
             let data = null;
@@ -1175,6 +1225,10 @@ const LIB = (() => {
         mm[kind].sent = updated;
         saveMeta(id, mm);
       }
+      if (kind === "bookmarks" && book && typeof book.updated === "number") {
+        const b = api.books.find((x) => x.id === id);
+        if (b) b.bookmarks = { data: book.data, updated: book.updated };
+      }
       if (kind === "position" && book && book.id) {
         const b = api.books.find((x) => x.id === id);
         if (b) b.position = book.position;
@@ -1190,7 +1244,7 @@ const LIB = (() => {
     if (b.pages) mm.pages = b.pages;
     saveMeta(b.id, mm);
     if (!store.syncs) return;
-    for (const kind of ["corrections", "selection"]) {
+    for (const kind of KINDS) {
       let server;
       try { server = await store.getData(b.id, kind); } catch (e) { continue; }
       const m2 = meta(b.id);
