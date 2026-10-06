@@ -37,11 +37,14 @@ jobs:
           urllib.request.urlretrieve(url, "wheels/" + url.rsplit("/", 1)[1])
           PY
           ls -l wheels
+      - name: Fetch the chess engine (Stockfish.js 19, lite single-threaded, GPLv3)
+        run: python tools/fetch_engine.py engine
       - name: Build the site
         run: |
           python tools/build_web.py --out site \
             --pymupdf wheels/pymupdf-1.28.2-cp313-abi3-pyemscripten_2025_0_wasm32.whl \
-            --chess wheels/chess-1.11.2-py3-none-any.whl
+            --chess wheels/chess-1.11.2-py3-none-any.whl \
+            --engine engine
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

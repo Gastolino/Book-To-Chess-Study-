@@ -7,12 +7,14 @@ them on the device, and nothing is uploaded anywhere.
 
 Usage:
     python3 tools/build_web.py [--out output/site] [--local PYODIDE_DIR]
-                               [--pymupdf WHEEL] [--chess WHEEL]
+                               [--pymupdf WHEEL] [--chess WHEEL] [--engine DIR]
 
 By default the site loads Pyodide from its CDN and PyMuPDF from PyPI, so the
 site itself stays small. --local copies a Pyodide distribution into the site
 and --pymupdf copies the PyMuPDF wheel, for hosts or tests without those
-networks.
+networks. --engine copies the chess engine (tools/fetch_engine.py fetches
+it) into site/engine/, where the reader loads it the first time analysis is
+turned on; without it the reader says that the engine is not installed.
 """
 import argparse
 import json
@@ -26,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from chessbook import style  # noqa: E402
+from chessbook import engine_files, style  # noqa: E402
 
 PYODIDE_VERSION = "0.29.5"
 PYODIDE_CDN = f"https://cdn.jsdelivr.net/pyodide/v{PYODIDE_VERSION}/full/"
@@ -175,7 +177,7 @@ function working(on) {
 }
 // The flag goes first in the head, so that the page's own script sees it
 // while it starts (the stored corrections it sends, the words it chooses).
-const FLAG = "<script>window.CHESSBOOK_APP=true;<" + "/script>";
+const FLAG = "<script>window.CHESSBOOK_APP=true;window.CHESSBOOK_ENGINE=" + JSON.stringify(CFG.engine) + ";<" + "/script>";
 function show(name, hash, htmlText) {
   const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</body>", NAV + "</body>");
   const blob = new Blob([page], { type: "text/html" });
@@ -426,6 +428,8 @@ def main(argv=None):
     ap.add_argument("--chess", type=Path, required=True, help="python-chess wheel to copy")
     ap.add_argument("--pymupdf-url", default=None,
                     help="where browsers fetch the PyMuPDF wheel when it is not copied")
+    ap.add_argument("--engine", type=Path, default=None,
+                    help="folder holding the chess engine files (tools/fetch_engine.py)")
     args = ap.parse_args(argv)
 
     out = args.out
@@ -451,11 +455,22 @@ def main(argv=None):
         index_url = "pyodide/"
     else:
         index_url = PYODIDE_CDN
+    # The engine (1.8 MB) is fetched only when a reader turns analysis on; once
+    # fetched, the reader keeps it in the browser's storage, so it runs offline.
+    # The files never change under one name, so a host that takes a _headers
+    # file (Cloudflare Pages) may cache them for a year; GitHub Pages sets its
+    # own headers and ignores the file.
+    engine = "null"
+    if args.engine:
+        engine_files.copy(args.engine, out / "engine")
+        engine = "new URL('engine/', location.href).href"
+        (out / "_headers").write_text("/engine/*\n  Cache-Control: public, max-age=31536000, immutable\n",
+                                      encoding="utf-8")
     # Wheel paths are made absolute against the site, because the worker
     # resolves them from its own location.
     cfg = ("{indexURL: new URL(%r, location.href).href, appZip: new URL('app.zip', location.href).href, "
-           "wheels: %s.map(w => new URL(w, location.href).href), packages: %s}") % (
-               index_url, wheels, PYODIDE_PACKAGES)
+           "wheels: %s.map(w => new URL(w, location.href).href), packages: %s, engine: %s}") % (
+               index_url, wheels, PYODIDE_PACKAGES, engine)
     text = SHELL.replace("__CSS__", style.page_css()).replace("__CFG__", cfg)
     (out / "index.html").write_text(text, encoding="utf-8")
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())

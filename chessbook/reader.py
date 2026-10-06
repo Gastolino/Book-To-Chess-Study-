@@ -36,6 +36,7 @@ import pymupdf
 
 from . import corrections, pgnout, style
 from .chess_js import CHESS_JS
+from .engine_js import ENGINE_CSS, ENGINE_JS
 from .review_js import CORRECTIONS_JS, EYE_SVG, REVIEW_CSS, REVIEW_JS
 from .movetext import LETTER_SETS, junk_prefix
 from .selection import EXCLUDED_KINDS
@@ -340,7 +341,7 @@ body:not(.reading) .lsec.generic,body:not(.reading) .where h1.generic,
 body:not(.reading) .pagefoot label.use,body:not(.reading) .pgn .muted,
 body:not(.reading) .offpage{display:none}
 .boardnote:empty{display:none}
-.boardarea.diagram #board,.boardarea.diagram #boardnote{display:none}
+.boardarea.diagram .boardrow,.boardarea.diagram #boardnote{display:none}
 .dpanel{display:grid;gap:8px}
 .dpanel[hidden]{display:none}
 .dhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:8px}
@@ -348,6 +349,7 @@ body:not(.reading) .offpage{display:none}
 .links li{margin:2px 0}
 .controls{display:flex;align-items:center;margin:8px -8px 4px}
 .controls .gap{flex:1}
+.controls #bgear svg{width:16px;height:16px}
 .ltitle{font-size:17px;line-height:1.35}
 #linemeta{margin-top:2px}
 #linemeta:empty{display:none}
@@ -417,7 +419,7 @@ justify-content:space-between}
 .mbar.withboard.small .mbtns{justify-content:flex-start;margin:0 0 0 -6px;flex-wrap:wrap}
 .mini svg,.mini canvas{display:block;width:100%;height:auto}
 .mini .co{display:none}}
-""" + REVIEW_CSS
+""" + REVIEW_CSS + ENGINE_CSS
 
 CHAPTER_JS = r"""
 (function(){
@@ -868,6 +870,7 @@ function renderBoard(){
   sizeCoords(box);
   $("boardnote").textContent = note;
   renderMini();
+  evShown();
 }
 function renderMini(){
   // on a phone the small board sits in the bar at the foot of the window while the page is in
@@ -1515,10 +1518,11 @@ function init(){
   if (!fromHash() || (!S.node && !S.diagram)) defaultView();
   selNote();
   initReview();
+  initEngine();
 }
 init();
 })();
-""".replace("init();\n})();", REVIEW_JS.replace("__EYE__", EYE_SVG) + "\ninit();\n})();")
+""".replace("init();\n})();", REVIEW_JS.replace("__EYE__", EYE_SVG) + ENGINE_JS + "\ninit();\n})();")
 
 CHAPTER_HTML = """<!doctype html>
 <html lang="en">
@@ -1580,7 +1584,8 @@ __PGNBTN__
 </section>
 <aside class="panel" id="panel" aria-label="Board and moves">
 <div class="boardarea" id="boardarea">
-<div class="boardwrap" id="board"></div>
+<div class="boardrow"><div class="evalbar" id="evalbar" aria-label="Evaluation" hidden><div class="ebar"><i></i></div><span class="enum num"></span></div>
+<div class="boardwrap" id="board"></div></div>
 <p class="boardnote small muted" id="boardnote"></p>
 <div class="dpanel" id="dpanel" hidden></div>
 </div>
@@ -1591,7 +1596,14 @@ __PGNBTN__
 <button class="ib" id="bend" title="End of the line (End)" aria-label="End of the line">__ICON_END__</button>
 <span class="gap"></span>
 <button class="ib" id="bflip" title="Turn the board round" aria-label="Turn the board round">__ICON_FLIP__</button>
+<button class="ib" id="bcpu" aria-pressed="false" title="Analysis with Stockfish" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
+<button class="ib" id="bgear" aria-pressed="false" title="Analysis settings" aria-label="Analysis settings">__ICON_GEAR__</button>
 </div>
+<section class="sec" id="evalsec" aria-label="Analysis" hidden>
+<div class="evhead"><p class="small muted evstatus" id="evstatus" role="status"></p><button class="tb small" id="evdeeper" hidden>Deeper</button></div>
+<ol class="evlines" id="evlines"></ol>
+</section>
+<section class="sec" id="evset" aria-label="Analysis settings" hidden></section>
 <section class="sec" id="fix" aria-label="Correction" hidden></section>
 <section class="sec" id="review" aria-label="Review" hidden>
 <div class="revhead"><h2 class="ltitle">Review</h2></div>
@@ -1608,8 +1620,9 @@ __PGNBTN__
 </main>
 <div class="mbar" id="mbar" aria-label="Current move">
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
-<div class="mside"><span class="mtxt" id="mtxt"></span>
+<div class="mside"><span class="mtxt" id="mtxt"></span><span class="meval small" id="mevalnum"></span>
 <span class="mbtns"><button class="ib" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
+<button class="ib" id="mcpu" aria-pressed="false" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
 <button class="ib" id="mback" aria-label="Previous move">__ICON_BACK__</button>
 <button class="ib" id="mfwd" aria-label="Next move">__ICON_FWD__</button>
 <button class="tb" id="mboard" aria-pressed="false">Board</button>
@@ -1635,7 +1648,7 @@ def _pieces_defs():
     return "".join(chess.svg.PIECES[k] for k in "PNBRQKpnbrqk")
 
 
-def chapter_data(book, ch, pgn_text):
+def chapter_data(book, ch, pgn_text, engine=False):
     idx = ch["index"]
     pages = {}
     for pg in book["pages"]:
@@ -1715,6 +1728,8 @@ def chapter_data(book, ch, pgn_text):
         "pieceWords": PIECE_WORDS,
         # while the browser app reads the book: "pages" or "first" (progressive.py)
         "reading": book.get("reading"),
+        # a reader built from the command line: the engine files stand beside it (engine/)
+        "engine": bool(engine),
     }
 
 
@@ -1760,8 +1775,8 @@ def pgn_block(games, waiting):
             f'<span class="muted">{html.escape(note)}.</span>')
 
 
-def chapter_html(book, ch, images, pgn_text, pgn_info):
-    data = chapter_data(book, ch, pgn_text)
+def chapter_html(book, ch, images, pgn_text, pgn_info, engine=False):
+    data = chapter_data(book, ch, pgn_text, engine=engine)
     chs = [c for c in book["chapters"] if c["end"] >= c["start"]]
     pos = next(i for i, c in enumerate(chs) if c["index"] == ch["index"])
     nav = []
@@ -1786,6 +1801,8 @@ def chapter_html(book, ch, images, pgn_text, pgn_info):
         "__ICON_END__": style.icon("end"),
         "__ICON_FLIP__": style.icon("flip"),
         "__ICON_PENCIL__": style.icon("pencil"),
+        "__ICON_CPU__": style.icon("cpu"),
+        "__ICON_GEAR__": style.icon("gear"),
         "__PIECES__": _pieces_defs(),
         "__EYE__": EYE_SVG,
         "__SELJS__": SELECTION_JS,
@@ -2226,13 +2243,15 @@ def _chevron():
 # ---------------------------------------------------------------- build
 
 def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_index=True,
-                 app=False, thumbs=None, loading=False):
+                 app=False, thumbs=None, loading=False, engine=False):
     """Write index.html and chNN.html into out_dir. chapters limits the chapter
     readers to those indices (the contents page always covers the whole book).
     thumbs, when given, holds the page thumbnails drawn already ({page: base64
     JPEG}); the contents page then leaves the others blank (the browser app
     draws them while it reads the book). loading marks the contents page of a
-    book the app is still reading.
+    book the app is still reading. engine says that the engine files stand
+    in out_dir/engine (make_reader.py --engine), so that the chapter readers
+    offer analysis.
     Returns {"files": {name: bytes}, "pgn": pgnout report, "sizes": {index: bytes}}."""
     say = progress or (lambda *_: None)
     out_dir = Path(out_dir)
@@ -2257,7 +2276,7 @@ def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_ind
             images = {p: _b64(page_jpeg(doc, p, dpi, quality))
                       for p in range(ch["start"], ch["end"] + 1)}
             text = chapter_html(book, ch, images, pgn_text,
-                                (info.get("games", 0), info.get("waiting", 0)))
+                                (info.get("games", 0), info.get("waiting", 0)), engine=engine)
             data = text.encode("utf-8")
             if len(data) <= TARGET_BYTES or quality <= 30:
                 break
