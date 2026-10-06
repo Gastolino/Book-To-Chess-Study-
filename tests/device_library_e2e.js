@@ -140,10 +140,17 @@ async function device(name, opts, profile) {
 
 async function openLibrary(d) {
   // the library, not the book that was open (the app goes back to it otherwise, as after the
-  // system closed it): the Library button forgets that record first, and so does this
-  await d.page.evaluate(() => { try { localStorage.removeItem("chessbook-session"); } catch (e) { /* no page yet */ } }).catch(() => {});
+  // system closed it): the Library button forgets that record first, and so does this, on the
+  // site's own page (a window that has not loaded the site yet cannot reach the record)
+  if (!/^https?:/.test(d.page.url())) await d.page.goto(siteUrl);
+  await d.page.evaluate(() => {
+    // as the Library button does: the record in the page as well, or the page writes it back as it unloads
+    try { SESSION.clear(true); } catch (e) { /* no page yet */ }
+    try { localStorage.removeItem("chessbook-session"); } catch (e) { /* no page yet */ }
+  }).catch(() => {});
   await d.page.goto(siteUrl);
-  await d.page.waitForFunction(() => document.body.classList.contains("library"), null, { timeout: 60000 });
+  await d.page.waitForFunction(() => document.body.classList.contains("library") &&
+                               !document.body.classList.contains("resuming"), null, { timeout: 60000 });
 }
 async function whenReady(d) {
   // the page's own flag: the worker said "ready"

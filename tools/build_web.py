@@ -183,7 +183,9 @@ if(m){e.preventDefault();parent.postMessage({open:m[1],hash:m[2]||""},"*");}},tr
 // recent for a day, and "Library" forgets it.
 const SESSION = (() => {
   const KEY = "chessbook-session", LIMIT = 24 * 3600 * 1000;
-  let rec = null, timer = 0;
+  // stopped: the page is about to load the library (the Library button), and
+  // a book still opening must not record itself as the open book again
+  let rec = null, timer = 0, stopped = false;
   function load() {
     try {
       const v = JSON.parse(localStorage.getItem(KEY) || "null");
@@ -191,7 +193,7 @@ const SESSION = (() => {
     } catch (e) { return null; }
   }
   function save() {
-    if (!rec) return;
+    if (!rec || stopped) return;
     rec.time = Date.now();
     try { localStorage.setItem(KEY, JSON.stringify(rec)); } catch (e) { /* no storage */ }
   }
@@ -229,7 +231,12 @@ const SESSION = (() => {
     },
     // the view, a moment after a change
     soon() { clearTimeout(timer); timer = setTimeout(api.take, 500); },
-    clear() { rec = null; clearTimeout(timer); try { localStorage.removeItem(KEY); } catch (e) { /* no storage */ } },
+    // forget the record; final: the page is about to reload, and records nothing more
+    clear(final) {
+      rec = null; clearTimeout(timer);
+      if (final) stopped = true;
+      try { localStorage.removeItem(KEY); } catch (e) { /* no storage */ }
+    },
     place() { return rec && rec.chapter ? { chapter: rec.chapter, page: rec.page, node: rec.node, label: rec.label, view: rec.view } : null; },
     record() { return rec; },
   };
@@ -387,7 +394,7 @@ function resumed(m) {
                                     small: window.matchMedia("(max-width: 700px)").matches });
   }
 }
-$("resume").querySelector("button").addEventListener("click", () => { SESSION.clear(); location.reload(); });
+$("resume").querySelector("button").addEventListener("click", () => { SESSION.clear(true); location.reload(); });
 function toView(msg) { if ($("view").contentWindow) $("view").contentWindow.postMessage(msg, "*"); }
 function patched(m) {
   const r = m.result || {};
@@ -471,7 +478,7 @@ $("file").addEventListener("change", (e) => { const f = e.target.files[0]; e.tar
 ["dragleave", "drop"].forEach((t) => $("drop").addEventListener(t, (e) => {
   e.preventDefault(); $("drop").classList.remove("over"); }));
 $("drop").addEventListener("drop", (e) => take(e.dataTransfer.files[0]));
-$("another").addEventListener("click", () => { SESSION.clear(); location.reload(); });
+$("another").addEventListener("click", () => { SESSION.clear(true); location.reload(); });
 $("again").addEventListener("click", () => {
   if (!lastFile || busy) return;
   $("start").style.display = "block"; $("view").style.display = "none"; $("top").style.display = "none";

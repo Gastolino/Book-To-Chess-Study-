@@ -101,10 +101,17 @@ async function device(browser, name, opts) {
 
 async function openLibrary(d) {
   // the library, not the book that was open (the app goes back to it otherwise, as after the
-  // system closed it): the Library button forgets that record first, and so does this
-  await d.page.evaluate(() => { try { localStorage.removeItem("chessbook-session"); } catch (e) { /* no page yet */ } }).catch(() => {});
+  // system closed it): the Library button forgets that record first, and so does this, on the
+  // site's own page (a window that has not loaded the site yet cannot reach the record)
+  if (!/^https?:/.test(d.page.url())) await d.page.goto(siteUrl);
+  await d.page.evaluate(() => {
+    // as the Library button does: the record in the page as well, or the page writes it back as it unloads
+    try { SESSION.clear(true); } catch (e) { /* no page yet */ }
+    try { localStorage.removeItem("chessbook-session"); } catch (e) { /* no page yet */ }
+  }).catch(() => {});
   await d.page.goto(siteUrl);
-  await d.page.waitForFunction(() => document.body.classList.contains("library"), null, { timeout: 60000 });
+  await d.page.waitForFunction(() => document.body.classList.contains("library") &&
+                               !document.body.classList.contains("resuming"), null, { timeout: 60000 });
 }
 
 async function addBook(d, file) {
@@ -273,7 +280,11 @@ async function run() {
     // a step forward, then the page hidden and dropped at once (as an iPhone
     // drops a page in the background): the place reaches the server without
     // the usual wait, and the page loaded again comes back to the book there
-    await b.inFrame(() => document.getElementById("bfwd").click());
+    // (a step back when the move ends its line, since forward then has nowhere to go)
+    await b.inFrame(() => {
+      const id = window.readerState.nodeId, n = id && window.READER.nodes[id];
+      document.getElementById(n && n.children && n.children.length ? "bfwd" : "bback").click();
+    });
     const moved = await b.waitFrame((p) => window.readerState.nodeId !== p && window.readerState, placed.node);
     await b.page.evaluate(() => {
       Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
