@@ -294,6 +294,42 @@ def test_gap_in_chromium(tmp_path):
         assert (screens / name).stat().st_size > 10000, name
 
 
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_bare_move_join_in_chromium(tmp_path):
+    """A move printed without its number after a comment, which the moves
+    after it do not confirm, is an item of the Review list, and the pencil
+    joins it to the line after the move it follows (tests/bare_e2e.js)."""
+    from chessbook import live
+    from test_lines import _bare_book
+    pdf = _bare_book([
+        "A good alternative is 7.Nf3 Every swap helps Black, so White",
+        "retreats. Nbd7 8.Qc2 Re8 9.Bd3 10.O-O Nf8 and so on."]).save(tmp_path / "bare.pdf")
+    state = {}
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
+                      state=state)
+    out = tmp_path / "output" / "bare" / "reader"
+    reader.build_reader(book, pdf, out)
+    (u,) = [u for u in book["unattached"] if u["text"] == "Nbd7"]
+    ch = next(c for c in book["chapters"] if c["start"] <= u["page"] <= c["end"])
+    old = reader.chapter_data(book, ch, "")
+    live.apply(state, book, {"connect": {u["key"]: {"after": u["after"]}}})
+    patch, _ = live.chapter_patch(book, ch, old)
+    (tmp_path / "patch.json").write_text(json.dumps(patch), encoding="utf-8")
+    screens = ROOT / "output" / "screens"
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "bare_e2e.js"), str(out / ch["file"]),
+                           str(tmp_path / "patch.json"), str(screens)],
+                          capture_output=True, text=True, env=env, timeout=300)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    assert res["errors"] == []
+    for name in ("bare_item_1280_light.png", "bare_joined_1280_light.png"):
+        assert (screens / name).stat().st_size > 10000, name
+
+
 def _read_again_from_the_command_line(res, tmp_path, monkeypatch):
     """The corrections the browser test made, pasted into make_reader
     --corrections (the command line's Read again): every kind is applied."""
