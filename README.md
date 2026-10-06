@@ -104,6 +104,59 @@ board. The book is processed in your own browser (Python runs there through
 Pyodide) and is never uploaded. The first visit downloads about 40 MB; later
 visits start at once.
 
+### Opening a book
+
+A book opens as a book does in the Books app: at its first page (the cover
+and the front matter), in the reader, as soon as that page can be shown,
+even while the program still reads the book; the moves appear on the pages
+as they are read. A book opened again from the library opens at the page
+and move last read, and a bookmark opens it at the bookmark. The contents
+(the chapters, their pages and the selection) open only with **Contents**
+in the reader's top bar; **Back to page 31** at the top, or the browser's
+back, returns to the page.
+
+The front matter is read like the rest of the book: its pages are ticked in
+the contents, and the moves of an introduction (its games and diagrams) are
+read. Its table of contents gives no moves: a sequence that the program
+cannot place, such as "2...Nc6" listed with a page number, stands in no line
+and is listed in the Review. Untick the pages to leave them out.
+
+### One book, page after page
+
+The pages run on from one chapter to the next: the arrows, a swipe and Page
+Down on the last page of a chapter show the first page of the next chapter
+(the reader of that chapter is built while you read the last pages of the
+one before, and takes its place without an empty page between them), and
+going back from a chapter's first page shows the last page of the chapter
+before. The page counter counts the whole book ("47 of 386"), and a page
+number typed into it opens that page in whatever chapter holds it.
+
+The pictures of the pages are drawn ten pages at a time: the ten pages
+around the page shown first, then the ten after them, then the ten before.
+A page whose picture has not come yet shows a light sheet of its size, which
+fills in when the picture comes; the moves, the board, the bookmarks and the
+corrections work on it at once. The app keeps the pictures of those thirty
+pages only, so that a phone keeps the reader open. The pictures it draws
+are kept on the device (in the browser's storage, apart for a phone and for
+a larger screen), so the next opening shows them without drawing them; they
+go with the book when it is removed, and when the device has no room left,
+the app stops keeping them and says so once. On the Cloudflare site the
+pictures are kept on each device as well, not on the site.
+
+### The sign of work
+
+While the app starts, and while a book is read before its first page shows,
+the start page shows an open book whose two pages are chequered like a
+board, with a page turning over, above a thin bar that fills as far as the
+work has come where the app knows it, and the words of the work under it.
+In the reader, the same small book stands at the right of the top bar while
+the program works (reading the moves, drawing pages, saving the reading); a
+tap on it says what it is doing, and it goes when the work is done. With
+reduced motion set on the device, the page does not turn. The book with its
+two chequered pages is also the app's icon (`web/icon.svg`;
+`tools/make_icons.py` draws the icons of the Home Screen, the manifest and
+the browser tab).
+
 ### Your library on each device
 
 The start page is your library on this device: each book with a picture of
@@ -119,11 +172,19 @@ storage), so nothing leaves the device:
   with your corrections and selection, at the chapter, page and move last
   read. A small book opens in about a second; the Primer opened in 9
   seconds in Chromium on a desktop, where reading it took six minutes in
-  the same test. A reading made by an older version of the program is not
-  used: the book is read again (with your corrections) and its reading
-  replaced.
-- **Remove** deletes the book, its reading, its corrections, its selection
-  and its place, after a question.
+  the same test.
+- The kept reading is what the program read in the book, never the pages
+  built from it: the reader and the contents are built from it by the
+  program of the day, so a new version of the reader, the app or their look
+  keeps every reading. When the code that reads the books has improved
+  since, the book opens from its kept reading all the same, with one line,
+  "An improved reading is available", and **Read again** in the top bar;
+  the book is read again only when you press it, with your corrections,
+  bookmarks and place. A reading that the new program cannot take
+  corrections on opens for reading, and the line says that corrections need
+  the book read again.
+- **Remove** deletes the book, its reading, its corrections, its selection,
+  its place and the pictures of its pages, after a question.
 - A quiet line under the books says how much room the library takes. The
   Primer takes about 15 MB: the PDF 11 MB and the reading 4 MB. When the device has no room left,
   the app says so and opens the book for the moment without keeping it.
@@ -192,8 +253,8 @@ underscores and the author's names in front ("lakdawala_cyrus_the_alekhine_defen
 gives "The Alekhine Defence").
 
 The book can be read while it is processed. As soon as the program knows the
-book's chapters (a few seconds), the contents page shows, and every chapter
-opens as pages that can be turned and swiped. The top bar says how far the
+book's chapters (a few seconds), the book opens at its first page, and every
+page can be turned and swiped. The top bar says how far the
 reading has come ("Reading the moves: chapter 3 of 11") above a thin moving
 line. The moves then appear chapter by chapter, the first chapters first; a
 chapter that the reader opens is read before the others. These first readings
@@ -213,6 +274,10 @@ whenever `main` changes. `python3 tools/build_web.py --help` builds it by hand.
 with a local Pyodide folder (`CHESSBOOK_PYODIDE`) and the PyMuPDF and
 python-chess wheels for Pyodide (`CHESSBOOK_WHEELS`); `CHESSBOOK_APP_BOOK`
 names another book to read than the generated test book.
+`tests/test_book_flow.py` runs the book flow on an iPhone 13 and an iPad
+held sideways (`tests/flow_e2e.js`): the sign of work, a new book at its
+first page, the pages across chapters, the pictures ten at a time with
+their placeholder, and a kept reading made by other reading code.
 
 ## A private library on Cloudflare (optional)
 
@@ -395,6 +460,13 @@ your own device, in a worker of the browser, and sends nothing anywhere.
   that it drains no phone. On a phone the processor icon stands in the bar
   at the foot of the screen as well, and the figure shows next to the
   current move.
+- What the engine finds is kept on the device, for each position and number
+  of lines (the deepest result so far, for at most 5000 positions, the ones
+  used longest ago going first). A position shown again shows its kept
+  result at once, with "kept from an earlier analysis", and the engine
+  searches it only when the limit in the settings asks for more; "Deeper"
+  always searches. A reader built from the command line keeps them too
+  where the browser allows storage, and in memory otherwise.
 - The gear beside the icon opens the settings: the number of lines (1 to
   5), where the search stops (a depth, 18 by default, or a time per
   position), whether every shown position is analysed or only the one shown
@@ -508,5 +580,7 @@ python3 make_reader.py path/to/book.pdf
 
 One command inspects the book, decodes its moves and writes the reader to
 `output/<book name>/reader/index.html`, with one reader per chapter beside
-it. The Primer (402 pages) takes about 100 seconds; a short typeset book
+it. Each chapter file holds the pictures of its pages, so the folder works
+offline, opened as files; the page arrows and a swipe run on from one
+chapter file to the next, as in the app. The Primer (402 pages) takes about 100 seconds; a short typeset book
 takes a few seconds. Book PDFs and the output folder are kept out of git.
