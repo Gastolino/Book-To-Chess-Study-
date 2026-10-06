@@ -331,6 +331,8 @@ def test_library_end_to_end(tmp_path):
             "the second device opens the book without reading it again",
             "the second device opens at the stored page and move",
             "the second device holds the correction",
+            "the place reaches the server at once when the page is hidden",
+            "the page loaded again comes back to the book at the move, from the server's library",
             "removed books are gone from the library"} <= names
     print(json.dumps(res["timings"], indent=1))
     print("\n".join(res["notes"]))

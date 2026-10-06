@@ -128,6 +128,23 @@ storage), so nothing leaves the device:
   Primer takes about 15 MB: the PDF 11 MB and the reading 4 MB. When the device has no room left,
   the app says so and opens the book for the moment without keeping it.
 
+### Coming back to the open book
+
+An iPhone or iPad drops a page left in the background for too long, and
+the app then starts afresh when it is opened again. The app keeps a small
+note of where the reader was (the book, the chapter, the page, the move and
+how far the page and the move list were scrolled), written a moment after
+each change and at once when the app goes to the background. When the app
+starts again within a day, it skips the library page and opens that book at
+that place from its stored reading, with one line in the top bar ("Back to
+The Soviet Chess Primer, page 31") and the **Library** link beside it. A
+book whose reading was not finished when the system closed the app is read
+again, from the same page, and the line says so. The place last read is
+written to the library at once as well when the app goes to the background,
+so nothing is lost. **Library** forgets the note. On a site where the
+browser keeps no library (a private window), the start page says that the
+book has to be chosen again; chosen again, it opens at that place.
+
 On an iPhone or iPad, Safari may clear the storage of a site that has not
 been opened for seven days. An app added to the Home Screen keeps its
 storage: open the site in Safari, choose the share button and **Add to Home

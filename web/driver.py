@@ -25,6 +25,7 @@ that made it and the selection it was made with; restore() refuses one made
 by another version or with another selection, and the app then reads the
 book again.
 """
+import gc
 import hashlib
 import json
 import pickle
@@ -42,6 +43,11 @@ STATE = {}
 BATCH_PAGES = 10        # pages of lines a piece-symbol correction replays per call (correct_more)
 READING_MAGIC = b"chessbook-reading\n"
 COVER_WIDTH = 240       # pixels across the cover picture of the library
+# Chapter readers kept built (their file with the page pictures, and the data
+# their reader holds) after the reader leaves them: the last few, so that
+# going back is quick, and the rest of the book takes no memory. An iPhone
+# drops a page that takes too much, and the reader then loses its place.
+KEEP_CHAPTERS = 3
 
 
 def _version():
@@ -98,13 +104,52 @@ def start(path, selection_json=None, corrections_json=None):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(selection.parse_selection_text(selection_json)),
                           encoding="utf-8")
-    STATE.clear()
+    _clear()
     job = progressive.Job(pdf, OUT, CFG)
     STATE.update(job=job, pdf=pdf, out=OUT / pdf.stem / "reader", thumbs=job.thumbs,
-                 built=set(), built_from={}, data={}, fix_path=fix_path, index_stale=False, pending=set(),
-                 open=None, book=None, keep=None, t0=time.perf_counter(),
-                 selection=_selection_key(selection_json), restored=False)
+                 built=set(), built_from={}, data={}, recent=[], fix_path=fix_path, index_stale=False,
+                 pending=set(), open=None, book=None, keep=None, t0=time.perf_counter(),
+                 selection=_selection_key(selection_json), restored=False, timeline={})
     return json.dumps(notes)
+
+
+def _clear():
+    """Forget the book before (its document, its readers' files), and give
+    the memory back before the next one takes its own."""
+    doc = STATE.get("doc")
+    if doc is None and STATE.get("job") is not None:
+        doc = STATE["job"].ctx.get("doc")
+    out = STATE.get("out")
+    STATE.clear()
+    if doc is not None:
+        try:
+            doc.close()
+        except Exception:
+            pass
+    if out is not None:
+        for f in out.glob("ch*.html"):
+            f.unlink()
+    _lighten()
+
+
+def _lighten(full=False):
+    """Give back what is no longer needed: PyMuPDF's cache of the pages it
+    drew (it would keep up to 256 MB of them, and in the browser the memory
+    Python has once taken is never given back to the system), and, when
+    full, Python's cycles. A full collection walks every object (about a
+    second for the Primer, more in the browser), so it is made only once a
+    book is in memory, and the objects alive then are frozen: a later
+    collection skips them and costs nothing. Building a chapter leaves no
+    cycles behind, measured on the Primer."""
+    try:
+        import pymupdf
+        pymupdf.TOOLS.store_shrink(100)
+    except Exception:
+        pass
+    if full:
+        gc.unfreeze()
+        gc.collect()
+        gc.freeze()
 
 
 def process(path, say, selection_json=None, corrections_json=None):
@@ -126,7 +171,7 @@ def step():
     if STATE.get("restored"):
         return _restored_step()
     job = STATE["job"]
-    if job.done:
+    if job is None or job.done:
         return json.dumps({"events": [], "done": True})
     events = []
     for ev in job.step():
@@ -142,16 +187,28 @@ def step():
             if STATE["open"] is None:
                 ev["html"] = index()
         events.append(ev)
+    # the pages drawn in this step are not needed again: without this the
+    # cache grows to 256 MB while the book is read, and that memory stays taken
+    if STATE.get("job") is not None:      # (the job is let go when the book is done)
+        _lighten()
     return json.dumps({"events": events, "done": job.done})
 
 
 def _finished(job):
-    """The final book: every chapter file written before it is stale."""
-    STATE.update(book=job.final, keep=job.keep, built=set(), index_stale=True)
+    """The final book: every chapter file written before it is stale. The
+    job itself is let go: what it learnt while reading (the pages' findings,
+    the figurine cuts, the readings of each pass) is not needed to show the
+    book, and takes much memory."""
+    STATE.update(book=job.final, keep=job.keep, built=set(), index_stale=True, doc=job.ctx["doc"],
+                 timeline=job.timeline, job=None)
     data = {}
     if STATE["open"] and STATE["open"] in job.data and not job.changed:
         data[STATE["open"]] = job.data[STATE["open"]]
     STATE["data"] = data
+    STATE["recent"] = [n for n in STATE.get("recent", []) if n in data]
+    for f in STATE["out"].glob("ch*.html"):
+        f.unlink()
+    _lighten(full=True)
 
 
 def _loading():
@@ -196,10 +253,30 @@ def chapter(name, say, small=False):
         STATE["built_from"][name] = book
         ch = book["chapters"][k]
         STATE["data"][name] = live.snapshot(reader.chapter_data(book, ch, ""))
+        _lighten()
     STATE["open"] = name
     if loading:
         STATE["job"].opened(name, STATE["data"][name])
+    _forget_old(name)
     return (out / name).read_text(encoding="utf-8")
+
+
+def _forget_old(name):
+    """Chapter name is open: the chapters left longest ago, beyond
+    KEEP_CHAPTERS, lose their built file and their data (they are built
+    again when they open)."""
+    recent = [n for n in STATE.get("recent", []) if n != name] + [name]
+    for old in recent[:-KEEP_CHAPTERS]:
+        STATE["built"].discard(old)
+        STATE["built_from"].pop(old, None)
+        STATE["data"].pop(old, None)
+        job = STATE.get("job")
+        if job is not None:
+            job.data.pop(old, None)
+        f = STATE["out"] / old
+        if f.exists():
+            f.unlink()
+    STATE["recent"] = recent[-KEEP_CHAPTERS:]
 
 
 def index():
@@ -215,6 +292,7 @@ def index():
         reader.build_reader(STATE["book"], STATE["pdf"], STATE["out"], chapters=set(), app=True,
                             thumbs=STATE["thumbs"])
         STATE["index_stale"] = False
+        _lighten()
     return (STATE["out"] / "index.html").read_text(encoding="utf-8")
 
 
@@ -281,7 +359,8 @@ def correct_more(chapters_json, name=""):
 
 def timeline():
     """What happened when while the book was read (seconds from start())."""
-    return json.dumps(STATE["job"].timeline if STATE.get("job") else {})
+    job = STATE.get("job")
+    return json.dumps(job.timeline if job is not None else STATE.get("timeline") or {})
 
 
 def _stale(res, keep=None):
@@ -366,6 +445,7 @@ def restore(path, reading_path, selection_json=None, corrections_json=None):
         f.readline()
         data = pickle.load(f)
     import pymupdf
+    _clear()
     doc = pymupdf.open(pdf)
     book, keep = data["book"], data["keep"]
     keep.update(doc=doc, pdf=pdf)
@@ -384,13 +464,14 @@ def restore(path, reading_path, selection_json=None, corrections_json=None):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(selection.parse_selection_text(selection_json)),
                           encoding="utf-8")
-    STATE.clear()
     STATE.update(job=None, pdf=pdf, out=OUT / pdf.stem / "reader", doc=doc, thumbs={},
-                 built=set(), built_from={}, data={}, fix_path=fix_path, index_stale=False,
+                 built=set(), built_from={}, data={}, recent=[], fix_path=fix_path, index_stale=False,
                  pending=set(), open=None, book=book, keep=keep, t0=t0,
-                 selection=header.get("selection"), restored=True)
+                 selection=header.get("selection"), restored=True, timeline={})
     reader.build_reader(book, pdf, STATE["out"], chapters=set(), app=True, thumbs=STATE["thumbs"])
     html = (STATE["out"] / "index.html").read_text(encoding="utf-8")
+    del data
+    _lighten(full=True)
     return json.dumps([{"type": "index", "html": html, "title": book["title"],
                         "pages": book["page_count"], "restored": True,
                         "seconds": round(time.perf_counter() - t0, 2)}])
@@ -411,7 +492,19 @@ def _restored_step():
     ev = {"type": "done", "restored": True}
     if STATE["open"] is None:
         ev["html"] = index()
+    _lighten()
     return json.dumps({"events": [ev], "done": True})
+
+
+def memory():
+    """What Python holds now, as JSON (for measurements): the objects after
+    a collection, and the size of PyMuPDF's cache of decoded pages."""
+    import gc
+    gc.collect()
+    import pymupdf
+    return json.dumps({"objects": len(gc.get_objects()), "store": pymupdf.TOOLS.store_size(),
+                       "chapters": sorted(STATE.get("built") or []),
+                       "data": sorted((STATE.get("data") or {}).keys())})
 
 
 def cover(path):

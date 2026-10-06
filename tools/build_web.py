@@ -60,6 +60,11 @@ body{margin:0;display:flex;flex-direction:column}
 #status{margin-top:20px;font-size:13px;color:var(--muted);min-height:1.5em;
   font-variant-numeric:tabular-nums}
 #status.error{color:var(--fail)}
+#resume{margin:28px 0 0;font-size:15px;color:var(--fg)}
+#resume button{font:inherit;color:var(--accent);background:none;border:0;padding:0;cursor:pointer;margin-left:12px}
+#resume button:hover{text-decoration:underline}
+#resume[hidden]{display:none}
+body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
 #bar{height:1px;background:var(--line);margin-top:8px;position:relative;overflow:hidden}
 #bar i{position:absolute;left:0;top:0;bottom:0;width:30%;background:var(--accent);
   animation:run 1.4s linear infinite;display:none}
@@ -139,6 +144,7 @@ reads it once, and every device you sign in on opens it at once.</p>
 <div class="big">Drop a chess book here</div>
 <div class="small">or click to choose a PDF file</div></div>
 <input id="file" type="file" accept="application/pdf,.pdf,.chessbook,application/zip,.zip">
+<p id="resume" hidden><span></span><button type="button">Library</button></p>
 <div id="status">Preparing the reader. The first visit downloads about 40 MB; later visits
 start at once.</div>
 <div id="bar" class="on"><i></i></div>
@@ -164,6 +170,83 @@ document.addEventListener("click",function(e){var a=e.target.closest("a[href]");
 if(!a)return;var h=a.getAttribute("href"),m=h.match(/^(index\\.html|ch\\d+\\.html)(#.*)?$/);
 if(m){e.preventDefault();parent.postMessage({open:m[1],hash:m[2]||""},"*");}},true);<${"/"}script>`;
 
+// Where the reader was, so that the app comes back there after the system
+// closed it (an iPhone or iPad drops a page left in the background; the page
+// then loads from the start): one small record in the browser's storage with
+// the open book, the chapter, the page, the move and the screen as it stood
+// (window.readerView in the reader). It is written a moment after each
+// change, and at once when the page is hidden or about to be dropped; it is
+// recent for a day, and "Library" forgets it.
+const SESSION = (() => {
+  const KEY = "chessbook-session", LIMIT = 24 * 3600 * 1000;
+  let rec = null, timer = 0;
+  function load() {
+    try {
+      const v = JSON.parse(localStorage.getItem(KEY) || "null");
+      return v && typeof v === "object" && v.time ? v : null;
+    } catch (e) { return null; }
+  }
+  function save() {
+    if (!rec) return;
+    rec.time = Date.now();
+    try { localStorage.setItem(KEY, JSON.stringify(rec)); } catch (e) { /* no storage */ }
+  }
+  // the reader's view, read from its page (the same origin as this one)
+  function view() {
+    try {
+      const w = $("view").contentWindow;
+      return w && typeof w.readerView === "function" ? w.readerView() : null;
+    } catch (e) { return null; }
+  }
+  const api = {
+    // the record from before, when it is recent: {id, kind, title, name, chapter, page, node, label, view}
+    pending() {
+      const v = load();
+      return v && Date.now() - v.time < LIMIT ? v : null;
+    },
+    // a book opens: the record starts (place: where it opens, or null for the contents page)
+    begin(info, place) {
+      rec = Object.assign({ id: null, kind: null, title: null, name: null, chapter: null, page: null, node: null,
+                            label: null, view: null }, info);
+      if (place) Object.assign(rec, { chapter: place.chapter || null, page: place.page || null, node: place.node || null,
+                                      label: place.label || null, view: place.view || null });
+      save();
+    },
+    title(t) { if (rec && t) { rec.title = t; save(); } },
+    // the contents page is open
+    contents() { if (rec) { rec.chapter = null; rec.view = null; save(); } },
+    // the view, now (the chapter open in the reader, its page, move and screen)
+    take() {
+      if (!rec || !/^ch\\d+\\.html$/.test(openChapter)) return;
+      const v = view();
+      if (!v || !v.page) return;
+      Object.assign(rec, { chapter: openChapter, page: v.page, node: v.node || null, label: v.label || null, view: v });
+      save();
+    },
+    // the view, a moment after a change
+    soon() { clearTimeout(timer); timer = setTimeout(api.take, 500); },
+    clear() { rec = null; clearTimeout(timer); try { localStorage.removeItem(KEY); } catch (e) { /* no storage */ } },
+    place() { return rec && rec.chapter ? { chapter: rec.chapter, page: rec.page, node: rec.node, label: rec.label, view: rec.view } : null; },
+    record() { return rec; },
+  };
+  // the page hidden, dropped or frozen: the view and the place go to the storage at once
+  const leaving = () => { api.take(); LIB.leaving(rec); };
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") leaving(); });
+  window.addEventListener("pagehide", leaving);
+  document.addEventListener("freeze", leaving);
+  return api;
+})();
+// The words of the line that says where the app came back to.
+function backTo(r) {
+  if (!r) return "";
+  const where = r.chapter && r.page ? ", page " + (r.label || r.page) : "";
+  return "Back to " + (r.title || "your book") + where;
+}
+// the hash that reopens a chapter at a place: the page, the move and the view
+function placeHash(p) {
+  if (!p || !p.page) return "";
+  return "#at=" + p.page + ":" + (p.node || "") + (p.view ? "&v=" + encodeURIComponent(JSON.stringify(p.view)) : "");
+}
 // Messages go to the start screen while it shows, and to the top bar after.
 function status(text, error) {
   const inReader = $("top").style.display === "flex";
@@ -209,13 +292,15 @@ worker.onmessage = (e) => {
     openChapter = "index.html";
     show("index.html", "", m.html);
     working(false);
+    if (resuming) resumed(m);
   } else if (m.type === "status") {
-    if (loading) $("took").textContent = m.text;
+    if (loading) $("took").textContent = (resumeWords ? resumeWords + ". " : "") + m.text;
   } else if (m.type === "thumbs") {
     if (openChapter === "index.html") toView({ thumbs: m.thumbs });
   } else if (m.type === "done") {
     loading = false;
-    if (!m.restored) $("took").textContent = "read in " + Math.round(m.seconds) + " seconds";
+    if (!m.restored) $("took").textContent = (resumeWords ? resumeWords + ", " : "") + "read in " + Math.round(m.seconds) + " seconds";
+    resumeWords = "";
     working(false);
     if (m.html && openChapter === "index.html") show("index.html", "", m.html);
   } else if (m.type === "reopen") {
@@ -225,7 +310,8 @@ worker.onmessage = (e) => {
     patched(m);
   } else if (m.type === "page") {
     working(false);
-    $("note").textContent = "";
+    $("note").textContent = resumeNote || "";
+    resumeNote = "";
     openChapter = m.name;
     show(m.name, m.hash, m.html);
   } else if (m.type === "error") {
@@ -263,6 +349,41 @@ worker.onerror = (e) => {
 // for them is on its way at a time: a correction made meanwhile (which
 // answers with the chapters still pending) does not start a second chain.
 let more = [], moreDone = 0, moreBusy = false, openChapter = "";
+// The app comes back to where the reader was (SESSION): resuming holds the
+// record while the book opens; resumeNote is said in the top bar once the
+// chapter shows.
+let resuming = null, resumeNote = "", resumeWords = "";
+function resumeStart(r) {
+  resuming = r;
+  document.body.classList.add("resuming");
+  $("resume").querySelector("span").textContent = backTo(r) + ".";
+  $("resume").hidden = false;
+}
+// the contents page of the resumed book showed: the chapter follows (the
+// library posts it); the top bar says where the app came back to
+function resumed(m) {
+  const r = resuming;
+  resuming = null;
+  document.body.classList.remove("resuming");
+  $("resume").hidden = true;
+  if (m.title) SESSION.title(m.title);
+  const words = backTo(SESSION.record() || r);
+  if (m.restored) $("took").textContent = words;
+  else {
+    // the book is read again: the top bar's progress line carries the words meanwhile
+    resumeWords = words;
+    $("took").textContent = words + ". Reading the book";
+    resumeNote = words + (LIB.on ? ". The book is read again, because the app was closed before its reading was finished."
+                                 : ". The book is read again, because this browser keeps no library.");
+  }
+  if (!LIB.on) {
+    // no library: the book the user chose again opens at the place
+    const place = SESSION.place();
+    if (place) worker.postMessage({ type: "chapter", name: place.chapter, hash: placeHash(place),
+                                    small: window.matchMedia("(max-width: 700px)").matches });
+  }
+}
+$("resume").querySelector("button").addEventListener("click", () => { SESSION.clear(); location.reload(); });
 function toView(msg) { if ($("view").contentWindow) $("view").contentWindow.postMessage(msg, "*"); }
 function patched(m) {
   const r = m.result || {};
@@ -288,8 +409,8 @@ function patched(m) {
 }
 window.addEventListener("message", (e) => {
   LIB.fromReader(e.data);
-  if (e.data && e.data.position) return;
-  if (e.data && e.data.open === "index.html") openChapter = "index.html";
+  if (e.data && (e.data.position || e.data.view)) { SESSION.soon(); return; }
+  if (e.data && e.data.open === "index.html") { openChapter = "index.html"; SESSION.contents(); }
   if (e.data && e.data.correct) {
     openChapter = e.data.chapter;
     worker.postMessage({ type: "correct", corrections: e.data.correct, chapter: e.data.chapter });
@@ -326,6 +447,13 @@ async function read(file, fileName) {
   status("Reading " + fileName);
   const bytes = await file.arrayBuffer();
   const name = fileName.replace(/[^\\w.\\-]+/g, "_");
+  if (!LIB.on) {
+    // no library: the record names the file, and the book opens at the place when it is chosen again
+    const r = SESSION.pending();
+    const same = !!(r && !r.id && r.name === name);
+    SESSION.begin({ name, title: same && r.title ? r.title : fileName.replace(/\\.pdf$/i, "") }, same ? r : null);
+    if (same && !resuming) resumeStart(r);
+  }
   worker.postMessage({ type: "process", name, bytes, selection: storedSelection(name),
     corrections: storedCorrections(name) }, [bytes]);
 }
@@ -338,7 +466,7 @@ $("file").addEventListener("change", (e) => { const f = e.target.files[0]; e.tar
 ["dragleave", "drop"].forEach((t) => $("drop").addEventListener(t, (e) => {
   e.preventDefault(); $("drop").classList.remove("over"); }));
 $("drop").addEventListener("drop", (e) => take(e.dataTransfer.files[0]));
-$("another").addEventListener("click", () => location.reload());
+$("another").addEventListener("click", () => { SESSION.clear(); location.reload(); });
 $("again").addEventListener("click", () => {
   if (!lastFile || busy) return;
   $("start").style.display = "block"; $("view").style.display = "none"; $("top").style.display = "none";
@@ -371,8 +499,19 @@ function storedCorrections(name) {
   return null;
 }
 worker.postMessage({ type: "init", cfg: CFG });
-// the start page becomes the library: the Cloudflare site's, or the one in this browser
-LIB.start();
+// the start page becomes the library: the Cloudflare site's, or the one in
+// this browser; a book the system closed while it was open opens again there
+LIB.start(SESSION.pending()).then((on) => {
+  if (on) return;
+  const r = SESSION.pending();
+  if (r && !r.id && r.name) {
+    $("resume").querySelector("span").textContent = "The app was closed while you read " + (r.title || "a book") +
+      (r.page ? " at page " + (r.label || r.page) : "") + ". This browser keeps no library, so the book has to be " +
+      "chosen again; it then opens at that place.";
+    $("resume").querySelector("button").hidden = true;
+    $("resume").hidden = false;
+  } else SESSION.clear();
+});
 </script>
 </body></html>
 """

@@ -36,7 +36,11 @@
 //
 // The page's own script (tools/build_web.py) calls LIB.message() with every
 // message of the worker, LIB.fromReader() with every message of the reader,
-// and LIB.add() for a file the user chooses.
+// and LIB.add() for a file the user chooses. LIB.start() takes the page's
+// session record (SESSION in the shell: the book that was open when the
+// system closed the app) and opens that book again at its place, skipping
+// the library page; LIB.leaving() writes the place to the store at once
+// when the page is hidden, so that nothing is lost when the page is dropped.
 const LIB = (() => {
   const api = { on: false, kind: null, books: [], current: null, version: null, last: null,
                 persisted: null };
@@ -529,6 +533,7 @@ const LIB = (() => {
   }
 
   // ---------------------------------------------------------------- the library page
+  api.titleOf = (b) => titleOf(b);
   function titleOf(b) {
     if (b.title) return b.title;
     // until the program has read the book: its file name, in words
@@ -715,7 +720,8 @@ const LIB = (() => {
   }
 
   // ---------------------------------------------------------------- starting
-  api.start = async function () {
+  // resume: the shell's session record, when the app comes back to a book
+  api.start = async function (resume) {
     let books = await serverStore.probe();
     if (books) store = serverStore;
     else {
@@ -732,13 +738,33 @@ const LIB = (() => {
     api.on = true;
     api.kind = store.kind;
     api.books = books;
+    const back = resume && resume.id && resume.kind === store.kind ? books.find((b) => b.id === resume.id) : null;
+    if (back) resumeStart(resume);
+    else SESSION.clear();
     showLibrary();
     flush();
     setInterval(flush, RETRY);
     window.addEventListener("online", flush);
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(true); });
+    window.addEventListener("pagehide", () => flush(true));
     window.addEventListener("storage", (e) => { if (e.key) noticeKey(e.key); });
+    if (back) api.open(back, null, resume);
     return true;
+  };
+  // The page is hidden or about to be dropped: the place in the record (the
+  // view the shell took from the reader just now) goes to the store at once.
+  api.leaving = function (rec) {
+    const cur = api.current;
+    if (api.on && cur && !cur.ephemeral && rec && rec.id === cur.id && rec.chapter && rec.page) {
+      const mm = meta(cur.id);
+      const p = mm.position;
+      if (!p || p.data.chapter !== rec.chapter || p.data.page !== rec.page || p.data.node !== (rec.node || null)) {
+        mm.position = { data: { chapter: rec.chapter, page: rec.page, node: rec.node || null },
+                        updated: Date.now(), sent: (p && p.sent) || 0 };
+        saveMeta(cur.id, mm);
+      }
+    }
+    if (api.on) flush(true);
   };
   function whenReady() {
     return ready ? Promise.resolve() : new Promise((resolve) => readyWaiters.push(resolve));
@@ -802,6 +828,7 @@ const LIB = (() => {
       persist();
       api.books.unshift(book);
       api.current = { id, book, name: safeName(book.fileName), restored: false };
+      SESSION.begin({ id, kind: store.kind, title: titleOf(book), name: api.current.name }, null);
       busy = false;
       await whenReady();
       read(file, book.fileName);
@@ -934,20 +961,32 @@ const LIB = (() => {
   }
 
   // Open book b: from the store, or from given = {pdf, reading} (a book file
-  // the store could not keep).
-  api.open = async function (b, given) {
+  // the store could not keep). resume is the shell's session record when
+  // the app comes back to the book: it opens where the reader was (the
+  // record's chapter, page, move and view) rather than at the place stored.
+  api.open = async function (b, given, resume) {
     if (busy) return;
     busy = true;
     $("bar").classList.add("on");
     const name = safeName(b.fileName);
     api.current = { id: b.id, book: b, name, restored: false, position: null, t0: Date.now(), ephemeral: !!given };
+    if (!given) {
+      // the record: the book is open from now on (the place follows once the reader shows)
+      if (resume) SESSION.begin({ id: b.id, kind: store.kind, title: resume.title || titleOf(b), name }, resume);
+      else SESSION.begin({ id: b.id, kind: store.kind, title: titleOf(b), name }, null);
+    }
     try {
       if (!given) say(store.kind === "device" ? "Opening the book." : "Downloading the book.");
       const pdf = given ? given.pdf : await store.pdf(b.id, (text) => say(text));
-      const file = new File([pdf], b.fileName, { type: "application/pdf" });
+      // The PDF goes to the worker and is not kept here: "Read again" and a
+      // stale reading take it from the store again (a book file the store
+      // could not keep stays in memory, as a File).
+      const file = given ? new File([pdf], b.fileName, { type: "application/pdf" })
+                         : { name: b.fileName, arrayBuffer: async () => (await store.pdf(b.id, (text) => say(text))).buffer };
       if (!given) await syncIn(b, name);
       const local = meta(b.id).position;
-      api.current.position = local && (!b.position || local.updated > b.position.updated) ? local.data : b.position;
+      api.current.position = resume ? (SESSION.place() || { page: 0 })
+        : local && (!b.position || local.updated > b.position.updated) ? local.data : b.position;
       if (!given) store.update(b.id, { opened: Date.now() }).catch(() => {});
       if (!ready) say("The reader is still starting. The book opens in a moment.");
       await whenReady();
@@ -958,7 +997,8 @@ const LIB = (() => {
         lastFile = file;
         lastName = b.fileName;
         say("Opening the book.");
-        const bytes = pdf.slice().buffer;
+        // the store's copy is handed over whole; a book file's part is copied out of the file
+        const bytes = given ? pdf.slice().buffer : pdf.buffer;
         worker.postMessage({ type: "restore", name, bytes, reading: reading.buffer,
                              selection: storedSelection(name), corrections: storedCorrections(name) },
                            [bytes, reading.buffer]);
@@ -1014,6 +1054,7 @@ const LIB = (() => {
         b.pages = m.pages;
         if (!cur.ephemeral) store.update(cur.id, { title: m.title, pages: m.pages }).catch(() => {});
       }
+      if (m.title && !cur.ephemeral) SESSION.title(m.title);
       const mm = meta(cur.id);
       mm.name = cur.name;
       mm.pages = m.pages;
@@ -1023,8 +1064,8 @@ const LIB = (() => {
       const pos = cur.position;
       cur.position = null;
       if (pos && pos.chapter && pos.page) {
-        // the place last read, on this device or another
-        worker.postMessage({ type: "chapter", name: pos.chapter, hash: "#at=" + pos.page + ":" + (pos.node || ""),
+        // the place last read, on this device or another (with the view, when the app comes back)
+        worker.postMessage({ type: "chapter", name: pos.chapter, hash: placeHash(pos),
                              small: window.matchMedia("(max-width: 700px)").matches });
       }
       return false;
