@@ -170,3 +170,63 @@ ICONS = {
 
 def icon(name):
     return f"<svg viewBox='0 0 20 20' aria-hidden='true'>{ICONS[name]}</svg>"
+
+
+# ---------------------------------------------------------------- the book icon
+# An open book seen from the front: two pages side by side, each a chequer of
+# three columns and four rows in the board colours, over a thin cover line. It
+# is the app's icon (tools/make_icons.py renders web/icon.svg) and, with a
+# third page turning over from right to left, the sign that the app is at
+# work. The turning page flips about the spine (a scaleX transform only, so
+# that it costs little on a phone); it carries the right page's chequer, and
+# since the two pages' chequers are mirror images, the page that lands on the
+# left and the one that starts again on the right are invisible joins.
+BOOK_W, BOOK_H, SQ = 64, 44, 8
+PAGES_X = (6, 34)
+PAGE_Y = 5
+
+
+def _book_page(x, light, dark, line):
+    cells = []
+    for r in range(4):
+        for c in range(3):
+            fill = dark if (c + r) % 2 else light
+            cells.append(f'<rect x="{x + c * SQ}" y="{PAGE_Y + r * SQ}" width="{SQ}" height="{SQ}" fill="{fill}"/>')
+    return ("".join(cells) +
+            f'<rect x="{x}" y="{PAGE_Y}" width="{3 * SQ}" height="{4 * SQ}" fill="none" stroke="{line}" '
+            f'stroke-width="1" vector-effect="non-scaling-stroke"/>')
+
+
+def book_svg(cls="bookicon", animated=True, light="var(--board-light)", dark="var(--board-dark)",
+             line="var(--muted)", bg=None, label=None, pad=0):
+    """The book icon as an SVG element. animated adds the turning page (class
+    "leaf"); the colours default to the page's tokens; bg fills a square
+    background (the app icon) and pad widens the view box around the book."""
+    w, h = BOOK_W + 2 * pad, BOOK_H + 2 * pad
+    side = max(w, h) if bg else None
+    vb = (f"{-pad - (side - w) / 2} {-pad - (side - h) / 2} {side} {side}" if side
+          else f"{-pad} {-pad} {w} {h}")
+    parts = []
+    if bg:
+        parts.append(f'<rect x="{-pad - (side - w) / 2}" y="{-pad - (side - h) / 2}" width="{side}" '
+                     f'height="{side}" fill="{bg}"/>')
+    parts.append(_book_page(PAGES_X[0], light, dark, line))
+    parts.append(_book_page(PAGES_X[1], light, dark, line))
+    # the cover's edge under the pages, dipping at the spine
+    parts.append(f'<path d="M3 {PAGE_Y + 4 * SQ + 2}H29.5L32 {PAGE_Y + 4 * SQ + 4}L34.5 {PAGE_Y + 4 * SQ + 2}H61" '
+                 f'fill="none" stroke="{line}" stroke-width="1" vector-effect="non-scaling-stroke"/>')
+    if animated:
+        parts.append(f'<g class="leaf">{_book_page(PAGES_X[1], light, dark, line)}</g>')
+    aria = f'role="img" aria-label="{label}"' if label else 'aria-hidden="true"'
+    return (f'<svg class="{cls}" viewBox="{vb}" xmlns="http://www.w3.org/2000/svg" {aria}>'
+            + "".join(parts) + "</svg>")
+
+
+# The turning page: 0.9 s to turn, then a short pause. Without motion (the
+# reader's setting) the book stands still.
+BOOK_CSS = """
+.bookicon{display:block;overflow:visible}
+.bookicon .leaf{transform-box:view-box;transform-origin:32px 0;animation:leaf 1.2s cubic-bezier(.45,0,.55,1) infinite}
+@keyframes leaf{0%{transform:scaleX(1)}75%{transform:scaleX(-1)}100%{transform:scaleX(-1)}}
+@media (prefers-reduced-motion:reduce){.bookicon .leaf{animation:none;visibility:hidden}}
+"""

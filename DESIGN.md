@@ -79,6 +79,20 @@ the two board colours with a 1px outline in the line colour, White's share
 from the bottom, and its figure in Geist Mono at 10px at its foot; the
 engine's lines are rows of notation, the suggested move at weight 500.
 
+## The sign of work
+
+An open book seen from the front: two pages side by side, each a chequer of
+three columns and four rows in the two board colours, with hairline edges in
+the secondary colour over a thin cover line (`chessbook/style.py`,
+`book_svg`). While the app works, a third page turns over from right to left
+(a transform only, 1.2 s a turn with its pause); with reduced motion it
+stands still. On the start page it stands about 88 px wide over a 2px bar in
+the accent colour on a hairline track (the part done, where the app knows
+it, else a sliding segment), with the words of the work under it in the
+secondary colour; in the reader it stands 24 px wide at the right of the top
+bar, over the same line along the bar's foot, and takes its room whether it
+shows or not. Still, on the page background, it is the app's icon.
+
 ## Layout
 
 The book page sits on the left and the board panel on the right, divided by a
