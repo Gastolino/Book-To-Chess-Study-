@@ -426,8 +426,10 @@ const D = JSON.parse(document.getElementById("data").textContent);
 const IMG = JSON.parse(document.getElementById("images").textContent);
 window.READER = D;
 const $ = (id) => document.getElementById(id);
-const S = {page: null, node: null, line: null, flip: false, diagram: null, mini: null, panelSeen: false};
+const S = {page: null, node: null, line: null, flip: false, diagram: null, mini: null, panelSeen: false,
+  wanted: null};  // wanted: a move the hash asked for that this reading does not hold yet
 const imgCache = {};
+const IMG_KEEP = 4;  // decoded page pictures kept for the diagram crops: the last few pages only
 const SMALL = window.matchMedia("(max-width:700px)");
 const ROW = 25.5;  // the height of one row of the move list: 15px type at line height 1.7
 window.readerState = {fen: null, nodeId: null, page: null};
@@ -517,7 +519,11 @@ function notation(text){
 }
 
 function pageImage(p){
-  if (!imgCache[p]) { const im = new Image(); im.src = "data:image/jpeg;base64," + IMG[p]; imgCache[p] = im; }
+  if (!imgCache[p]) {
+    const im = new Image(); im.src = "data:image/jpeg;base64," + IMG[p]; imgCache[p] = im;
+    const keys = Object.keys(imgCache);
+    if (keys.length > IMG_KEEP) delete imgCache[keys[0]];
+  }
   return imgCache[p];
 }
 function folio(p){ const f = D.folios[p - 1]; return f == null ? null : String(f); }
@@ -530,13 +536,46 @@ function setState(){
   window.readerState = {fen: S.node ? nodeFen(S.node) : null, nodeId: S.node, page: S.page};
   if (S.diagram) window.readerState.diagram = S.diagram;
   // the app's library keeps the page and the move last read, to open the book there again
-  if (window.CHESSBOOK_APP && S.page) parent.postMessage({position: {page: S.page, node: S.node || null}}, "*");
+  if (window.CHESSBOOK_APP && S.page) {
+    parent.postMessage({position: {page: S.page, node: S.node || null, label: label(S.page)}}, "*");
+  }
   const t = $("mtxt");
   if (!t) return;
   if (S.node) t.innerHTML = D.nodes[S.node].parent == null ? "Start position" :
     "<span class=n>" + moveHtml(S.node, true) + "</span>";
   else if (S.diagram) t.textContent = cap(diagramLabel(S.diagram));
   else t.innerHTML = "<span class=muted>No move chosen</span>";
+}
+
+// The view, for the app: the page and move as the position message gives them, and how the
+// screen stands (the board's side, the small board on a phone, the enlarged page, and the scroll
+// of the window, the enlarged page, the panel and the move list). The app keeps it, and gives it
+// back in the hash ("#at=PAGE:NODE&v=...") when it reopens the book where the reader was.
+function readerView(){
+  const ps = $("pagescroll"), panel = $("panel"), tree = $("tree");
+  return {page: S.page, node: S.node || null, label: S.page ? label(S.page) : null, f: S.flip ? 1 : 0,
+    m: S.mini === null ? null : (S.mini ? 1 : 0), z: ps && ps.classList.contains("zoom") ? 1 : 0,
+    y: Math.round(window.scrollY || 0), x: ps ? Math.round(ps.scrollLeft) : 0,
+    p: panel ? Math.round(panel.scrollTop) : 0, t: tree ? Math.round(tree.scrollTop) : 0};
+}
+window.readerView = readerView;
+function applyView(v){
+  if (!v) return;
+  if (!!v.f !== S.flip) { S.flip = !!v.f; renderBoard(); }
+  if (v.m === 0 || v.m === 1) { S.mini = !!v.m; renderMini(); }
+  const ps = $("pagescroll");
+  if (v.z && ps && !ps.classList.contains("zoom")) { ps.classList.add("zoom"); $("zoom").textContent = "Fit page"; }
+  if (ps) ps.scrollLeft = v.x || 0;
+  if ($("panel")) $("panel").scrollTop = v.p || 0;
+  if ($("tree")) $("tree").scrollTop = v.t || 0;
+  window.scrollTo({top: v.y || 0, left: 0, behavior: "auto"});
+}
+let viewTimer = 0;
+// the app takes the view a moment after it changes (and at once when the page is hidden)
+function viewChanged(){
+  if (!window.CHESSBOOK_APP) return;
+  clearTimeout(viewTimer);
+  viewTimer = setTimeout(() => parent.postMessage({view: true}, "*"), 400);
 }
 
 /* ---------------------------------------------------------------- page */
@@ -1133,6 +1172,7 @@ function selectNode(id, opts){
       !(RV.edit.kind === "gap" && gapKeyOf(id) === RV.edit.key)) closeFix();
   const lineChanged = S.line !== n.line;
   S.node = id; S.line = n.line;
+  if (!opts.fromPage) S.wanted = null;   // the reader chose a move: the wanted one is forgotten
   const L = D.lines[n.line];
   const target = n.page || L.page;
   // a click on a box keeps its page, even when the move belongs to another page as well
@@ -1338,14 +1378,20 @@ function setReading(on){
 }
 
 /* ---------------------------------------------------------------- wiring */
+let pendingView = null;
 function fromHash(){
   const h = location.hash.replace(/^#/, "");
   // "at=PAGE:NODE" (the place the app's library stored) chooses the move when this
   // reading holds it, and shows the page otherwise
-  const at = /^at=(\d+):(.*)$/.exec(h);
+  const at = /^at=(\d+):([^&]*)(?:&v=(.*))?$/.exec(h);
   if (at) {
-    if (at[2] && D.nodes[at[2]]) { selectNode(at[2], {scrollPage: true}); return true; }
+    let view = null;
+    if (at[3]) { try { view = JSON.parse(decodeURIComponent(at[3])); } catch (e) { view = null; } }
+    pendingView = view;
+    if (at[2] && D.nodes[at[2]]) { selectNode(at[2], {scrollPage: !view}); return true; }
     goPage(at[1], true);
+    // a move this reading does not hold yet (the app is still reading the book): chosen when it comes
+    if (at[2]) S.wanted = at[2];
     return true;
   }
   const m = /^(page|node|line)=(.+)$/.exec(h);
@@ -1404,11 +1450,11 @@ function init(){
   $("bback").addEventListener("click", () => step(-1));
   $("bfwd").addEventListener("click", () => step(1));
   $("bend").addEventListener("click", () => toEnd(1));
-  $("bflip").addEventListener("click", () => { S.flip = !S.flip; renderBoard(); });
+  $("bflip").addEventListener("click", () => { S.flip = !S.flip; renderBoard(); viewChanged(); });
   $("mback").addEventListener("click", () => step(-1));
   $("mfwd").addEventListener("click", () => step(1));
   $("mboard").addEventListener("click", () => {
-    S.mini = !(S.mini === null ? !!(S.node || S.diagram) : S.mini); renderMini();
+    S.mini = !(S.mini === null ? !!(S.node || S.diagram) : S.mini); renderMini(); viewChanged();
   });
   $("mmoves").addEventListener("click", () => $("panel").scrollIntoView({block: "start"}));
   if ("IntersectionObserver" in window)
@@ -1466,7 +1512,10 @@ function init(){
   $("zoom").addEventListener("click", () => {
     const z = $("pagescroll").classList.toggle("zoom");
     $("zoom").textContent = z ? "Fit page" : "Enlarge page";
+    viewChanged();
   });
+  window.addEventListener("scroll", viewChanged, {passive: true});
+  for (const id of ["pagescroll", "panel", "tree"]) $(id).addEventListener("scroll", viewChanged, {passive: true});
   $("usepage").addEventListener("change", (e) => {
     SEL.setPages(S.page, S.page, e.target.checked); pageState();
     if (S.diagram) diagramState(S.diagram);
@@ -1513,6 +1562,13 @@ function init(){
   // a link to a page (from the contents page, or the page arrows at the end of a chapter) shows
   // the first line on that page, as an opening without a link does
   if (!fromHash() || (!S.node && !S.diagram)) defaultView();
+  if (pendingView) {
+    // the screen as it stood when the app was closed: again once the fonts and pictures have settled
+    const v = pendingView;
+    pendingView = null;
+    applyView(v);
+    window.addEventListener("load", () => applyView(v), {once: true});
+  }
   selNote();
   initReview();
 }

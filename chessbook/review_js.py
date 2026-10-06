@@ -1218,6 +1218,8 @@ function applyPatch(p){
   if (p.corrections) boardMoveApplied();
   const pgn = $("pgnbtn");
   if (pgn) pgn.disabled = !D.pgn;
+  // the move the app came back to, now that this reading holds it
+  if (S.wanted && D.nodes[S.wanted]) selectNode(S.wanted, {scrollPage: false});
   if (S.node) history.replaceState(null, "", "#node=" + S.node);
   setState();
   // a new reading speaks only in reading mode; the top bar already says how far the app has come
