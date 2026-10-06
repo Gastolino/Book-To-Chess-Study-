@@ -16,6 +16,9 @@ Where the book's text lacks moves (a gap in its numbering), the game stops
 there with a comment that quotes the rest of the printed score, and its
 result is "*". Notes whose moves branch off after the last move of the game
 are written as a variation that repeats that move, never as moves played.
+The variations the reader added on the board (corrections.py "added") are
+variations like the book's, with the comment "Added by the reader." on their
+first move.
 """
 from __future__ import annotations
 
@@ -159,6 +162,9 @@ def line_game(book, line):
             if n["status"] == "inserted":
                 notes.append("This move is missing from the book's text; the program "
                              "supplied it.")
+            if n.get("corrected") == "added" and \
+                    nodes[n["parent"]].get("corrected") != "added":
+                notes.append("Added by the reader.")
         elif n.get("assumed"):
             try:
                 move = board.parse_san(n["assumed"])

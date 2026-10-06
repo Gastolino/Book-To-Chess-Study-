@@ -18,7 +18,8 @@ It writes output/<stem>/book.json and returns the same dict:
      "nodes": {id: {"san", "fen", "parent", "children", "number", "black",
                     "page", "bbox", "status", "raw", "comment", "main",
                     "assumed", "uci", "line", "alternatives"?, "reason"?, "key"?,
-                    "corrected"?, "gap"?, "fill"?, "missing"?}},
+                    "corrected"?, "gap"?, "fill"?, "missing"?, "added"?, "added_before"?,
+                    "added_stale"?}},
      "unattached": [{"page", "chapter", "text", "reason", "key", "bbox"}],
      "dismissed", "attached": [the same, for sequences the reader dismissed or placed],
      "symbols": {piece symbol: times printed}, "letters", "corrections",
@@ -51,7 +52,11 @@ taught the program that symbol well, so that no eye marks it). A node's or mark'
 move given), "symbol" (its piece symbol), or "placed" (the first move of a
 sequence the reader placed), "connected" (the first move of a run the reader
 joined to a line) or "split" (the first move of a line the reader started
-there). "symbols" counts every such piece symbol in the book, for the
+there), or "added" (a move of a variation the reader added on the board,
+corrections.py "added": such a node has no token, and its "added" is the key
+of the printed move the variation branches from, after it or, with
+"added_before", before it; "added_stale" on that move's node says why moves
+the reader added there are left out). "symbols" counts every such piece symbol in the book, for the
 reader's Review view.
 
 The corrections are not used while the book is assembled. Each line keeps
@@ -253,7 +258,7 @@ NOTE_BREAK = "¶"           # stands where main-font words were blanked from the
 WAIT_REASON = "needs the diagram position (Stage 3)"
 # what a node's "corrected" counts as in the counts of corrections
 CORRECTED_COUNTS = {"move": "moves", "symbol": "symbol_moves", "connected": "connections",
-                    "split": "splits", "filled": "gap_moves"}
+                    "split": "splits", "filled": "gap_moves", "added": "added_moves"}
 COMMENT_MAX = 2000              # characters of note text kept as one comment
 GAP_MAX = 8                     # plies a main run may skip and still continue its line
 
@@ -982,6 +987,7 @@ class _Builder:
         self.fix = fixes.empty()
         self.fix_moves = fixes.TokenIndex({})
         self.fix_gaps = fixes.TokenIndex({})
+        self.fix_added = fixes.TokenIndex({})
         self.fix_glyphs = {}
         self.fix_diagrams = {}
         self.node_by_key = {}           # token key -> node id
@@ -4405,6 +4411,7 @@ class _Builder:
         if getattr(L, "split_from", None):
             L.first_split = True
         self.run_ops(L, L.ops)
+        self.add_variations(L)
         self.replaying = False
         self.finish_replayed(L)
 
@@ -4571,6 +4578,77 @@ class _Builder:
                                          "next": (max(plies) + 1) if plies else None,
                                          "bracket": run0.bracket, "end": whole.end})
 
+    def add_variations(self, L):
+        """The variations the reader added on the board (corrections.py
+        "added") at the printed moves of line L, as variation nodes with
+        "corrected" "added". Variations that begin alike share their first
+        moves. A move that is not legal ends its variation there, and the
+        printed move's node says why ("added_stale")."""
+        if not self.fix_added:
+            return
+        seen = set()
+        for nid in list(self.by_line.get(L.id, [])):
+            n = self.nodes.get(nid)
+            if n is None or not n.get("key") or n["parent"] is None or not n.get("bbox"):
+                continue
+            key, entries = self.fix_added.find(n["page"], n["bbox"], n["raw"])
+            if key is None or key in seen:
+                continue
+            seen.add(key)
+            stale = []
+            for e in entries:
+                before = bool(e.get("before"))
+                why = self.add_variation(L, nid, key, e, before)
+                if why:
+                    stale.append(why)
+            if stale:
+                n["added_stale"] = " ".join(dict.fromkeys(stale))
+
+    def add_variation(self, L, nid, key, entry, before):
+        """Play one variation the reader added at node nid; returns why its
+        moves (or the rest of them) are left out, or ""."""
+        base = self.nodes[nid]["parent"] if before else nid
+        where = (f"before {self.move_words(nid)}" if before else f"after {self.move_words(nid)}")
+        fen = self.nodes[base]["fen"]
+        if not fen or self.nodes[base]["status"] == "waiting":
+            return (f"The position {where} is unknown, so the program cannot play the moves you "
+                    "added there.")
+        board = chess.Board(fen)
+        parent = base
+        for i, san in enumerate(entry["san"]):
+            try:
+                mv = board.parse_san(san)
+            except ValueError:
+                side = "Black" if board.turn == chess.BLACK else "White"
+                if i == 0:
+                    return (f"The variation you added {where} starts with {san}, which is not a "
+                            f"legal move for {side} there, so the program leaves it out.")
+                return (f"A variation you added {where} goes on with {san}, which is not a legal "
+                        f"move for {side} there, so the program leaves out the moves from it on.")
+            s = board.san(mv)
+            hit = self.child_with(parent, s)
+            if hit is not None:
+                h = self.nodes[hit]
+                if h.get("added") != key or bool(h.get("added_before")) != before:
+                    return (f"The line plays {s} {where} itself, so the program leaves out the "
+                            "variation you added with it.")
+                parent = hit
+                board.push(mv)
+                continue
+            number, black = board.fullmove_number, board.turn == chess.BLACK
+            board.push(mv)
+            new = self.new_node(L, parent=parent, san=s, fen=board.fen(), number=number,
+                                black=black, status="ok", raw="", main=False, uci=mv.uci(),
+                                page=self.nodes[nid]["page"], corrected="added", added=key)
+            if before:
+                self.nodes[new]["added_before"] = True
+            parent = new
+        # the reader's note goes with the last move of the variation
+        note = entry.get("note")
+        if note and parent != base and note not in self.nodes[parent]["comment"]:
+            self.nodes[parent]["comment"] = (self.nodes[parent]["comment"] + " " + note).strip()
+        return ""
+
     def finish_replayed(self, L):
         """Status and pages of a replayed line, and the comments of the
         assembled book on its moves."""
@@ -4605,6 +4683,7 @@ class _Builder:
         self.fix = fix
         self.fix_moves = fixes.TokenIndex(fix["moves"])
         self.fix_gaps = fixes.TokenIndex(fix["gaps"])
+        self.fix_added = fixes.TokenIndex(fix["added"])
         self.fix_glyphs = dict(fix["glyphs"])
         self.fix_diagrams = {did: v["fen"] for did, v in fix["diagrams"].items()}
         self.dec = self.decoder_for(self.fix_glyphs)
@@ -4619,7 +4698,8 @@ class _Builder:
         removed = [lid for lid in prev if lid not in sigs]
         # which lines the changed moves, symbols and positions touch
         touched = set()
-        changed_keys = {k for part in ("moves", "gaps") for k in set(old[part]) | set(fix[part])
+        changed_keys = {k for part in ("moves", "gaps", "added")
+                        for k in set(old[part]) | set(fix[part])
                         if old[part].get(k) != fix[part].get(k)}
         changed_glyphs = {g for g in set(old["glyphs"]) | set(fix["glyphs"])
                           if old["glyphs"].get(g) != fix["glyphs"].get(g)}
@@ -5276,7 +5356,8 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
         c["variations"] += d["variations"]
     line_chapter = {d["id"]: d["chapter"] for d in lines}
     for n in b.nodes.values():
-        if n["status"] == "root" or n["parent"] is None:
+        # (the moves the reader added count as corrections, not as moves of the book)
+        if n["status"] == "root" or n["parent"] is None or n.get("corrected") == "added":
             continue
         c = counts[line_chapter[n["line"]]]
         c["moves"][n["status"]] += 1
@@ -5358,7 +5439,7 @@ def _empty_counts():
             "moves": Counter(), "variations": 0, "variation_moves": 0, "unattached": 0,
             "waiting": 0, "corrected": Counter({"moves": 0, "symbol_moves": 0, "diagrams": 0,
                                                 "sequences": 0, "connections": 0, "splits": 0,
-                                                "gap_moves": 0})}
+                                                "gap_moves": 0, "added_moves": 0})}
 
 
 def _public(entry):

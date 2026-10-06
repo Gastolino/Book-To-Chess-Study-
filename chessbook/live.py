@@ -100,12 +100,14 @@ def _recount(book, b, fix):
         if n["parent"] is None:
             continue
         c = counts[line_chapter[n["line"]]]
-        c["moves"][n["status"]] += 1
-        if not n["main"]:
-            c["variation_moves"] += 1
         what = assemble.CORRECTED_COUNTS.get(n.get("corrected"))
         if what:
             c["corrected"][what] += 1
+        if n.get("corrected") == "added":
+            continue            # (the moves the reader added are not moves of the book)
+        c["moves"][n["status"]] += 1
+        if not n["main"]:
+            c["variation_moves"] += 1
     for u in book["unattached"]:
         counts[u["chapter"]]["unattached"] += 1
     for u in book["dismissed"] + book["attached"]:
@@ -175,6 +177,14 @@ def chapter_patch(book, ch, old, with_pgn=True, replace=False):
     by_key = {v["key"]: k for k, v in nn.items() if v.get("key")}
     renamed = {k: by_key[on[k]["key"]] for k in removed
                if on[k].get("key") in by_key}
+    # a move with no printed token (one the reader added or gave for a gap): the
+    # move reached by the same moves from the start of its line
+    by_path = {_path(nn, k): k for k, v in nn.items() if not v.get("key") and v.get("san")}
+    for k in removed:
+        if k not in renamed and not on[k].get("key") and on[k].get("san"):
+            hit = by_path.get(_path(on, k))
+            if hit:
+                renamed[k] = hit
     for k in removed:
         if k not in renamed and on[k].get("parent") is None:
             line = on[k]["line"]
@@ -200,6 +210,17 @@ def chapter_patch(book, ch, old, with_pgn=True, replace=False):
         patch["pages"] = {p: {"marks": pg["marks"], "diagrams": pg["diagrams"]}
                           for p, pg in new["pages"].items()}
     return patch, new
+
+
+def _path(nodes, nid):
+    """(line, the moves from the start of the line to node nid): a printed move
+    by its token key, another by its SAN."""
+    line, steps = nodes[nid]["line"], []
+    while nid in nodes and nodes[nid].get("parent") is not None:
+        n = nodes[nid]
+        steps.append(n.get("key") or "san:" + (n.get("san") or ""))
+        nid = n["parent"]
+    return line, tuple(reversed(steps))
 
 
 def counts_of(book):

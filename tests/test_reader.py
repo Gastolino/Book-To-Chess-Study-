@@ -330,6 +330,55 @@ def test_bare_move_join_in_chromium(tmp_path):
         assert (screens / name).stat().st_size > 10000, name
 
 
+# a7 holds a white pawn, so that a move on the board can promote
+PAWN_FEN = "6k1/P4pp1/7p/8/8/8/5PPP/3R2K1 w - - 0 1"
+
+
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_board_moves_in_chromium(tmp_path):
+    """Moving pieces on the board (tests/boardmove_e2e.js): the book's move steps,
+    another move asks whether it corrects the main line or the variation or
+    adds a variation, an added variation goes on and is removed, a pawn
+    promotes, on a desktop, a phone and a tablet. The patches are those the
+    browser app's worker makes (chessbook/live.py) for the corrections the
+    test stores, one after the other."""
+    from chessbook import live
+    pdf = make_book(tmp_path / "little.pdf")
+    state = {}
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
+                      state=state, diagram_fens={"p5-1": PAWN_FEN})
+    out = tmp_path / "output" / "little" / "reader"
+    reader.build_reader(book, pdf, out)
+    ch = book["chapters"][1]
+    data = reader.chapter_data(book, ch, "")
+    key = next(n["key"] for n in book["nodes"].values() if n["san"] == "Nf3" and n["main"])
+    patches = []
+    for fix in ({"added": {key: [{"san": ["d6"]}]}}, {"added": {key: [{"san": ["d6", "d4"]}]}}, {}):
+        live.apply(state, book, fix)
+        patch, data = live.chapter_patch(book, ch, data)
+        patches.append(patch)
+    (tmp_path / "patches.json").write_text(json.dumps(patches), encoding="utf-8")
+    screens = ROOT / "output" / "screens"
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "boardmove_e2e.js"), str(out / ch["file"]),
+                           str(tmp_path / "patches.json"), str(screens)],
+                          capture_output=True, text=True, env=env, timeout=600)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    assert res["errors"] == []
+    for name in ("boardmove_chooser_1280_light.png", "boardmove_chooser_1280_dark.png",
+                 "boardmove_added_1280_light.png", "boardmove_added_1280_dark.png",
+                 "boardmove_promotion_1280_light.png",
+                 "boardmove_chooser_390_light.png", "boardmove_chooser_390_dark.png",
+                 "boardmove_added_390_light.png", "boardmove_added_390_dark.png",
+                 "boardmove_chooser_1180_light.png", "boardmove_chooser_1180_dark.png",
+                 "boardmove_added_1180_light.png", "boardmove_added_1180_dark.png"):
+        assert (screens / name).stat().st_size > 10000, name
+
+
 def _read_again_from_the_command_line(res, tmp_path, monkeypatch):
     """The corrections the browser test made, pasted into make_reader
     --corrections (the command line's Read again): every kind is applied."""

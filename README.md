@@ -240,7 +240,8 @@ shows it on the page and on the board, with the choices to correct it:
 A tap on a move that the program could not read (a red move, on the page or
 in the move list) opens its corrector at once, pencil or no pencil; on a
 phone it opens as a sheet above the bar at the foot of the screen. A tap on
-another move only chooses it.
+another move only chooses it. A piece moved on the board corrects a move as
+well (see "Correcting by moving pieces on the board" below).
 
 Where the book's text lacks a move (the move list shows "…" in its place),
 the program cannot follow the line, and the moves after it stay red: their
@@ -299,6 +300,39 @@ which every later run applies (`chessbook/corrections.py` describes the
 format). A corrected item shows in the colour of a decoded move, with the
 words "Corrected by you", and the contents page counts the corrections a run
 used.
+
+### Correcting by moving pieces on the board
+
+The board in the panel takes moves: drag a piece to its new square, or tap
+the piece (it gets a thin blue outline, and a small dot marks each square it
+can reach) and then tap that square. On a phone the small board in the bar
+at the foot of the screen takes moves as well, and so does the board of a
+diagram that starts a line. The board accepts only legal moves from the
+position it shows; a piece dropped anywhere else goes back to its square. A
+pawn that reaches the last rank asks for the piece it becomes. What a move
+does depends on the line:
+
+- the move the line plays next (or a variation the book gives there) steps
+  to it, as the arrow does;
+- where the book's text lacks a move, the move fills the gap, as the gap's
+  corrector does;
+- any other move opens a short choice, above the bar on a phone and below the
+  board elsewhere: "Correct the main line: 12.Nf3 instead of 12.Nd2" makes
+  the book's move read as yours, and the program reads the rest of the line
+  from it; inside a variation the same choice reads "Correct this
+  variation"; "Add a new variation" keeps your move as a variation of your
+  own, branching here; "Cancel" puts the board back.
+
+A variation you added shows in the move list with a green dot before its
+first move and the words "Added by you". Further moves from its last position
+make it longer without a question. "Change your variation" below a move of
+it opens its corrector, with "Remove this variation" and, for a later move of
+it, "Remove from 14.Be2 on". The Review list names each place where you added variations, the PGN
+download holds them as variations with the comment "Added by the reader",
+and they travel with the other corrections (part "added" of the
+corrections), through Read again, the book file and a new build. In a reader
+built from the command line the board shows your move at once, and the next
+run, with the corrections copied into the chat, adds it to the line.
 
 ## Lines that go on
 
