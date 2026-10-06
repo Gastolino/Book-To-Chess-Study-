@@ -379,6 +379,75 @@ def test_board_moves_in_chromium(tmp_path):
         assert (screens / name).stat().st_size > 10000, name
 
 
+# the diagram on page 5 as a mate in one for White, and the first exercise diagram on page 6 as a
+# position where White, in check, can only block (1.Rb1) and is mated next move, for the
+# analysis test (the book's solution gives White the move there)
+MATE_W_FEN = "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1"
+MATE_B_FEN = "6k1/1R6/8/8/8/8/6PP/r6K w - - 0 1"
+ENGINE_DIR = Path(os.environ.get("CHESSBOOK_ENGINE", ROOT / "local" / "engine"))
+
+
+def _engine_ready():
+    from chessbook import engine_files
+    return engine_files.present(ENGINE_DIR)
+
+
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+@pytest.mark.skipif(not _engine_ready(), reason="the engine files are missing (tools/fetch_engine.py local/engine)")
+def test_engine_in_chromium(tmp_path):
+    """Analysis with Stockfish (tests/engine_e2e.js): the engine loads from the
+    files beside the reader, a mate in one shows M1 and the mating move, the
+    eval bar follows the sign, the settings persist, stepping restarts the
+    search, a suggestion opens the board-move chooser, turning analysis off
+    ends the worker, and offline the engine loads from the browser's storage;
+    on a desktop, an iPhone 13 and an iPad held sideways."""
+    from chessbook import engine_files
+    pdf = make_book(tmp_path / "little.pdf")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
+                      diagram_fens={"p5-1": MATE_W_FEN, "p6-1": MATE_B_FEN})
+    out = tmp_path / "output" / "little" / "reader"
+    engine_files.copy(ENGINE_DIR, out / "engine")
+    reader.build_reader(book, pdf, out, engine=True)
+    ch = book["chapters"][1]
+    text = (out / ch["file"]).read_text(encoding="utf-8")
+    assert '"engine":true' in text and 'id="bcpu"' in text and 'id="evalbar"' in text
+    screens = ROOT / "output" / "screens"
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "engine_e2e.js"), str(out), str(out / ch["file"]),
+                           str(screens)], capture_output=True, text=True, env=env, timeout=900)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    assert res["errors"] == []
+    names = {c["name"] for c in res["checks"]}
+    assert {"the engine loads from the local files", "the mate in one shows M1 as the top line",
+            "Black's mate shows −M1 and an empty bar", "the settings persist across a reload",
+            "stepping moves restarts the search on the shown position",
+            "turning analysis off ends the worker and hides the bar",
+            "a tap on a suggestion opens the board-move chooser",
+            "offline, the engine loads from the browser's storage and runs",
+            "on a phone the icon in the bar turns analysis on",
+            "on a tablet the icon in the panel turns analysis on", "no console errors"} <= names
+    for name in ("engine_board_1280_light.png", "engine_board_1280_dark.png", "engine_settings_1280_light.png",
+                 "engine_settings_1280_dark.png", "engine_board_390_light.png", "engine_board_390_dark.png",
+                 "engine_settings_390_light.png", "engine_settings_390_dark.png", "engine_board_1180_light.png",
+                 "engine_board_1180_dark.png", "engine_settings_1180_light.png", "engine_settings_1180_dark.png"):
+        assert (screens / name).stat().st_size > 10000, name
+    print(json.dumps(res["timings"]))
+
+
+def test_reader_without_the_engine(little):
+    """A reader built without the engine files still carries the icon, and the
+    page says that the engine is not installed instead of loading one."""
+    out, _, _ = little
+    text = (out / "ch01.html").read_text(encoding="utf-8")
+    assert '"engine":false' in text and 'id="bcpu"' in text and 'id="bgear"' in text
+    assert "The engine is not installed beside this reader." in text
+    assert "stockfish-19-lite-single.js" in text and "chessbook-engine" in text
+
+
 def _read_again_from_the_command_line(res, tmp_path, monkeypatch):
     """The corrections the browser test made, pasted into make_reader
     --corrections (the command line's Read again): every kind is applied."""
@@ -495,7 +564,8 @@ def test_design_guide(little):
         # the page colour
         for v in re.findall(r"background(?:-color)?:([^;}]+)", low):
             assert v.strip() in ("none", "transparent", "var(--bg)") or v.strip().startswith("var(--ok)") \
-                or v.strip() in ("var(--doubt)", "var(--fail)", "var(--muted)"), (name, v)
+                or v.strip() in ("var(--doubt)", "var(--fail)", "var(--muted)") \
+                or v.strip() in ("var(--board-light)", "var(--board-dark)"), (name, v)
         # prose sets 1.5 and the move list 1.7
         for v in re.findall(r"line-height:([^;}]+)", low):
             assert v.strip() in ("1.5", "1.7", "1.35", "1.3", "1.25", "0"), (name, v)

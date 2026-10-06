@@ -51,8 +51,9 @@ font-variant-ligatures:none}
 .evline[aria-disabled="true"]:hover .efirst{text-decoration:none}
 .evline[aria-disabled="true"]:hover .esc{color:var(--fg)}
 .evset{display:grid;gap:8px}
-.evset .row{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px}
-.evset .lab{color:var(--muted);flex:none;min-width:8em}
+.evset .row{display:grid;grid-template-columns:7em minmax(0,1fr);align-items:baseline;gap:4px 16px}
+.evset .lab{color:var(--muted)}
+.evset .opts{display:flex;flex-wrap:wrap;gap:4px 16px;min-width:0}
 .evset .tb[aria-pressed="true"]{color:var(--accent);text-decoration:underline}
 .evfoot{color:var(--muted);border-top:1px solid var(--line);padding-top:8px;margin-top:4px}
 .meval{flex:none;font-family:"Geist Mono",ui-monospace,Menlo,Consolas,monospace;font-variant-ligatures:none;
@@ -77,7 +78,7 @@ const EV_LIMITS = [["d12", "depth 12"], ["d18", "depth 18"], ["d24", "depth 24"]
                    ["t1", "1 second"], ["t3", "3 seconds"], ["t10", "10 seconds"]];
 const EV = {on: false, worker: null, ready: false, searching: false, stopping: false, fen: null, want: null,
   lines: [], depth: 0, nps: 0, done: false, deeper: 0, timer: 0, raf: 0, loading: false, failed: "", name: "",
-  urls: [], settings: null, ran: null, hidden: false, from: null, loadMs: null, t0: 0};
+  urls: [], settings: null, ran: null, hidden: false, from: null, loadMs: null, t0: 0, ended: ""};
 
 function evLoadSettings(){
   let s = {};
@@ -269,6 +270,16 @@ function evGo(){
     EV.fen = null; EV.lines = []; evRender(); evStatus(); };
   if (!fen) { halt(); return; }
   if (fen === (EV.want || EV.fen) && (EV.searching || EV.done)) { evRender(); return; }
+  if (!CJ.legalMoves(fen).length) {
+    // checkmate or stalemate: nothing to search; the bar shows the result
+    halt();
+    const mated = CJ.inCheck(fen), white = (fen.split(" ")[1] || "w") === "w";
+    EV.fen = fen; EV.done = true; EV.depth = 0;
+    EV.lines = mated ? [{depth: 0, score: {mate: white ? -0 : 0, mated: white ? "w" : "b"}, pv: []}] : [{depth: 0, score: {cp: 0}, pv: []}];
+    EV.ended = mated ? "Checkmate: " + (white ? "Black" : "White") + " has won." : "Stalemate: the game is drawn.";
+    evRender(); evStatus(); return;
+  }
+  EV.ended = "";
   // set to analyse on demand, only the position shown when the icon was pressed is analysed
   if (!EV.settings.auto && fen !== EV.ran) { halt(); return; }
   EV.deeper = 0;
@@ -319,6 +330,7 @@ function pressCpu(){
 /* what the engine found, in words and on the bar */
 function evScoreText(sc){
   if (!sc) return "";
+  if (sc.mated) return sc.mated === "w" ? "−M0" : "M0";
   if (sc.mate != null) return (sc.mate < 0 ? "−" : "") + "M" + Math.abs(sc.mate);
   const v = sc.cp / 100;
   return (v < 0 ? "−" : "+") + Math.abs(v).toFixed(1);
@@ -326,6 +338,7 @@ function evScoreText(sc){
 function evWhiteShare(sc){
   // White's share of the bar, from 0 to 1: a sigmoid of the centipawns, as the common bars draw it
   if (!sc) return 0.5;
+  if (sc.mated) return sc.mated === "w" ? 0 : 1;
   if (sc.mate != null) return sc.mate > 0 ? 1 : 0;
   return 1 / (1 + Math.exp(-0.004 * sc.cp));
 }
@@ -380,16 +393,17 @@ function evStatus(){
   else if (EV.loading) t = "Loading the engine (1.8 MB the first time)…";
   else if (!EV.fen) t = EV.on && !shownFen() ? "The board shows no position to analyse." :
     EV.on && !EV.settings.auto ? "A press on the processor icon analyses the position shown." : "";
+  else if (EV.ended) t = EV.ended;
   else if (EV.searching) t = "Analysing… depth " + EV.depth + (EV.nps ? ", " + Math.round(EV.nps / 1000) + " thousand nodes a second" : "") + ".";
   else if (EV.done) t = "Depth " + EV.depth + " reached.";
   else t = "Stopped.";
   if (EV.hidden && EV.on) t = "Paused while the page is hidden.";
   el.textContent = t;
-  $("evdeeper").hidden = !(EV.on && EV.fen && EV.ready);
+  $("evdeeper").hidden = !(EV.on && EV.fen && EV.ready && !EV.ended);
 }
 function deeper(){
   // the limit is lifted for this position: eight plies more, or four times the time
-  if (!EV.on || !EV.fen || !EV.ready) return;
+  if (!EV.on || !EV.fen || !EV.ready || EV.ended) return;
   EV.deeper += 1;
   EV.done = false;
   evSearch(EV.fen);
@@ -433,12 +447,12 @@ function renderSettings(){
   const s = EV.settings;
   const opt = (key, value, label) => "<button class='tb' data-set='" + key + "' data-value='" + esc(String(value)) + "' aria-pressed='" +
     String(s[key] === value) + "'>" + esc(label) + "</button>";
-  let h = "<div class='row'><span class='lab'>Lines</span>" + [1, 2, 3, 4, 5].map(k => opt("lines", k, String(k))).join("") + "</div>";
-  h += "<div class='row'><span class='lab'>Stop at</span>" + EV_LIMITS.map(l => opt("limit", l[0], l[1])).join("") + "</div>";
-  h += "<div class='row'><span class='lab'>Analyse</span>" + opt("auto", true, "every position shown") +
-    opt("auto", false, "only when the icon is pressed") + "</div>";
-  h += "<div class='row'><span class='lab'>Arrow</span>" + opt("arrow", true, "best move on the board") + opt("arrow", false, "none") + "</div>";
-  h += "<div class='row'><span class='lab'>Memory</span>" + opt("hash", 16, "16 MB") + opt("hash", 32, "32 MB") + "</div>";
+  const row = (label, opts) => "<div class='row'><span class='lab'>" + label + "</span><span class='opts'>" + opts + "</span></div>";
+  let h = row("Lines", [1, 2, 3, 4, 5].map(k => opt("lines", k, String(k))).join(""));
+  h += row("Stop at", EV_LIMITS.map(l => opt("limit", l[0], l[1])).join(""));
+  h += row("Analyse", opt("auto", true, "every position shown") + opt("auto", false, "only when the icon is pressed"));
+  h += row("Arrow", opt("arrow", true, "best move on the board") + opt("arrow", false, "none"));
+  h += row("Memory", opt("hash", 16, "16 MB") + opt("hash", 32, "32 MB"));
   h += "<p class='evfoot small'>" + esc((EV.name || ENGINE.name) + " (" + ENGINE.build + "), free software under the GNU General " +
     "Public License, version 3") + (ENGINE_BASE ? " (<a href='" + esc(ENGINE_BASE + "Copying.txt") + "' target='_blank' rel='noopener'>licence</a>)" : "") +
     ". The engine runs on this device and sends nothing anywhere.</p>";
@@ -493,7 +507,7 @@ function initEngine(){
   });
   // leaving the chapter ends the engine
   window.addEventListener("pagehide", () => { if (EV.worker) evKill(); });
-  window.engineState = () => ({on: EV.on, ready: EV.ready, searching: EV.searching, fen: EV.fen, depth: EV.depth,
+  window.engineState = () => ({on: EV.on, ready: EV.ready, worker: !!EV.worker, searching: EV.searching, fen: EV.fen, depth: EV.depth,
     lines: EV.lines.map(l => l && {score: l.score, pv: l.pv.slice(0, 4), depth: l.depth}), done: EV.done,
     settings: Object.assign({}, EV.settings), failed: EV.failed, loading: EV.loading, name: EV.name, nps: EV.nps,
     from: EV.from || null, loadMs: EV.loadMs || null, deeper: EV.deeper});

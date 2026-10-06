@@ -75,7 +75,10 @@ def test_the_app_flag_comes_before_the_page_script(tmp_path):
     the app puts the flag at the top of the head, not after the script."""
     page = build(tmp_path)
     assert 'htmlText.replace("<head>", "<head>" + FLAG)' in page
-    assert 'const FLAG = "<script>window.CHESSBOOK_APP=true;<" + "/script>";' in page
+    assert ('const FLAG = "<script>window.CHESSBOOK_APP=true;window.CHESSBOOK_ENGINE=" + '
+            'JSON.stringify(CFG.engine) + ";<" + "/script>";') in page
+    # without --engine the reader is told that no engine is installed
+    assert re.search(r"packages: \[[^\]]*\], engine: null\}", page)
 
 
 def test_one_chain_of_symbol_batches(tmp_path):

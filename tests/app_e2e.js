@@ -415,6 +415,28 @@ async function run(browser, which) {
     { key: target.key, alt: flip });
   timing("single correction again (s)", now() - t);
 
+  // ---------------------------------------------------------------- analysis with Stockfish
+  // (the site built with --engine: the reader loads the engine from the site, in a worker)
+  const engineOn = await inFrame(() => !!window.CHESSBOOK_ENGINE);
+  if (engineOn) {
+    // a move of the book, shown without a preview of a correction
+    await inFrame((id) => { location.hash = "#node=" + id; }, afterFlip.node);
+    await waitFrame((id) => window.readerState.nodeId === id && !!window.readerState.fen, afterFlip.node);
+    t = now();
+    await inFrame(() => document.getElementById("bcpu").click());
+    await waitFrame(() => { const s = window.engineState(); return s.failed || (s.ready && s.done && !!s.fen); }, null, 120000);
+    const ev = await inFrame(() => ({ s: window.engineState(), num: document.querySelector("#evalbar .enum").textContent,
+      rows: document.querySelectorAll("#evlines .evline").length, loaded: window.engineLoaded,
+      shown: !document.getElementById("evalbar").hidden && !document.getElementById("evalsec").hidden }));
+    timing("engine loaded and the first position analysed (s)", now() - t);
+    check("the app's reader shows an eval from the engine", ev.s.ready && !ev.s.failed && ev.shown && /^[+−]\d\.\d$|^−?M\d+$/.test(ev.num) &&
+      ev.rows > 0 && ev.loaded && /Stockfish/.test(ev.loaded.name), ev);
+    note("engine " + ev.loaded.name + " loaded from the " + ev.loaded.from + " in " + ev.loaded.ms + " ms, depth " + ev.s.depth);
+    await shot("05b_analysis");
+    await inFrame(() => document.getElementById("bcpu").click());
+    check("turning analysis off in the app ends the worker", await inFrame(() => !window.engineState().worker));
+  }
+
   // ---------------------------------------------------------------- a variation added on the board
   // (taps on the board's squares, as pointer events in the reader's frame)
   const boardTap = (sq) => inFrame((sq) => {
