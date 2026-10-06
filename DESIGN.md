@@ -59,6 +59,11 @@ Give `body` an explicit background.
 | `--fail` | `#b4413a` | `#e0756d` | failed |
 | `--board-light` | `#ecebe6` | `#b9b8b2` | light squares |
 | `--board-dark` | `#bdbab2` | `#8f8d87` | dark squares |
+| `--bookmark` | `#f2b705` | `#f2b705` | the bookmark icon when set, and the ribbon |
+
+The bookmark is the only element that uses the warm yellow; nothing else may
+use it. It keeps the same value in dark mode, since it is meant to stand out
+from everything else on the page.
 
 In dark mode, pictures of the book (page images, thumbnails, diagram crops)
 are dimmed slightly and never inverted.

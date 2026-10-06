@@ -252,6 +252,18 @@ def test_the_server_under_wrangler(tmp_path):
         assert put({"corrections": {}}, 1000) == {"data": {"corrections": {"glyphs": {"x": "N"}}},
                                                   "updated": 2000}
         assert put(None, 3000) == {"data": None, "updated": 3000}
+        # the bookmarks: the same rule, and the library lists them with the book
+        marks = {"bookmarks": [{"page": 31, "node": "n7", "chapter": "ch02.html", "at": 2500}]}
+        status, body = site.call("PUT", f"books/{bid}/bookmarks",
+                                 json.dumps({"data": marks, "updated": 2500}).encode())
+        assert status == 200 and json.loads(body) == {"data": marks, "updated": 2500}
+        status, body = site.call("PUT", f"books/{bid}/bookmarks",
+                                 json.dumps({"data": {"bookmarks": []}, "updated": 2400}).encode())
+        assert json.loads(body)["data"] == marks
+        assert json.loads(site.call("GET", f"books/{bid}/bookmarks")[1]) == {"data": marks, "updated": 2500}
+        listed = json.loads(site.call("GET", "books")[1])["books"][0]
+        assert listed["bookmarks"] == {"data": marks, "updated": 2500}
+        assert site.call("PUT", f"books/{bid}/notes", b"{}")[0] == 405
         status, body = site.call("PUT", f"books/{bid}/position", json.dumps(
             {"position": {"chapter": "ch02.html", "page": 9, "node": "n4"}, "updated": 5000}).encode())
         assert json.loads(body)["book"]["position"] == {"chapter": "ch02.html", "page": 9,
@@ -269,6 +281,7 @@ def test_the_server_under_wrangler(tmp_path):
         assert site.call("DELETE", f"books/{bid}")[0] == 200
         assert json.loads(site.call("GET", "books")[1])["books"] == []
         assert site.call("GET", f"books/{bid}/reading")[0] == 404
+        assert site.call("GET", f"books/{bid}/bookmarks")[0] == 404
     finally:
         site.stop()
 

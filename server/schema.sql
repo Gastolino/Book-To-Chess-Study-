@@ -26,8 +26,9 @@ CREATE TABLE IF NOT EXISTS books (
   PRIMARY KEY (owner, id)
 );
 
--- The corrections and the selection of a book, as the browser stores them
--- (kind "corrections" or "selection"); the copy with the later "updated" wins.
+-- The corrections, the selection and the bookmarks of a book, as the browser
+-- stores them (kind "corrections", "selection" or "bookmarks"); the copy with
+-- the later "updated" wins.
 CREATE TABLE IF NOT EXISTS book_data (
   owner TEXT NOT NULL,
   id TEXT NOT NULL,

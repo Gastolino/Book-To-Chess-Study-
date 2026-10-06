@@ -35,6 +35,9 @@ TOKENS = {
     "fail": ("#b4413a", "#e0756d"),
     "board-light": ("#ecebe6", "#b9b8b2"),
     "board-dark": ("#bdbab2", "#8f8d87"),
+    # the bookmark icon when set and the ribbon on a bookmarked page, and
+    # nothing else: one sharp warm yellow in both schemes, so that it stands out
+    "bookmark": ("#f2b705", "#f2b705"),
 }
 
 
@@ -161,6 +164,7 @@ ICONS = {
     # a gear: a circle with six short teeth, for the analysis settings
     "gear": "<circle cx='10' cy='10' r='3'/><path d='M10 2.5v3M10 14.5v3M3.5 6.25l2.6 1.5M13.9 12.25l2.6 1.5"
             "M3.5 13.75l2.6-1.5M13.9 7.75l2.6-1.5'/>",
+    "bookmark": "<path d='M5.5 3.5h9v13l-4.5-3.3-4.5 3.3z'/>",
 }
 
 

@@ -161,7 +161,7 @@ and **Add to Home Screen**, so that the library opens like an app.
   small picture of its first page.
 - In the database `chessbook`: each book's title, page count, size, the date
   it was added and last opened, the page and move you last read, your
-  corrections and your selection of pages and diagrams.
+  corrections, your bookmarks and your selection of pages and diagrams.
 
 **Remove** in the library deletes the book and everything kept for it.
 

@@ -10,7 +10,8 @@
 //     library empty, adds BOOK1: it is read in the browser as before (the
 //     contents page shows while it is read), and its PDF, reading, cover and
 //     title are kept in IndexedDB; the browser is asked to keep the storage;
-//   - names a piece symbol of a chapter (a correction) and chooses a move;
+//   - names a piece symbol of a chapter (a correction), sets a bookmark and
+//     chooses a move;
 //   - adds BOOK2 too, for the library's pictures;
 //   - closes the browser and starts it again on the same profile: the
 //     library lists BOOK1 with its place, and opens it from the stored
@@ -18,8 +19,9 @@
 //     page and move;
 //   - saves both books as book files (.chessbook) from the library;
 //   - in a fresh profile (another device), adds BOOK1's file: the book opens
-//     without being read, with the correction, at the stored place; adding
-//     the file again says the library holds the book already;
+//     without being read, with the correction, at the stored place; the
+//     library lists the bookmark under the book and opens the book there;
+//     adding the file again says the library holds the book already;
 //   - takes pictures of the library with both books (added from their
 //     files) on an iPhone 13 and an iPad in landscape, light and dark;
 //   - removes the book after its confirmation: its files, its record, its
@@ -219,6 +221,24 @@ function zipNames(file) {
   }
   return names;
 }
+// one stored (uncompressed) entry of a zip, parsed as JSON
+function zipEntry(file, name) {
+  const b = fs.readFileSync(file);
+  let e = b.length - 22;
+  while (e >= 0 && b.readUInt32LE(e) !== 0x06054b50) e--;
+  const n = b.readUInt16LE(e + 10);
+  let p = b.readUInt32LE(e + 16);
+  for (let i = 0; i < n; i++) {
+    const nl = b.readUInt16LE(p + 28), el = b.readUInt16LE(p + 30), cl = b.readUInt16LE(p + 32);
+    const size = b.readUInt32LE(p + 20), off = b.readUInt32LE(p + 42);
+    if (b.toString("utf8", p + 46, p + 46 + nl) === name) {
+      const start = off + 30 + b.readUInt16LE(off + 26) + b.readUInt16LE(off + 28);
+      return JSON.parse(b.toString("utf8", start, start + size));
+    }
+    p += 46 + nl + el + cl;
+  }
+  return null;
+}
 // Add a book file; resolves when the book shows (opened) or the status says why not.
 async function addFile(d, file) {
   await whenReady(d);
@@ -292,6 +312,19 @@ async function run() {
     await (await a.frame()).click("#fixsym button[data-piece='" + piece + "']");
     await a.waitFrame((s) => window.READER.corrections.glyphs[s.sym] === s.piece, { sym: sym.sym, piece }, 300000);
     note("named the piece symbol " + JSON.stringify(sym.sym) + " " + piece + " in " + chapter);
+    // a bookmark on the page of the symbol, with the move chosen there
+    await a.inFrame((id) => { location.hash = "#node=" + id; }, sym.id);
+    await a.waitFrame((id) => window.readerState.nodeId === id, sym.id);
+    await (await a.frame()).click("#bmbtn");
+    const mark = await a.waitFrame(() => !document.getElementById("ribbon").hidden &&
+      document.getElementById("bmbtn").getAttribute("aria-pressed") === "true" &&
+      { page: window.readerState.page, node: window.readerState.nodeId });
+    const markKept = await a.until(() => a.page.evaluate((id) => {
+      const m = JSON.parse(localStorage.getItem("chessbook-library:" + id) || "{}");
+      return m.bookmarks && m.bookmarks.updated ? m.bookmarks : null;
+    }, one.id), "the library's record of the bookmark", 20000);
+    check("the bookmark is noted by the library", markKept && /"page":/.test(markKept.seen), markKept);
+    note("bookmark on page " + mark.page + " at " + mark.node);
 
     // the place: a move further on in the chapter
     const place = await a.inFrame(() => {
@@ -354,6 +387,10 @@ async function run() {
     const names = zipNames(file1);
     check("the book file holds the book, its reading, its cover and its record",
       ["book.json", "book.pdf", "reading.gz", "cover.jpg"].every((n) => names.includes(n)), names);
+    const bookJson = zipEntry(file1, "book.json");
+    check("the book file carries the bookmark", bookJson.bookmarks && bookJson.bookmarks.data &&
+      bookJson.bookmarks.data.bookmarks.length === 1 && bookJson.bookmarks.data.bookmarks[0].page === mark.page &&
+      bookJson.bookmarks.data.bookmarks[0].node === mark.node && bookJson.bookmarks.updated > 0, bookJson.bookmarks);
     await a.close();
 
     // ---------------------------------------------------------------- another device
@@ -377,6 +414,22 @@ async function run() {
     const stB = await b.stored();
     check("the book from the file is kept in this browser's library",
       stB.books.length === 1 && stB.books[0].reading && stB.books[0].cover > 0 && stB.files.length === 2, stB);
+    // the library lists the bookmark under the book, and opens the book there
+    await b.page.click("#another");
+    await b.page.waitForFunction(() => document.body.classList.contains("library") &&
+      document.querySelectorAll("#books li.book").length === 1);
+    const bmLine = await b.page.evaluate((id) => {
+      const el = document.querySelector("#books li.book[data-id='" + id + "'] .bms");
+      return el ? el.textContent : null;
+    }, one.id);
+    check("the library on the other device lists the bookmark under the book",
+      bmLine === "Bookmark on page " + mark.page, bmLine);
+    await b.instrument();
+    await b.page.click("#books li.book[data-id='" + one.id + "'] .bms .tb");
+    const atMark = await b.waitFrame((p) => window.READER && window.READER.chapter.file === p.chapter &&
+      window.readerState.page === p.page && window.readerState.nodeId === p.node &&
+      !document.getElementById("ribbon").hidden && window.readerState, { chapter, page: mark.page, node: mark.node }, 300000);
+    check("the bookmark in the library opens the book at its page and move", atMark.page === mark.page, atMark);
     // the same file again: the library holds the book already
     await b.page.click("#another");
     await b.page.waitForFunction(() => document.body.classList.contains("library") &&
@@ -425,7 +478,7 @@ async function run() {
       !document.getElementById("libempty").hidden);
     const gone = await b.stored();
     const left = await b.page.evaluate(() => Object.keys(localStorage).filter((k) =>
-      /^chessbook-(library|corrections|selection):/.test(k)));
+      /^chessbook-(library|corrections|selection|bookmarks):/.test(k)));
     check("a removed book leaves nothing behind", gone.books.length === 0 && gone.files.length === 0 && left.length === 0,
           { gone, left });
     await b.close();

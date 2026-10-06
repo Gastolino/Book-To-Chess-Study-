@@ -102,6 +102,9 @@ body.library #start{max-width:760px;padding-top:40px}
 .book .acts{display:flex;gap:4px 20px;align-items:baseline}
 .book .acts .tb{font-size:13px;color:var(--muted)}
 .book .acts .tb:hover{color:var(--accent)}
+.book .bms{flex-basis:100%;padding-left:58px;margin-top:4px;font-size:13px;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.book .bms .tb{font-size:13px;padding:6px 2px;margin:-6px 0}
 .book .confirm{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 20px;
   margin-top:10px;font-size:13px}
 .book .confirm span{flex-basis:100%}
@@ -119,6 +122,7 @@ body.library #drop .small{max-width:46em}
   .book{padding:16px 0}
   .book .cover{width:56px;height:78px}
   .book .open{gap:20px}
+  .book .bms{padding-left:76px}
 }
 </style></head>
 <body>
@@ -417,6 +421,7 @@ window.addEventListener("message", (e) => {
     return;
   }
   if (e.data && e.data.selectionChanged) { $("again").hidden = false; return; }
+  if (e.data && e.data.bookmarksChanged) return;
   if (!e.data || !e.data.open) return;
   working(true);
   status(e.data.open === "index.html" ? "Opening the contents." :
