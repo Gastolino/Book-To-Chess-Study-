@@ -4241,7 +4241,7 @@ class _Builder:
             return (f"The position {where} is unknown, so the program cannot play the moves you "
                     "added there.")
         board = chess.Board(fen)
-        parent, made = base, False
+        parent = base
         for i, san in enumerate(entry["san"]):
             try:
                 mv = board.parse_san(san)
@@ -4269,11 +4269,11 @@ class _Builder:
                                 page=self.nodes[nid]["page"], corrected="added", added=key)
             if before:
                 self.nodes[new]["added_before"] = True
-            if not made:
-                if entry.get("note"):
-                    self.nodes[new]["comment"] = entry["note"]
-                made = True
             parent = new
+        # the reader's note goes with the last move of the variation
+        note = entry.get("note")
+        if note and parent != base and note not in self.nodes[parent]["comment"]:
+            self.nodes[parent]["comment"] = (self.nodes[parent]["comment"] + " " + note).strip()
         return ""
 
     def finish_replayed(self, L):

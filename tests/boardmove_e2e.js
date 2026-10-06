@@ -130,7 +130,7 @@ function check(name, cond, detail) {
     check("an illegal drop puts the piece back", s.id === I.nf3 && !s.open && !Object.keys(s.fix.moves).length &&
       !Object.keys(s.fix.added).length, s);
     check("the piece stands on its square again", await page.evaluate(() =>
-      !!document.querySelector("#board use[data-sq='d7']") && !document.querySelector("#board use.lifted") &&
+      !!document.querySelector("#board use[data-at='d7']") && !document.querySelector("#board use.lifted") &&
       !document.querySelector("#board .ghost")));
 
     // another move: the chooser, by a tap on the piece and a tap on its square
@@ -142,7 +142,7 @@ function check(name, cond, detail) {
     check("the chooser offers a new variation and Cancel", /Add a new variation/.test(s.fixText) && /Cancel/.test(s.fixText) &&
       !/Correct this variation/.test(s.fixText), s.fixText);
     check("the board shows the move while the chooser asks", await page.evaluate(() =>
-      !!document.querySelector("#board use[data-sq='d6']") && !document.querySelector("#board use[data-sq='d7']")));
+      !!document.querySelector("#board use[data-at='d6']") && !document.querySelector("#board use[data-at='d7']")));
     const style = await page.evaluate(() => {
       const b = document.getElementById("bmadd"), cs = getComputedStyle(b);
       return { bg: cs.backgroundColor, border: cs.borderTopWidth, radius: cs.borderTopLeftRadius, shadow: cs.boxShadow,
@@ -155,7 +155,7 @@ function check(name, cond, detail) {
     await page.click("#bmcancel");
     s = await state(page);
     check("Cancel brings the board back", !s.open && s.id === I.nf3 && !Object.keys(s.fix.added).length &&
-      await page.evaluate(() => !!document.querySelector("#board use[data-sq='d7']")), s);
+      await page.evaluate(() => !!document.querySelector("#board use[data-at='d7']")), s);
 
     // a new variation, by a drag
     await drag(page, B, "d7", "d6");
@@ -165,7 +165,7 @@ function check(name, cond, detail) {
     check("Add a new variation stores it under the move it branches from",
       JSON.stringify(s.fix.added) === JSON.stringify({ [I.nf3key]: [{ san: ["d6"] }] }), s.fix.added);
     check("the board shows the new position at once", !s.open && /You added 2…d6 as a new variation/.test(s.note) &&
-      await page.evaluate(() => !!document.querySelector("#board use[data-sq='d6']")), s);
+      await page.evaluate(() => !!document.querySelector("#board use[data-at='d6']")), s);
     await page.evaluate((p) => window.applyPatch(p), patches[0]);
     s = await state(page);
     check("the patch chooses the new move", s.san === "d6" && s.corrected === "added", s);
@@ -267,7 +267,7 @@ function check(name, cond, detail) {
     await page.click("#fixboard [data-sq='e4']");
     await page.click("#fixpieces button[data-put='N']");
     const ed = await page.evaluate(() => ({ sel: !!document.querySelector("#fixboard .sel"),
-      knight: !!document.querySelector("#fixboard use[data-sq='e4']") }));
+      knight: !!document.querySelector("#fixboard use[data-at='e4']") }));
     check("the diagram corrector still takes a tap and a piece", ed.sel && ed.knight, ed);
     await page.click("#fixclose");
     await ctx.close();

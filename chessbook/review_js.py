@@ -1287,8 +1287,8 @@ function paintBoards(){
     for (const el of svg.querySelectorAll(".bmx")) el.remove();
     const src = moveSource(box);
     svg.classList.toggle("movable", !!src);
-    for (const u of svg.querySelectorAll("use[data-sq]"))
-      if (src && ownPiece(src.fen, u.dataset.sq)) u.setAttribute("data-mine", ""); else u.removeAttribute("data-mine");
+    for (const u of svg.querySelectorAll("use[data-at]"))
+      if (src && ownPiece(src.fen, u.dataset.at)) u.setAttribute("data-mine", ""); else u.removeAttribute("data-mine");
     if (!src || !BM.pick || BM.pick.sig !== srcSig(src)) continue;
     const NS = "http://www.w3.org/2000/svg";
     const add = (tag, attrs) => {
@@ -1596,10 +1596,10 @@ function initBoardMoves(){
       if (!d || d.box !== box || e.pointerId !== d.id || !d.own) return;
       if (!d.ghost) {
         if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return;
-        const piece = d.svg.querySelector("use[data-sq='" + d.sq + "']");
+        const piece = d.svg.querySelector("use[data-at='" + d.sq + "']");
         if (!piece) return;
         d.ghost = piece.cloneNode(true);
-        d.ghost.removeAttribute("data-sq");
+        d.ghost.removeAttribute("data-at");
         d.ghost.setAttribute("class", "bmx ghost");
         d.ghost.setAttribute("pointer-events", "none");
         piece.classList.add("lifted");

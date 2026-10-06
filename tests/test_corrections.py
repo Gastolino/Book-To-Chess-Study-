@@ -469,7 +469,8 @@ def test_the_builder_adds_the_readers_variations(clean):
     d6 = fixed["nodes"][node_with(fixed, "d6", corrected="added")]
     # variations that begin alike share their first move
     assert [fixed["nodes"][c]["san"] for c in d6["children"]] == ["d4", "Bc4"]
-    assert d6["added"] == nf3 and not d6.get("added_before") and d6["comment"] == "Quiet."
+    assert d6["added"] == nf3 and not d6.get("added_before") and not d6["comment"]
+    assert fixed["nodes"][node_with(fixed, "Bc4", corrected="added")]["comment"] == "Quiet."
     assert d6["number"] == 2 and d6["black"]
     d4 = fixed["nodes"][node_with(fixed, "d4", corrected="added", added=e4)]
     assert d4["added_before"] and fixed["nodes"][d4["parent"]]["parent"] is None
@@ -480,12 +481,14 @@ def test_the_builder_adds_the_readers_variations(clean):
     # the PGN has them as variations
     from chessbook import pgnout
     text = pgnout.chapter_pgn(fixed, 1)[0]
-    assert "( 2... d6 { Added by the reader. Quiet. } 3. d4 ( 3. Bc4 ) )" in text, text
-    assert "( 1. d4 { Added by the reader. } 1... d5 )" in text, text
+    flat = " ".join(text.split())
+    assert "( 2... d6 { Added by the reader. } 3. d4 ( 3. Bc4 { Quiet. } ) )" in flat, text
+    assert "( 1. d4 { Added by the reader. } 1... d5 )" in flat, text
     assert pgnout.validate(text, pgnout.chapter_pgn(fixed, 1)[1]) == []
     # the contents page counts them
     from chessbook import reader as rd
-    assert "5 moves you added" in rd._corrected_sentence(fixed["stats"]["corrected"])
+    import re
+    assert "5 moves you added" in re.sub(r"<[^>]+>", "", rd._corrected_sentence(fixed["stats"]["corrected"]))
 
 
 def test_an_added_variation_extends_and_its_illegal_tail_is_left_out(clean):

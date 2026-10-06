@@ -768,7 +768,7 @@ function boardSvg(fen, flip, uci, doubt){
       const color = ch === ch.toUpperCase() ? "white" : "black";
       const x = M + (flip ? 7 - f : f) * SQ, y = TOP + (flip ? 7 - i : i) * SQ;
       s += "<use href='#" + color + "-" + names[ch.toLowerCase()] + "' xlink:href='#" + color + "-" +
-        names[ch.toLowerCase()] + "' data-sq='" + "abcdefgh"[f] + (8 - i) + "' transform='translate(" + x + "," +
+        names[ch.toLowerCase()] + "' data-at='" + "abcdefgh"[f] + (8 - i) + "' transform='translate(" + x + "," +
         y + ")'/>";
       f += 1;
     }
@@ -1565,7 +1565,7 @@ __PGNBTN__
 <span><i class="k wait"></i><i class="u"></i>Waits for board reading (Stage 3)</span>
 <span><i class="k unatt"></i>Placed in no line</span>
 <span><i class="k fixed"></i>Corrected by you</span>
-<span><i class="dot st-added"></i>Added by you: a variation you made by moving pieces on the board</span>
+<span><i class="dot st-added"></i>Added by you on the board</span>
 <span class="penk"><i class="k pen"></i>Pencil on: a tap corrects the move, diagram or sequence</span>
 <span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
