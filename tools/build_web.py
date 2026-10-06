@@ -97,7 +97,7 @@ body.library #start{max-width:760px;padding-top:40px}
 .book .acts .tb:hover{color:var(--accent)}
 .book .bms{flex-basis:100%;padding-left:58px;margin-top:4px;font-size:13px;color:var(--muted);
   font-variant-numeric:tabular-nums}
-.book .bms .tb{font-size:13px}
+.book .bms .tb{font-size:13px;padding:6px 2px;margin:-6px 0}
 .book .confirm{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 20px;
   margin-top:10px;font-size:13px}
 .book .confirm span{flex-basis:100%}
