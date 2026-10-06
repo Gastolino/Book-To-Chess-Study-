@@ -830,3 +830,60 @@ def test_title_case():
     assert _title_case("The King's Indian attack") == "The King's Indian Attack"
     # capitals and digits inside a word stay as printed
     assert _title_case("beating the 1 e4 e5 by McDonald") == "Beating the 1 e4 e5 by McDonald"
+
+
+# ------------------------------------------------------------------ Lakdawala, The Alekhine Defence
+
+ALEKHINE = ROOT / "corpus" / "alekhine.pdf"
+alekhine = pytest.mark.skipif(not ALEKHINE.exists(), reason="corpus/alekhine.pdf is not in the project folder")
+
+
+def _variation(book, root, *sans):
+    """The node reached from root by the moves sans, each among the children."""
+    nodes = book["nodes"]
+    nid = root
+    for san in sans:
+        kids = {nodes[c]["san"]: c for c in nodes[nid]["children"]}
+        assert san in kids, f"{san} is not among {list(kids)} after {nodes[nid]['san']}"
+        nid = kids[san]
+    return nid
+
+
+@alekhine
+def test_alekhine_page_13_bare_replies(tmp_path):
+    """Page 13 prints Black's replies without their numbers after comments
+    ("10.Nd3 Every swap helps Black, so White agrees to the loss of time and
+    retreats. b5 11.Bb3 a5"): the 6.Nd2 variation reads through 15...Rad8,
+    "Be6 7.Bc4" goes on with 6.Qf3, and "familiar with: Qxd4!" ends the
+    7.c4? variation in its bracket. A bare move elsewhere that the moves do
+    not confirm is an item with the move it follows, and the pencil's join
+    places it there."""
+    from chessbook import live
+    state = {}
+    book = build_book(ALEKHINE, output_dir=tmp_path, write=False, passes=1, boards=False,
+                      shapes=False, state=state)
+    game = next(L for L in book["lines"] if L["page"] == 13 and L["kind"] == "game")
+    main = ["e4", "Nf6", "e5", "Nd5", "d4", "d6", "Nf3", "dxe5", "Nxe5", "c6"]
+    c6 = _variation(book, game["root"], *main)
+    nd2 = _variation(book, c6, "Nd2", "g6", "Ndf3", "Bg7", "Bc4", "O-O", "O-O", "Nd7", "Nd3",
+                     "b5", "Bb3", "a5", "a3", "N7b6", "Nfe5", "Qc7", "Re1", "Bf5", "c3", "Rad8")
+    assert book["nodes"][nd2]["number"] == 15 and book["nodes"][nd2]["status"] == "ok"
+    b5 = _variation(book, c6, "Nd2", "g6", "Ndf3", "Bg7", "Bc4", "O-O", "O-O", "Nd7", "Nd3", "b5")
+    assert book["nodes"][b5]["raw"] == "b5" and book["nodes"][b5]["black"]
+    _variation(book, c6, "Qf3", "Be6", "Bc4", "g6", "O-O", "Bg7", "c3", "O-O", "Nd2", "c5")
+    qxd4 = _variation(book, c6, "Qf3", "Be6", "c4", "Nb4", "Qc3", "Qxd4")
+    assert book["nodes"][qxd4]["raw"] == "Qxd4!" and not book["nodes"][qxd4]["children"]
+    # "Threat: Qxf7 mate!" stays text
+    assert not [m for p in book["pages"] if p["page"] == 13 for m in p["marks"] if m["raw"].startswith("Qxf7")]
+    assert not [u for u in book["unattached"] if u["page"] == 13 and "11.Bb3" in u["text"]]
+    # the pencil's join of a bare move the moves did not confirm, on a real page
+    items = [u for u in book["unattached"] if u.get("after") and u["chapter"] == game["chapter"]]
+    assert items, "no bare move stands in no line in the chapter"
+    u = items[0]
+    nodes = book["nodes"]
+    target = next(n for n in nodes.values() if n.get("key") == u["after"])
+    live.apply(state, book, {"connect": {u["key"]: {"after": u["after"]}}})
+    nodes = book["nodes"]
+    joined = next(n for n in nodes.values() if n.get("key") == u["key"])
+    assert joined["corrected"] == "connected" and nodes[joined["parent"]].get("key") == target["key"]
+    assert not [x for x in book["unattached"] if x["key"] == u["key"]]

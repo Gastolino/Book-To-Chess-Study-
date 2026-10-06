@@ -3659,10 +3659,9 @@ class _Builder:
         block = bisect.bisect_left(blocks, run.start)
         vars_ = state["vars"][block]
         lo = None
-        cont = [v for v in vars_ if v["depth"] == run.depth
-                and (run.depth == 0 or v.get("bracket") == run.bracket)]
-        if cont and cont[-1]["next"] == run.ply - 1 and cont[-1].get("end", run.start) < run.start:
-            lo = cont[-1]["end"]
+        v = self.bare_parent(run, vars_, run.ply - 1)
+        if v is not None and v.get("end", run.start) < run.start:
+            lo = v["end"]
         elif (run.depth == 0 and block >= len(L.main_tok) and L.main_tok and not L.broken
                 and L.next_ply == run.ply - 1):
             lo = L.main_tok[-1][1]
@@ -3674,16 +3673,29 @@ class _Builder:
         ext = self.bare_extended(run, tok, run.ply - 1)
         return None if self.is_threat(ext) else ext
 
+    @staticmethod
+    def bare_parent(run, vars_, ply):
+        """The variation of the note that a bare move before run would go on
+        with: the latest one of the run's depth and bracket whose next move
+        is ply, or, for a run outside any bracket, the latest one of the note
+        at all (the tokenizer's bracket depth ends inside a long bracket)."""
+        cont = [v for v in vars_ if v["depth"] == run.depth
+                and (run.depth == 0 or v.get("bracket") == run.bracket)]
+        if cont and cont[-1]["next"] == ply:
+            return cont[-1]
+        if run.depth == 0 and vars_ and vars_[-1]["next"] == ply:
+            return vars_[-1]
+        return None
+
     def place_bare(self, L, run, block, vars_):
         """Place a note run that begins with a bare move (bare_lead) as the
         continuation of the variation, or of the main line, whose next move
         it is: only when the bare move is legal there and the whole reads
         cleanly. Returns True, or (the parent node tried, its decoding)."""
         cands = []
-        cont = [v for v in vars_ if v["depth"] == run.depth
-                and (run.depth == 0 or v.get("bracket") == run.bracket)]
-        if cont and cont[-1]["next"] == run.ply:
-            cands.append(cont[-1]["last"])
+        v = self.bare_parent(run, vars_, run.ply)
+        if v is not None:
+            cands.append(v["last"])
         if (run.depth == 0 and not L.broken and L.main_tok and run.start > L.main_tok[-1][1]
                 and run.ply == L.next_ply):
             cands.append(L.main_nodes[-1])
