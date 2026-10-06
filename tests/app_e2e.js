@@ -25,6 +25,7 @@
 //     moves after it change; removing the correction turns them back into
 //     decoded moves, in window.readerState, READER and the outlines on the page,
 //     without the page navigating; the correction is then made again and kept;
+//   - adds a variation by taps on the board, makes it longer and removes it;
 //   - corrects a diagram, joins a sequence to a line (connect) and starts a new
 //     line at a move (disconnect), each answered by a patch;
 //   - names a piece symbol and waits until the background batches ("Applying
@@ -413,6 +414,72 @@ async function run(browser, which) {
   await waitFrame((a) => { const c = window.READER.corrections.moves[a.key]; return c && c.san === a.alt; },
     { key: target.key, alt: flip });
   timing("single correction again (s)", now() - t);
+
+  // ---------------------------------------------------------------- a variation added on the board
+  // (taps on the board's squares, as pointer events in the reader's frame)
+  const boardTap = (sq) => inFrame((sq) => {
+    const svg = document.querySelector("#board svg.board"), r = svg.getBoundingClientRect();
+    const flip = svg.dataset.flip === "1", f = "abcdefgh".indexOf(sq[0]), row = 8 - parseInt(sq[1], 10);
+    const k = r.width / 375, x = r.left + (14 + ((flip ? 7 - f : f) + 0.5) * 45) * k;
+    const y = r.top + (1 + ((flip ? 7 - row : row) + 0.5) * 45) * k;
+    for (const type of ["pointerdown", "pointerup"])
+      svg.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y,
+        pointerId: 7, isPrimary: true, button: 0, pointerType: "mouse" }));
+  }, sq);
+  const newMove = (id) => inFrame((id) => {
+    // a legal move from a node's position that the line does not hold there
+    const n = window.READER.nodes[id], held = n.children.map((c) => window.READER.nodes[c].uci);
+    const m = CJ.legalMoves(n.fen).find((x) => held.indexOf(x[1]) < 0);
+    return m ? { san: m[0], uci: m[1] } : null;
+  }, id);
+  const branch = await inFrame((avoid) => {
+    const D = window.READER;
+    for (const lid of D.lineOrder) {
+      for (let cur = D.lines[lid].root; cur; ) {
+        const n = D.nodes[cur];
+        if (n.parent != null && n.key && n.fen && n.status === "ok" && n.key !== avoid) return { id: cur, key: n.key };
+        cur = n.children.find((c) => D.nodes[c].main) || null;
+      }
+    }
+    return null;
+  }, target.key);
+  check("the chapter has a move to branch from on the board", !!branch);
+  await inFrame((id) => { location.hash = "#node=" + id; }, branch.id);
+  await waitFrame((id) => window.readerState.nodeId === id, branch.id);
+  let mv = await newMove(branch.id);
+  await boardTap(mv.uci.slice(0, 2));
+  await boardTap(mv.uci.slice(2, 4));
+  await waitFrame(() => !!document.getElementById("bmadd"));
+  check("a move on the board that the line does not hold opens the chooser",
+    /Add a new variation/.test(await inFrame(() => document.getElementById("fix").innerText)));
+  t = now();
+  await inFrame(() => document.getElementById("bmadd").click());
+  await waitFrame((a) => {
+    const n = window.READER.nodes[window.readerState.nodeId];
+    return window.READER.corrections.added[a.key] && n && n.corrected === "added" && n.san === a.san;
+  }, { key: branch.key, san: mv.san });
+  timing("a variation added on the board, to the patch (s)", now() - t);
+  check("the app chooses the move added on the board", await stayed());
+  await shot("08_board_variation");
+  // a move from its end makes it longer, with no question
+  const added0 = await inFrame(() => window.readerState.nodeId);
+  mv = await newMove(added0);
+  await boardTap(mv.uci.slice(0, 2));
+  await boardTap(mv.uci.slice(2, 4));
+  await waitFrame((a) => {
+    const n = window.READER.nodes[window.readerState.nodeId], f = window.READER.corrections.added[a.key];
+    return f && f[0].san.length === 2 && n && n.corrected === "added" && n.san === a.san;
+  }, { key: branch.key, san: mv.san });
+  check("a move from the end of the variation makes it longer without a question",
+    await inFrame(() => document.getElementById("fix").hidden));
+  // its corrector removes it
+  await inFrame(() => document.getElementById("fixadded").click());
+  await waitFrame(() => !!document.getElementById("addrm"));
+  await inFrame(() => document.getElementById("addrm").click());
+  await waitFrame((k) => !window.READER.corrections.added[k] &&
+    !Object.values(window.READER.nodes).some((n) => n.corrected === "added"), branch.key);
+  check("removing the variation brings back the move it branched from", await inFrame((k) =>
+    window.READER.nodes[window.readerState.nodeId] && window.READER.nodes[window.readerState.nodeId].key === k, branch.key));
 
   // ---------------------------------------------------------------- a diagram
   const diag = await inFrame(() => {
