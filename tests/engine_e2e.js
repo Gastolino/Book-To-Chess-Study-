@@ -215,6 +215,39 @@ function serve(dir) {
     s = await state(page);
     check("a time limit stops the search", s.done && s.settings.limit === "t1", s);
 
+    // what the engine found is kept: a position shown again shows it at once, without a search,
+    // and so it does after the page loads again (the browser's IndexedDB)
+    await goLine(page, I.game);
+    await settled(page);
+    await goLine(page, I.mateB);
+    await settled(page);
+    t0 = Date.now();
+    await goLine(page, I.game);
+    await page.waitForFunction(() => { const s = window.engineState(); return s.cached && s.done && s.fen === window.readerState.fen; },
+      null, { timeout: 5000 });
+    out.timings["a kept analysis shows after (ms)"] = Date.now() - t0;
+    s = await state(page); v = await view(page);
+    check("a position analysed before shows its kept result at once, without searching",
+      s.cached && !s.searching && v.rows.length === 2 && /kept from an earlier analysis/.test(v.status), { s, v });
+    await page.reload();
+    await page.waitForFunction(() => window.READER && window.readerState && window.engineState);
+    await page.click("#bcpu");
+    await goLine(page, I.game);
+    await page.waitForFunction(() => { const s = window.engineState(); return s.cached && s.lines.length === 2; }, null, { timeout: 20000 });
+    check("the kept analysis survives a reload of the page", true);
+    const kept = await page.evaluate(() => new Promise((res) => {
+      const q = indexedDB.open("chessbook-analysis");
+      q.onsuccess = () => { const c = q.result.transaction("positions").objectStore("positions").count(); c.onsuccess = () => res(c.result); };
+      q.onerror = () => res(-1);
+    }));
+    check("the analysis cache is kept in the browser's IndexedDB", kept >= 2, kept);
+    // Deeper always searches
+    const d0 = (await state(page)).depth;
+    await settled(page, 90000);
+    await page.click("#evdeeper");
+    await page.waitForFunction((d) => { const s = window.engineState(); return s.done && !s.cached && s.depth > d; }, d0, { timeout: 90000 });
+    check("Deeper searches beyond the kept result", true);
+
     // turning analysis off stops it and ends the worker
     await page.click("#bcpu");
     s = await state(page); v = await view(page);
