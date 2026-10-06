@@ -100,6 +100,9 @@ async function device(browser, name, opts) {
 }
 
 async function openLibrary(d) {
+  // the library, not the book that was open (the app goes back to it otherwise, as after the
+  // system closed it): the Library button forgets that record first, and so does this
+  await d.page.evaluate(() => { try { localStorage.removeItem("chessbook-session"); } catch (e) { /* no page yet */ } }).catch(() => {});
   await d.page.goto(siteUrl);
   await d.page.waitForFunction(() => document.body.classList.contains("library"), null, { timeout: 60000 });
 }

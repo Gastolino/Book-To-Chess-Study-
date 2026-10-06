@@ -796,6 +796,7 @@ async function run(browser, which) {
       const k = localStorage.key(i);
       if (k && k.startsWith("chessbook-library:")) localStorage.removeItem(k);
     }
+    localStorage.removeItem("chessbook-session");   // (the page would go back to the open book otherwise)
     const q = indexedDB.deleteDatabase("chessbook-library");
     q.onsuccess = q.onerror = () => resolve();
     setTimeout(resolve, 10000);
