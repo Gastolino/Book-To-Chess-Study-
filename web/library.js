@@ -1150,7 +1150,8 @@ const LIB = (() => {
   // The top bar's words for a book opened from its stored reading.
   api.openedIn = function () {
     const t0 = api.current && api.current.t0;
-    return t0 ? "opened from your library in " + Math.max(1, Math.round((Date.now() - t0) / 1000)) + " seconds"
+    const k = Math.max(1, Math.round((Date.now() - (t0 || 0)) / 1000));
+    return t0 ? "opened from your library in " + k + (k === 1 ? " second" : " seconds")
               : "opened from your library";
   };
 

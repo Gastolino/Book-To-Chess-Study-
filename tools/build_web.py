@@ -415,6 +415,7 @@ worker.onmessage = (e) => {
     openChapter = "";
     status("Opening the book.");
     workSay("Opening the book", null);
+    wantOpen = name;
     worker.postMessage({ type: "chapter", name,
                          hash: place.node || place.view ? placeHash(place) : "#page=" + place.page });
   } else if (m.type === "status") {
@@ -433,6 +434,7 @@ worker.onmessage = (e) => {
   } else if (m.type === "reopen") {
     prepared = {};
     // the final reading changed the chapters: the open one opens again
+    wantOpen = m.chapter;
     worker.postMessage({ type: "chapter", name: m.chapter, small: window.matchMedia("(max-width: 700px)").matches });
   } else if (m.type === "patch") {
     prepared = {};
@@ -441,7 +443,9 @@ worker.onmessage = (e) => {
     PICS.drawn(m);
   } else if (m.type === "page") {
     if (m.prepared) { if (!loading) prepared[m.name] = m.html; return; }
-    if (m.quiet) { openChapter = m.name; return; }
+    if (m.quiet) return;
+    // a page asked for before the last request (the reader turned on meanwhile) does not show
+    if (wantOpen && m.name !== wantOpen) return;
     working(false);
     $("note").textContent = resumeNote || outdatedNote || "";
     resumeNote = "";
@@ -486,7 +490,7 @@ let more = [], moreDone = 0, moreBusy = false, openChapter = "";
 // The chapters of the open book ({file, start, end}), the chapters built ahead of the page turn
 // that reaches them (file -> HTML), the place to open after Read again, and the words of a
 // stored reading that other reading code made.
-let bookChapters = [], prepared = {}, againPlace = null, resumeOwn = false, outdatedNote = "";
+let bookChapters = [], prepared = {}, againPlace = null, resumeOwn = false, outdatedNote = "", wantOpen = "";
 function chapterOf(p) {
   const c = bookChapters.find((c) => c.start <= p && p <= c.end);
   return c ? c.file : null;
@@ -522,6 +526,7 @@ function goBack() {
   const p = backPlace;
   hideBack();
   working(true);
+  wantOpen = p.chapter;
   worker.postMessage({ type: "chapter", name: p.chapter, hash: placeHash(p) });
 }
 $("backbtn").addEventListener("click", () => {
@@ -708,7 +713,10 @@ window.addEventListener("message", (e) => {
     delete prepared[e.data.open];
     openChapter = e.data.open;
     hideBack();
+    $("note").textContent = resumeNote || outdatedNote || "";
+    resumeNote = "";
     show(e.data.open, e.data.hash, html);
+    wantOpen = e.data.open;
     worker.postMessage({ type: "chapter", name: e.data.open, quiet: true });
     return;
   }
@@ -724,6 +732,7 @@ window.addEventListener("message", (e) => {
   status(e.data.open === "index.html" ? "Opening the contents." :
     "Opening chapter " + parseInt(e.data.open.slice(2), 10) +
     ". The first opening of a chapter takes a few seconds.");
+  wantOpen = e.data.open;
   worker.postMessage(e.data.open === "index.html"
     ? { type: "index", hash: e.data.hash }
     : { type: "chapter", name: e.data.open, hash: e.data.hash,

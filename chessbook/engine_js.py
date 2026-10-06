@@ -421,7 +421,9 @@ function setAnalysis(on){
     evStop();
     EV.fen = null; EV.lines = []; EV.ran = null; EV.failed = "";
     $("mevalnum").textContent = "";
-    evArrow(); evRender(); evStatus();
+    // at once, not at the next frame: the bar and its figure go with the switch
+    if (EV.raf) { cancelAnimationFrame(EV.raf); EV.raf = 0; }
+    evArrow(); evRenderNow(); evStatus();
     if (!$("evset").hidden) toggleSettings(false);
     layoutPanel(false);
     return;

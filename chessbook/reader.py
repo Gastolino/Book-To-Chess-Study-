@@ -596,6 +596,7 @@ const WIN = 10;
 const urls = {};            // page -> object URL of a picture the app sent (a Blob)
 const waitCrop = {};        // page -> diagram crops waiting for its picture
 const win = (p) => Math.floor((p - 1) / WIN);
+let lateView = null;        // the view the app gave back, applied again when the page's picture comes
 function picSrc(p){
   const v = IMG[p];
   if (!v) return null;
@@ -648,7 +649,15 @@ function picturesCame(pics){
     IMG[p] = pics[k];
     delete imgCache[p];
     n++;
-    if (p === S.page) showPicture(p);
+    if (p === S.page) {
+      showPicture(p);
+      if (lateView) {
+        const v = lateView;
+        lateView = null;
+        const img = $("pageimg"), again = () => requestAnimationFrame(() => applyView(v));
+        if (img.complete) again(); else img.addEventListener("load", again, {once: true});
+      }
+    }
     for (const f of waitCrop[p] || []) f();
     delete waitCrop[p];
   }
@@ -1791,6 +1800,8 @@ function init(){
     pendingView = null;
     applyView(v);
     window.addEventListener("load", () => applyView(v), {once: true});
+    // in the app the picture of the page comes after the page has loaded: once more then
+    if (window.CHESSBOOK_APP && !picSrc(S.page)) lateView = v;
   }
   selNote();
   initReview();
