@@ -768,3 +768,135 @@ def test_a_run_that_replaces_only_the_last_move_is_no_variation_across_a_diagram
     assert not b.variation_across_hold(line, SimpleNamespace(ply=None))
     b.reads_at = lambda L, run, P: False
     assert not b.variation_across_hold(line, SimpleNamespace(ply=29))
+
+
+# ------------------------------------------------------------------ bare moves after a comment
+
+def _bare_book(notes, main=True):
+    """A game with notes between its moves; the notes may print a reply
+    without its move number after a comment."""
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(1)
+    b.line("1.d4 d5 2.c4 e6 3.Nc3 Nf6 4.cxd5 exd5 5.Bg5 Be7 6.e3 O-O", bold=True)
+    for n in notes:
+        b.line(n)
+    b.prose(1)
+    if main:
+        b.line("7.Bd3 Nbd7 8.Qc2 Re8", bold=True)
+    b.prose(2)
+    return b
+
+
+def _var(book, *sans):
+    """The node reached by the variation sans from the game's root."""
+    nodes = book["nodes"]
+    game = _line_with(book, "Bg5")
+    nid = game["root"]
+    for san in sans:
+        kids = {nodes[c]["san"]: c for c in nodes[nid]["children"]}
+        assert san in kids, f"{san} is not among {list(kids)} after {nodes[nid]['san']}"
+        nid = kids[san]
+    return nid
+
+
+def test_bare_reply_after_a_comment_goes_on_with_the_variation(tmp_path):
+    """"7.Nf3 Every swap helps Black. Nbd7 8.Qc2 Re8 9.h3": the reply
+    printed without its number after the comment is the variation's next
+    move, confirmed by the numbered run after it, which continues the
+    numbering and reads from there. It goes with the variation even though
+    "8.Qc2 Re8 9.h3" would also read as a variation of the game's move 8."""
+    book = _build(tmp_path, _bare_book([
+        "A good alternative is 7.Nf3 Every swap helps Black, so White",
+        "retreats. Nbd7 8.Qc2 Re8 9.h3 and both sides are fine."]))
+    nodes = book["nodes"]
+    h3 = nodes[_var(book, *QGD, "Nf3", "Nbd7", "Qc2", "Re8", "h3")]
+    assert h3["number"] == 9 and not h3["main"]
+    nbd7 = _var(book, *QGD, "Nf3", "Nbd7")
+    assert nodes[nbd7]["number"] == 7 and nodes[nbd7]["black"] and nodes[nbd7]["status"] == "ok"
+    (m,) = [m for p in book["pages"] for m in p["marks"] if m["node"] == nbd7]
+    assert m["raw"] == "Nbd7" and m["status"] == "ok"
+    game = _line_with(book, "Bg5")
+    assert _sans(book, game) == QGD + ["Bd3", "Nbd7", "Qc2", "Re8"]
+    assert not book["unattached"]
+
+
+def test_bare_reply_in_the_main_font_goes_on_with_the_game(tmp_path):
+    """The same in the game itself: the reply in the notes' font after a
+    comment, then the numbered moves in the move font."""
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(1)
+    b.line("1.d4 d5 2.c4 e6 3.Nc3 Nf6 4.cxd5 exd5 5.Bg5 Be7 6.e3 O-O 7.Bd3", bold=True)
+    b.line("Every swap helps Black, so White agrees to the loss of time and")
+    b.line("retreats. Nbd7")
+    b.line("8.Qc2 Re8 9.Nf3 Nf8", bold=True)
+    b.prose(2)
+    book = _build(tmp_path, b)
+    game = _line_with(book, "Bg5")
+    assert _sans(book, game) == QGD + ["Bd3", "Nbd7", "Qc2", "Re8", "Nf3", "Nf8"]
+    assert game["status"] == "ok" and not book["unattached"]
+
+
+def test_bare_move_after_a_threat_cue_stays_text(tmp_path):
+    """"Idea: g5" gives a plan, not a move played, even when it is legal and
+    the numbered run after it would read on from it."""
+    book = _build(tmp_path, _bare_book([
+        "A good alternative is 6...h6 7.Bh4 Idea: g5 trapping the bishop.",
+        "8.Nf3 Nbd7 9.Bd3 and White is fine."]))
+    nodes = book["nodes"]
+    bh4 = nodes[_var(book, *QGD[:11], "h6", "Bh4")]
+    assert not [c for c in bh4["children"] if nodes[c]["san"] == "g5"]
+    assert not [m for p in book["pages"] for m in p["marks"] if m["raw"] == "g5"]
+    assert not [n for n in nodes.values() if n["san"] == "g5"]
+
+
+def test_bare_move_after_a_colon_ends_a_variation_in_a_bracket(tmp_path):
+    """"(the careless 7.Bxf6? walks into a trick ...: Bxf6 picking off the
+    bishop)": the move after the colon, alone in its sentence, ends the
+    variation of the bracket; the moves after the bracket go on with the
+    variation it interrupted."""
+    book = _build(tmp_path, _bare_book([
+        "Also possible is 7.Nf3 (the careless 7.Bxf6? walks into a trick",
+        "every player should know: Bxf6 picking off the bishop) 7...Nbd7",
+        "8.Bd3 Re8 and both sides are fine."]))
+    nodes = book["nodes"]
+    bxf6 = nodes[_var(book, *QGD, "Bxf6", "Bxf6")]
+    assert bxf6["number"] == 7 and bxf6["black"] and not bxf6["children"]
+    bd3 = nodes[_var(book, *QGD, "Nf3", "Nbd7", "Bd3")]
+    assert bd3["number"] == 8
+
+
+def test_bare_move_the_moves_do_not_confirm_is_an_item_to_join(tmp_path):
+    """When the numbered run after the bare move does not read cleanly from
+    it (here the text lacks Black's ninth move), the bare move stands in no
+    line, with the move the text prints it after, and the reader can join it
+    there: the moves after it then go on from it."""
+    tmp = tmp_path
+    b = _bare_book([
+        "A good alternative is 7.Nf3 Every swap helps Black, so White",
+        "retreats. Nbd7 8.Qc2 Re8 9.Bd3 10.O-O Nf8 and so on."])
+    pdf = b.save(tmp / "bare.pdf")
+    state = {}
+    book = build_book(pdf, output_dir=tmp / "out", books_dir=tmp / "books", state=state)
+    nodes = book["nodes"]
+    nf3 = _var(book, *QGD, "Nf3")
+    assert not nodes[nf3]["children"]
+    (u,) = [u for u in book["unattached"] if u["text"] == "Nbd7"]
+    assert u["after"] == nodes[nf3]["key"] and "no move number" in u["reason"]
+    assert "7.Nf3" in u["reason"]
+    (m,) = [m for p in book["pages"] for m in p["marks"] if m["raw"] == "Nbd7" and m.get("seq") == u["key"]]
+    assert m["status"] == "unattached"
+    # the pencil join: "Continue the line after 7.Nf3"
+    fix = {"connect": {u["key"]: {"after": u["after"]}}}
+    live.apply(state, book, fix)
+    nodes = book["nodes"]
+    nbd7 = nodes[_var(book, *QGD, "Nf3", "Nbd7")]
+    assert nbd7["corrected"] == "connected" and nbd7["number"] == 7 and nbd7["black"]
+    bd3 = nodes[_var(book, *QGD, "Nf3", "Nbd7", "Qc2", "Re8", "Bd3")]
+    (gap,) = bd3["children"]
+    assert nodes[gap]["status"] == "failed" and nodes[gap]["raw"] == "O-O"
+    assert not [u for u in book["unattached"] if u["text"] == "Nbd7"]
+    assert _comparable(book) == _comparable(_fresh(tmp, pdf, fix))
