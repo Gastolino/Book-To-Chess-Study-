@@ -43,15 +43,20 @@ def test_diagram_ids(diagrams):
     assert [i for i in ids if i.startswith("p201-")] == ["p201-1", "p201-2", "p201-3"]
 
 
-def test_defaults_exclude_front_matter(defaults):
+def test_defaults_include_front_matter(defaults, diagrams):
+    """The front matter is read like the rest of the book: every page is in,
+    and its pictures are sorted by the rules of the chapters' pictures."""
     assert defaults["version"] == 1
-    assert defaults["pages"]["exclude"] == [[1, 13]]
+    assert defaults["pages"]["exclude"] == []
     sel = sl.Selection(None, defaults)
-    assert not any(sel.page_selected(p) for p in range(1, 14))
-    assert all(sel.page_selected(p) for p in range(14, 403))
+    assert all(sel.page_selected(p) for p in range(1, 403))
     assert "p2-1" in defaults["diagrams"]["exclude"]          # the publisher's logo
     assert not sel.diagram_selected("p2-1")
-    assert "pages 1 to 13" in defaults["note"]
+    assert sl.picture_kinds(diagrams, 14)["p2-1"] == "partial"     # no whole board
+    assert "pages 1 to" not in defaults["note"]
+    # the reader's own choice still leaves the front matter out
+    mine = sl.Selection({"pages": {"exclude": [[1, 13]]}}, defaults)
+    assert not any(mine.page_selected(p) for p in range(1, 14)) and mine.page_selected(14)
 
 
 def test_defaults_exclude_partial_boards(defaults, diagrams, structure):
@@ -82,8 +87,10 @@ def test_defaults_exclude_partial_boards(defaults, diagrams, structure):
 def test_include_overrides_defaults(defaults):
     sel = sl.Selection({"diagrams": {"include": ["p15-2", "p2-1"]}}, defaults)
     assert sel.diagram_selected("p15-2")                       # include beats default exclude
-    assert not sel.diagram_selected("p2-1")                    # its page is still excluded
-    assert not sel.page_selected(5)                            # pages fall back to defaults
+    assert sel.diagram_selected("p2-1")
+    assert sel.page_selected(5)                                # pages fall back to defaults
+    sel = sl.Selection({"pages": {"exclude": [[1, 13]]}, "diagrams": {"include": ["p2-1"]}}, defaults)
+    assert not sel.diagram_selected("p2-1")                    # its page is excluded
     assert not sel.diagram_selected("p28-1")                   # other defaults still apply
     sel = sl.Selection({"pages": {"exclude": [[200, 201]]},
                         "diagrams": {"exclude": ["p250-1"], "include": ["p201-1"]}}, defaults)
@@ -99,9 +106,9 @@ def test_editing_helpers(defaults):
     sel = sl.Selection(None, defaults)
     sel.exclude_pages(398, 402)
     sel.exclude_pages(14)
-    assert sel.to_dict()["pages"]["exclude"] == [[1, 14], [398, 402]]
+    assert sel.to_dict()["pages"]["exclude"] == [[14, 14], [398, 402]]
     sel.include_pages(400)
-    assert sel.to_dict()["pages"]["exclude"] == [[1, 14], [398, 399], [401, 402]]
+    assert sel.to_dict()["pages"]["exclude"] == [[14, 14], [398, 399], [401, 402]]
     sel.set_diagram("p15-2", True)
     sel.set_diagram("p201-2", False)
     assert sel.diagram_selected("p15-2") and not sel.diagram_selected("p201-2")

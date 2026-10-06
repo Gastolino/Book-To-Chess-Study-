@@ -19,10 +19,8 @@ turned on; without it the reader says that the engine is not installed.
 import argparse
 import json
 import shutil
-import struct
 import sys
 import zipfile
-import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +40,8 @@ SHELL = """<!doctype html>
 <title>Chess Book Reader</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="icon-32.png" sizes="32x32" type="image/png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Chess books">
@@ -57,7 +57,7 @@ body{margin:0;display:flex;flex-direction:column}
 #drop .big{font-size:17px;font-weight:500;color:var(--fg)}
 #drop .small{font-size:13px;color:var(--muted);margin-top:6px}
 #file{position:absolute;left:-9999px}
-#status{margin-top:20px;font-size:13px;color:var(--muted);min-height:1.5em;
+#status{margin-top:12px;font-size:13px;color:var(--muted);min-height:1.5em;
   font-variant-numeric:tabular-nums}
 #status.error{color:var(--fail)}
 #resume{margin:28px 0 0;font-size:15px;color:var(--fg)}
@@ -65,21 +65,34 @@ body{margin:0;display:flex;flex-direction:column}
 #resume button:hover{text-decoration:underline}
 #resume[hidden]{display:none}
 body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
-#bar{height:1px;background:var(--line);margin-top:8px;position:relative;overflow:hidden}
-#bar i{position:absolute;left:0;top:0;bottom:0;width:30%;background:var(--accent);
+/* The sign that the app is at work: the open book whose page turns (chessbook/style.py), over a
+   thin bar that fills as far as the work has come where the app knows it, and otherwise carries
+   a sliding segment; the words of the work go under it. In the reader, the small book stands at
+   the right of the top bar, over the same thin line along the bar's foot. */
+#loader{display:none;margin-top:28px}
+#loader.on{display:block}
+#loader .bookicon{width:88px;height:auto;margin:0 auto 14px}
+#bar{height:2px;background:var(--line);position:relative;overflow:hidden}
+#bar i,#topbar i{position:absolute;left:0;top:0;bottom:0;width:30%;background:var(--accent);
   animation:run 1.4s linear infinite;display:none}
-#bar.on i{display:block}
+#bar b,#topbar b{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--accent);display:none;
+  transition:width .3s ease-out}
+#bar.on:not(.det) i,#topbar.on:not(.det) i{display:block}
+#bar.on.det b,#topbar.on.det b{display:block}
 @keyframes run{from{left:-30%}to{left:100%}}
+@media (prefers-reduced-motion:reduce){#bar i,#topbar i{animation-duration:4s}}
+#busy{display:inline-flex;align-items:center;justify-content:center;width:26px;height:18px;
+  margin:-2px -4px -2px 0;visibility:hidden;align-self:center;padding:0}
+#busy.on{visibility:visible}
+#busy .bookicon{width:24px;height:auto}
 #view{flex:1;border:0;width:100%;display:none}
+iframe.view{flex:1;border:0;width:100%}
 #top{display:none;flex-wrap:wrap;align-items:baseline;gap:4px 20px;padding:10px 16px;
   border-bottom:1px solid var(--line);font-size:13px;color:var(--muted);position:relative}
 #note{flex-basis:100%}
 #note:empty{display:none}
 #note.error{color:var(--fail)}
 #topbar{position:absolute;left:0;right:0;bottom:-1px;height:1px;overflow:hidden}
-#topbar i{position:absolute;top:0;bottom:0;width:30%;background:var(--accent);
-  animation:run 1.4s linear infinite;display:none}
-#topbar.on i{display:block}
 #top button{font:inherit;color:var(--fg);background:none;border:0;padding:0;cursor:pointer}
 #top button:hover{text-decoration:underline}
 #top .gap{flex:1}
@@ -126,10 +139,11 @@ body.library #drop .small{max-width:46em}
 }
 </style></head>
 <body>
-<div id="top"><span id="took"></span><span class="gap"></span>
+<div id="top"><span id="took"></span><button id="backbtn" type="button" hidden></button><span class="gap"></span>
 <button id="again" type="button" hidden>Read again</button>
 <button id="another" type="button">Open another book</button>
-<span id="note" role="status"></span><div id="topbar"><i></i></div></div>
+<button id="busy" type="button" aria-label="What the program is doing" title="What the program is doing">__BOOK_SMALL__</button>
+<span id="note" role="status"></span><div id="topbar"><i></i><b></b></div></div>
 <main id="start">
 <h1>Chess Book Reader</h1>
 <div id="intro">
@@ -149,9 +163,9 @@ reads it once, and every device you sign in on opens it at once.</p>
 <div class="small">or click to choose a PDF file</div></div>
 <input id="file" type="file" accept="application/pdf,.pdf,.chessbook,application/zip,.zip">
 <p id="resume" hidden><span></span><button type="button">Library</button></p>
+<div id="loader" class="on">__BOOK__<div id="bar" class="on" role="progressbar" aria-label="Progress"><i></i><b></b></div></div>
 <div id="status">Preparing the reader. The first visit downloads about 40 MB; later visits
 start at once.</div>
-<div id="bar" class="on"><i></i></div>
 </main>
 <iframe id="view" title="Book reader"></iframe>
 <script src="library.js"></script>
@@ -265,64 +279,183 @@ function status(text, error) {
   el.textContent = text;
   el.classList.toggle("error", !!error);
 }
+// One sign of work: the book and the bar on the start page, the small book and the line along the
+// top bar's foot in the reader. It shows while a request is on its way (working), while the book
+// is read (loading), while pictures of pages are drawn and while the reading is saved. The words
+// of the work are kept, for a tap on the small book.
+let workingNow = false, saving = false, workWords = "", fraction = null;
 function working(on) {
-  $("bar").classList.toggle("on", on);
-  $("topbar").classList.toggle("on", on || loading);
+  workingNow = !!on;
+  indicate();
 }
+function indicate() {
+  let drawing = false;
+  try { drawing = PICS.busy(); } catch (e) { drawing = false; }   // (before PICS exists)
+  const on = workingNow || loading || saving || drawing;
+  const startOn = $("start").style.display !== "none" && (workingNow || busy || !ready);
+  $("bar").classList.toggle("on", startOn);
+  $("loader").classList.toggle("on", startOn);
+  $("topbar").classList.toggle("on", on);
+  $("busy").classList.toggle("on", on);
+  const det = fraction !== null && fraction >= 0 && fraction <= 1;
+  for (const id of ["bar", "topbar"]) {
+    $(id).classList.toggle("det", det);
+    if (det) $(id).querySelector("b").style.width = (100 * fraction).toFixed(1) + "%";
+  }
+  if (det) $("bar").setAttribute("aria-valuenow", String(Math.round(100 * fraction)));
+  else $("bar").removeAttribute("aria-valuenow");
+}
+// how far the work has come, from its words: "Reading the pages: 12 of 402" (null: not known)
+function progressOf(text) {
+  const m = /(\d+) of (\d+)/.exec(text || "");
+  return m && +m[2] > 0 ? Math.min(1, +m[1] / +m[2]) : null;
+}
+function workSay(text, frac) {
+  workWords = text || workWords;
+  fraction = frac === undefined ? progressOf(text) : frac;
+  indicate();
+}
+// the words of the work now, for a tap on the small book
+function workNow() {
+  const parts = [];
+  if (loading) parts.push($("took").textContent || workWords);
+  let w = null;
+  try { w = PICS.drawing(); } catch (e) { w = null; }
+  if (w) parts.push("Drawing pages " + w[0] + " to " + w[1] + ".");
+  if (saving) parts.push("Saving the program's reading to your library.");
+  if (!parts.length && workingNow) parts.push(workWords);
+  return parts.filter(Boolean).join(" ").replace(/([^.])( Drawing| Saving)/g, "$1.$2");
+}
+// a tap shows them in the status line itself for a few seconds (a second line would repeat it and
+// push the reader down), unless the reading has written newer words there meanwhile
+let busyTimer = 0;
+$("busy").addEventListener("click", () => {
+  const el = $("took"), before = el.textContent;
+  const words = workNow() || "The program has nothing to do now.";
+  el.textContent = words;
+  clearTimeout(busyTimer);
+  busyTimer = setTimeout(() => { if (el.textContent === words) el.textContent = before; }, 4000);
+});
 // The flag goes first in the head, so that the page's own script sees it
 // while it starts (the stored corrections it sends, the words it chooses).
 const FLAG = "<script>window.CHESSBOOK_APP=true;window.CHESSBOOK_ENGINE=" + JSON.stringify(CFG.engine) + ";<" + "/script>";
+// A page of the reader shows in a fresh frame. While a reader shows, the next one loads in a
+// hidden frame of the same size and takes its place once it has shown its page (or after a
+// short while), so that turning from one chapter to the next shows no empty page between them.
+let swapping = null;
 function show(name, hash, htmlText) {
   const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</body>", NAV + "</body>");
-  const blob = new Blob([page], { type: "text/html" });
-  if (current) URL.revokeObjectURL(current);
-  current = URL.createObjectURL(blob);
-  $("view").src = current + (hash || "");
+  const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
+  const old = $("view");
+  const fresh = document.createElement("iframe");
+  fresh.title = "Book reader";
+  fresh.className = "view";
+  if (swapping) swapping.abandon();
+  const before = current;
+  current = url;
+  if (old.style.display !== "block" || name === "index.html" || openChapter === "index.html") {
+    fresh.id = "view";
+    fresh.style.display = "block";
+    old.replaceWith(fresh);
+    fresh.src = url + (hash || "");
+    if (before) URL.revokeObjectURL(before);
+  } else {
+    const r = old.getBoundingClientRect();
+    fresh.style.cssText = "display:block;position:fixed;visibility:hidden;left:" + r.left + "px;top:" + r.top +
+      "px;width:" + r.width + "px;height:" + r.height + "px;flex:none";
+    old.after(fresh);
+    let done = false, timer = 0;
+    const swap = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      swapping = null;
+      fresh.style.cssText = "display:block";
+      old.remove();
+      fresh.id = "view";
+      if (before) URL.revokeObjectURL(before);
+    };
+    swapping = { frame: fresh, swap, abandon: () => { done = true; clearTimeout(timer); fresh.remove(); URL.revokeObjectURL(url); swapping = null; } };
+    // the reader says when its page shows; a reader that says nothing takes its place on load
+    fresh.addEventListener("load", () => { timer = setTimeout(swap, 400); }, { once: true });
+    fresh.src = url + (hash || "");
+  }
   $("start").style.display = "none";
-  $("view").style.display = "block";
   $("top").style.display = "flex";
 }
 worker.onmessage = (e) => {
   const m = e.data;
+  // the reading is saved to the library after the book is read: the sign of work shows meanwhile
+  if (m.type === "done" && !m.restored && LIB.on && LIB.current && !LIB.current.ephemeral) saving = true;
+  if (m.type === "reading" || (m.type === "error" && m.during === "save")) { saving = false; indicate(); }
   // the library's own messages (the stored reading, the cover) end here
   if (LIB.message(m)) return;
-  if (m.type === "progress") status(m.text);
-  else if (m.type === "ready") {
+  if (m.type === "progress") {
+    status(m.text);
+    // the steps of starting: Python, then the libraries
+    workSay(m.text, !ready ? (/^Starting Python/.test(m.text) ? 0.15 : /^Loading the PDF/.test(m.text) ? 0.45 : null)
+                         : undefined);
+  } else if (m.type === "ready") {
     ready = true;
-    if (!busy) $("bar").classList.remove("on");
+    fraction = null;
+    working(busy);
     const choose = LIB.on ? "Ready. Open a book or add one." : "Ready. Choose a book.";
     if (!busy) status(m.boards === false ? choose + " This browser could not load board reading, so " +
       "the program reads only the diagrams that the book prints in a chess font." : choose);
   } else if (m.type === "index") {
-    // the contents, as soon as the chapters are known: the reading goes on
-    // (a book of the library opened from its stored reading is read already)
+    // the chapters are known: the book opens at its first page (a new book), or where the
+    // reader was (the library's place, the app coming back, Read again), while the reading
+    // goes on (a book of the library opened from its stored reading is read already)
     busy = false;
     loading = !m.restored;
-    $("bar").classList.remove("on");
+    bookChapters = m.chapters || [];
+    PICS.book(LIB.on && LIB.current && !LIB.current.ephemeral ? LIB.current.id : null, m.pages);
+    prepared = {};
     $("took").textContent = m.restored ? LIB.openedIn() : "Reading the book";
-    openChapter = "index.html";
-    show("index.html", "", m.html);
-    working(false);
-    if (resuming) resumed(m);
+    outdated(m.outdated);
+    const words = resuming ? resumed(m) : null;
+    let place = againPlace || (LIB.on ? LIB.takePlace() : null) || (words !== null || resumeOwn ? SESSION.place() : null);
+    againPlace = null; resumeOwn = false;
+    let name = place && place.page ? chapterOf(place.page) || place.chapter : null;
+    if (!name) { place = { page: 1 }; name = m.first || chapterOf(1); }
+    openChapter = "";
+    status("Opening the book.");
+    workSay("Opening the book", null);
+    wantOpen = name;
+    worker.postMessage({ type: "chapter", name,
+                         hash: place.node || place.view ? placeHash(place) : "#page=" + place.page });
   } else if (m.type === "status") {
     if (loading) $("took").textContent = (resumeWords ? resumeWords + ". " : "") + m.text;
+    workSay(m.text);
+    if ($("start").style.display !== "none") status(m.text);
   } else if (m.type === "thumbs") {
     if (openChapter === "index.html") toView({ thumbs: m.thumbs });
   } else if (m.type === "done") {
     loading = false;
+    prepared = {};
     if (!m.restored) $("took").textContent = (resumeWords ? resumeWords + ", " : "") + "read in " + Math.round(m.seconds) + " seconds";
     resumeWords = "";
     working(false);
     if (m.html && openChapter === "index.html") show("index.html", "", m.html);
   } else if (m.type === "reopen") {
+    prepared = {};
     // the final reading changed the chapters: the open one opens again
+    wantOpen = m.chapter;
     worker.postMessage({ type: "chapter", name: m.chapter, small: window.matchMedia("(max-width: 700px)").matches });
   } else if (m.type === "patch") {
+    prepared = {};
     patched(m);
+  } else if (m.type === "drawn") {
+    PICS.drawn(m);
   } else if (m.type === "page") {
+    if (m.prepared) { if (!loading) prepared[m.name] = m.html; return; }
+    if (m.quiet) return;
+    // a page asked for before the last request (the reader turned on meanwhile) does not show
+    if (wantOpen && m.name !== wantOpen) return;
     working(false);
-    $("note").textContent = resumeNote || "";
+    $("note").textContent = resumeNote || outdatedNote || "";
     resumeNote = "";
+    if (m.name !== "index.html") hideBack();
     openChapter = m.name;
     show(m.name, m.hash, m.html);
   } else if (m.type === "error") {
@@ -360,6 +493,152 @@ worker.onerror = (e) => {
 // for them is on its way at a time: a correction made meanwhile (which
 // answers with the chapters still pending) does not start a second chain.
 let more = [], moreDone = 0, moreBusy = false, openChapter = "";
+// The chapters of the open book ({file, start, end}), the chapters built ahead of the page turn
+// that reaches them (file -> HTML), the place to open after Read again, and the words of a
+// stored reading that other reading code made.
+let bookChapters = [], prepared = {}, againPlace = null, resumeOwn = false, outdatedNote = "", wantOpen = "";
+function chapterOf(p) {
+  const c = bookChapters.find((c) => c.start <= p && p <= c.end);
+  return c ? c.file : null;
+}
+// The reader is near the end (or the start) of its chapter: the next (or previous) chapter is
+// built now, so that the page turn shows it at once. Not while the book is read: its reading
+// changes from one moment to the next.
+let prepareTimer = 0;
+function prepare(w) {
+  clearTimeout(prepareTimer);
+  if (loading || !w || !w.page) return;
+  // the pictures of the page shown come first: the worker does one thing at a time
+  if (PICS.busy()) { prepareTimer = setTimeout(() => prepare(w), 400); return; }
+  const near = w.page >= w.end - 1 ? w.end + 1 : w.page <= w.start + 1 ? w.start - 1 : 0;
+  const name = near ? chapterOf(near) : null;
+  if (!name || prepared[name] || name === openChapter) return;
+  prepared[name] = "";
+  worker.postMessage({ type: "chapter", name, prepare: true });
+}
+// "Back to page 31" in the top bar while the contents show
+let backPlace = null;
+function showBack() {
+  let v = null;
+  try { const w = $("view").contentWindow; v = w && w.readerView ? w.readerView() : null; } catch (e) { v = null; }
+  if (!v || !v.page || !/^ch\d+\.html$/.test(openChapter)) return;
+  backPlace = { chapter: openChapter, page: v.page, node: v.node || null, view: v };
+  $("backbtn").textContent = "Back to page " + (v.label || v.page);
+  $("backbtn").hidden = false;
+}
+function hideBack() { $("backbtn").hidden = true; backPlace = null; }
+function goBack() {
+  if (!backPlace) return;
+  const p = backPlace;
+  hideBack();
+  working(true);
+  wantOpen = p.chapter;
+  worker.postMessage({ type: "chapter", name: p.chapter, hash: placeHash(p) });
+}
+$("backbtn").addEventListener("click", () => {
+  if (history.state && history.state.contents) history.back(); else goBack();
+});
+window.addEventListener("popstate", () => { if (openChapter === "index.html" && backPlace) goBack(); });
+// A stored reading that other reading code made opens all the same; Read again reads the book
+// with the program of today, keeping the corrections, the bookmarks and the place.
+function outdated(why) {
+  outdatedNote = why === "state"
+    ? "This copy of the book was read by an earlier version of the program: it shows the book, and corrections need it read again."
+    : why === "code" ? "An improved reading is available." : "";
+  if (why) $("again").hidden = false;
+}
+
+// The pictures of the pages, ten pages at a time (a window: pages 1 to 10, 11 to 20, ...). The
+// reader says which page it shows; the window of that page comes first, then the one ahead and
+// the one behind. Each picture comes from the device's store when it holds it, and is drawn by
+// the worker otherwise (one request per window), then kept in the store for the next time. The
+// page keeps the pictures of those three windows only.
+const PICS = (() => {
+  const WIN = 10;
+  let id = null, pages = 0, size = "large", cache = new Map(), want = null, client = null;
+  let queue = [], busyWin = null, busyFull = false, gen = 0, drawT0 = 0;
+  const win = (p) => Math.floor((p - 1) / WIN);
+  const range = (w) => { const out = []; for (let p = w * WIN + 1; p <= Math.min(pages, w * WIN + WIN); p++) out.push(p); return out; };
+  const stats = { draws: 0, drawn: 0, stored: 0, delivered: 0, drawMs: 0, storeMs: 0, storeReads: 0 };
+  window.pictureStats = stats;
+  function deliver(got) {
+    if (!client || !want) return;
+    const out = {};
+    let n = 0;
+    for (const p in got) if (p >= want.start && p <= want.end) { out[p] = got[p]; n++; }
+    if (!n) return;
+    stats.delivered += n;
+    try { client.postMessage({ pictures: out }, "*"); } catch (e) { /* the frame is gone */ }
+  }
+  function trim() {
+    if (!want) return;
+    const w = win(want.page);
+    for (const p of [...cache.keys()]) if (Math.abs(win(p) - w) > 1) cache.delete(p);
+  }
+  // a job is a window (a number), or the page shown alone ({page}): drawn before the rest of
+  // its window, so that it shows as soon as it can
+  async function pump() {
+    if (busyWin !== null || !queue.length) return;
+    const job = queue.shift();
+    const w = typeof job === "number" ? job : win(job.page);
+    const todo = (typeof job === "number" ? range(w) : [job.page]).filter((p) => !cache.has(p));
+    if (!todo.length) return pump();
+    busyWin = w;
+    busyFull = typeof job === "number";
+    const g = gen;
+    let kept = {};
+    const t0 = performance.now();
+    if (id) { try { kept = await LIB.pagesGet(id, size, todo); } catch (e) { kept = {}; } }
+    if (Object.keys(kept).length) { stats.storeMs += performance.now() - t0; stats.storeReads++; }
+    if (g !== gen) { busyWin = null; return pump(); }
+    const got = {};
+    for (const p in kept) { cache.set(+p, kept[p]); got[p] = kept[p]; stats.stored++; }
+    deliver(got);
+    const missing = todo.filter((p) => !kept[p]);
+    if (!missing.length) { busyWin = null; return pump(); }
+    stats.draws++;
+    drawT0 = performance.now();
+    indicate();
+    worker.postMessage({ type: "draw", pages: missing, size, window: w, gen: g });
+  }
+  return {
+    busy: () => busyWin !== null,
+    drawing: () => (busyWin === null ? null : [busyWin * WIN + 1, Math.min(pages, busyWin * WIN + WIN)]),
+    book(bookId, pageCount) {
+      id = bookId; pages = pageCount || 0; cache = new Map(); queue = []; busyWin = null; gen++;
+      size = window.matchMedia("(max-width: 700px)").matches ? "small" : "large";
+    },
+    want(w, source) {
+      if (!pages || !w || !w.page) return;
+      client = source;
+      want = w;
+      const c = win(w.page), last = win(pages);
+      const order = [c, c + 1, c - 1].filter((x) => x >= 0 && x <= last);
+      const now = {};
+      for (const x of order) for (const p of range(x)) if (cache.has(p)) now[p] = cache.get(p);
+      deliver(now);
+      queue = order.filter((x) => !(busyFull && x === busyWin) && range(x).some((p) => !cache.has(p)));
+      if (!cache.has(w.page) && busyWin !== c) queue.unshift({ page: w.page });
+      trim();
+      pump();
+    },
+    drawn(m) {
+      const got = {};
+      for (const p in m.pages) got[p] = new Blob([m.pages[p]], { type: "image/jpeg" });
+      if (m.gen !== gen) return;
+      busyWin = null;
+      stats.drawMs += performance.now() - drawT0;
+      if (m.size === size) {
+        for (const p in got) { cache.set(+p, got[p]); stats.drawn++; }
+        deliver(got);
+        if (id) LIB.pagesPut(id, size, got);
+      }
+      trim();
+      pump();
+      indicate();
+    },
+  };
+})();
 // The app comes back to where the reader was (SESSION): resuming holds the
 // record while the book opens; resumeNote is said in the top bar once the
 // chapter shows.
@@ -387,12 +666,8 @@ function resumed(m) {
     resumeNote = words + (LIB.on ? ". The book is read again, because the app was closed before its reading was finished."
                                  : ". The book is read again, because this browser keeps no library.");
   }
-  if (!LIB.on) {
-    // no library: the book the user chose again opens at the place
-    const place = SESSION.place();
-    if (place) worker.postMessage({ type: "chapter", name: place.chapter, hash: placeHash(place),
-                                    small: window.matchMedia("(max-width: 700px)").matches });
-  }
+  // the place itself opens with the book (the index message)
+  return words;
 }
 $("resume").querySelector("button").addEventListener("click", () => { SESSION.clear(true); location.reload(); });
 function toView(msg) { if ($("view").contentWindow) $("view").contentWindow.postMessage(msg, "*"); }
@@ -419,9 +694,38 @@ function patched(m) {
   } else status("");
 }
 window.addEventListener("message", (e) => {
+  if (e.data && e.data.pictures) {
+    // the reader shows a page: the pictures of its window and of the windows next to it
+    PICS.want(e.data.pictures, e.source);
+    prepare(e.data.pictures);
+    return;
+  }
+  if (e.data && e.data.pictureShown) {
+    if (swapping && e.source === swapping.frame.contentWindow) swapping.swap();
+    return;
+  }
   LIB.fromReader(e.data);
   if (e.data && (e.data.position || e.data.view)) { SESSION.soon(); return; }
-  if (e.data && e.data.open === "index.html") { openChapter = "index.html"; SESSION.contents(); }
+  if (e.data && e.data.open === "index.html") {
+    // the contents, on request: one tap (or the browser's back) comes back to the page
+    showBack();
+    openChapter = "index.html";
+    SESSION.contents();
+    if (!e.data.back) history.pushState({ contents: true }, "");
+  }
+  if (e.data && e.data.open && e.data.open !== "index.html" && prepared[e.data.open]) {
+    // the chapter the reader turns to is built already: it shows at once
+    const html = prepared[e.data.open];
+    delete prepared[e.data.open];
+    openChapter = e.data.open;
+    hideBack();
+    $("note").textContent = resumeNote || outdatedNote || "";
+    resumeNote = "";
+    show(e.data.open, e.data.hash, html);
+    wantOpen = e.data.open;
+    worker.postMessage({ type: "chapter", name: e.data.open, quiet: true });
+    return;
+  }
   if (e.data && e.data.correct) {
     openChapter = e.data.chapter;
     worker.postMessage({ type: "correct", corrections: e.data.correct, chapter: e.data.chapter });
@@ -434,6 +738,7 @@ window.addEventListener("message", (e) => {
   status(e.data.open === "index.html" ? "Opening the contents." :
     "Opening chapter " + parseInt(e.data.open.slice(2), 10) +
     ". The first opening of a chapter takes a few seconds.");
+  wantOpen = e.data.open;
   worker.postMessage(e.data.open === "index.html"
     ? { type: "index", hash: e.data.hash }
     : { type: "chapter", name: e.data.open, hash: e.data.hash,
@@ -455,7 +760,7 @@ async function read(file, fileName) {
   lastFile = file;
   lastName = fileName;
   $("again").hidden = true;
-  $("bar").classList.add("on");
+  working(true);
   status("Reading " + fileName);
   const bytes = await file.arrayBuffer();
   const name = fileName.replace(/[^\\w.\\-]+/g, "_");
@@ -481,6 +786,15 @@ $("drop").addEventListener("drop", (e) => take(e.dataTransfer.files[0]));
 $("another").addEventListener("click", () => { SESSION.clear(true); location.reload(); });
 $("again").addEventListener("click", () => {
   if (!lastFile || busy) return;
+  // the book opens again where the reader is now
+  if (openChapter === "index.html") againPlace = backPlace;
+  else {
+    let v = null;
+    try { const w = $("view").contentWindow; v = w && w.readerView ? w.readerView() : null; } catch (e) { v = null; }
+    againPlace = v && v.page ? { chapter: openChapter, page: v.page, node: v.node || null } : null;
+  }
+  outdatedNote = "";
+  hideBack();
   $("start").style.display = "block"; $("view").style.display = "none"; $("top").style.display = "none";
   read(lastFile, lastName);
 });
@@ -529,35 +843,20 @@ LIB.start(SESSION.pending()).then((on) => {
 """
 
 
-def icon_png(size):
-    """The Home Screen icon: a corner of a chess board in the board colours of
-    DESIGN.md, flat, as a PNG of size by size pixels."""
-    light, dark, bg = (0xec, 0xeb, 0xe6), (0xbd, 0xba, 0xb2), (0xfb, 0xfb, 0xfa)
-    margin, cells = size // 6, 4
-    cell = (size - 2 * margin) // cells
-    rows = []
-    for y in range(size):
-        row = bytearray([0])
-        for x in range(size):
-            cx, cy = (x - margin) // cell, (y - margin) // cell
-            inside = 0 <= x - margin < cell * cells and 0 <= y - margin < cell * cells
-            row += bytes(bg if not inside else light if (cx + cy) % 2 == 0 else dark)
-        rows.append(bytes(row))
-
-    def chunk(kind, data):
-        return (struct.pack(">I", len(data)) + kind + data +
-                struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)) +
-            chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
-
-
 # Added to the Home Screen of an iPhone or iPad, the app opens on its own
 # (without Safari's bars) and keeps its library apart from Safari, which may
 # clear the storage of a site left unused for a week.
+# The icons are the open book with two chequered pages (tools/make_icons.py
+# renders them from web/icon.svg).
 MANIFEST = {"name": "Chess Book Reader", "short_name": "Chess books", "start_url": "./", "scope": "./",
             "display": "standalone", "background_color": "#fbfbfa", "theme_color": "#fbfbfa",
             "icons": [{"src": "icon-180.png", "sizes": "180x180", "type": "image/png"},
-                      {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"}]}
+                      {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+                      {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                      {"src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png",
+                       "purpose": "maskable"}]}
+ICONS = ("icon-32.png", "icon-180.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png",
+         "favicon.svg")
 
 
 def app_zip(dest):
@@ -589,8 +888,8 @@ def main(argv=None):
     shutil.copyfile(ROOT / "web" / "worker.js", out / "worker.js")
     shutil.copyfile(ROOT / "web" / "library.js", out / "library.js")
     (out / "manifest.webmanifest").write_text(json.dumps(MANIFEST, indent=1), encoding="utf-8")
-    for size in (180, 512):
-        (out / f"icon-{size}.png").write_bytes(icon_png(size))
+    for name in ICONS:
+        shutil.copyfile(ROOT / "web" / "icons" / name, out / name)
     app_zip(out / "app.zip")
     shutil.copyfile(args.chess, out / "wheels" / args.chess.name)
     wheels = ["wheels/" + args.chess.name]
@@ -622,7 +921,9 @@ def main(argv=None):
     cfg = ("{indexURL: new URL(%r, location.href).href, appZip: new URL('app.zip', location.href).href, "
            "wheels: %s.map(w => new URL(w, location.href).href), packages: %s, engine: %s}") % (
                index_url, wheels, PYODIDE_PACKAGES, engine)
-    text = SHELL.replace("__CSS__", style.page_css()).replace("__CFG__", cfg)
+    text = (SHELL.replace("__CSS__", style.page_css() + style.BOOK_CSS).replace("__CFG__", cfg)
+            .replace("__BOOK_SMALL__", style.book_svg())
+            .replace("__BOOK__", style.book_svg(label="The program is at work")))
     (out / "index.html").write_text(text, encoding="utf-8")
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
     print(f"Site written to {out} ({size / 1048576:.1f} MB)")

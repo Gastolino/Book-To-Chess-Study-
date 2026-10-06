@@ -16,6 +16,14 @@ analyses the position the board shows, whatever it is: a move of the book,
 a variation the reader added, or the preview of a move just made. Stepping
 through moves restarts the search after a short pause; leaving the chapter,
 hiding the tab or turning analysis off stops it, so that it drains no phone.
+
+What the engine finds is kept (the analysis cache): for each position (its
+FEN without the move counters) and number of lines, the deepest result so
+far, in the browser's IndexedDB "chessbook-analysis" (in memory only where
+the browser keeps none), at most ANALYSIS_KEEP positions, the ones used
+longest ago going first. A position shown again shows its kept result at
+once, and the engine searches it only when the limit in the settings asks
+for more than the kept result reached; "Deeper" always searches.
 """
 
 ENGINE_CSS = r"""
@@ -78,7 +86,94 @@ const EV_LIMITS = [["d12", "depth 12"], ["d18", "depth 18"], ["d24", "depth 24"]
                    ["t1", "1 second"], ["t3", "3 seconds"], ["t10", "10 seconds"]];
 const EV = {on: false, worker: null, ready: false, searching: false, stopping: false, fen: null, want: null,
   lines: [], depth: 0, nps: 0, done: false, deeper: 0, timer: 0, raf: 0, loading: false, failed: "", name: "",
-  urls: [], settings: null, ran: null, hidden: false, from: null, loadMs: null, t0: 0, ended: ""};
+  urls: [], settings: null, ran: null, hidden: false, from: null, loadMs: null, t0: 0, ended: "",
+  cached: false, floor: 0, st: 0};
+
+/* the analysis cache: the deepest result for each position and number of lines */
+const ANALYSIS_KEEP = 5000;
+const EVC = {mem: new Map(), db: null, puts: 0, hits: 0};
+window.analysisCache = EVC;
+function evKey(fen){ return fen.split(" ").slice(0, 4).join(" ") + "|" + EV.settings.lines; }
+function evCacheDb(){
+  if (!EVC.db) {
+    EVC.db = new Promise((res, rej) => {
+      if (!window.indexedDB) { rej(new Error("no storage")); return; }
+      let r;
+      try { r = indexedDB.open("chessbook-analysis", 1); } catch (e) { rej(e); return; }
+      r.onupgradeneeded = () => {
+        const st = r.result.createObjectStore("positions");
+        st.createIndex("at", "at");
+      };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error || new Error("no storage"));
+      r.onblocked = () => rej(new Error("storage blocked"));
+    });
+    EVC.db.catch(() => {});
+  }
+  return EVC.db;
+}
+function evMem(key, rec){
+  EVC.mem.delete(key);
+  EVC.mem.set(key, rec);
+  if (EVC.mem.size > 500) EVC.mem.delete(EVC.mem.keys().next().value);
+}
+async function evCacheGet(fen){
+  const key = evKey(fen);
+  if (EVC.mem.has(key)) { const r = EVC.mem.get(key); evMem(key, r); return r; }
+  try {
+    const db = await evCacheDb();
+    const rec = await new Promise((res) => {
+      const t = db.transaction("positions", "readwrite"), st = t.objectStore("positions"), q = st.get(key);
+      q.onsuccess = () => {
+        const r = q.result || null;
+        if (r) { r.at = Date.now(); st.put(r, key); }      // used now: the last to go
+        res(r);
+      };
+      q.onerror = () => res(null);
+    });
+    if (rec) evMem(key, rec);
+    return rec;
+  } catch (e) { return null; }
+}
+async function evCachePut(fen, rec){
+  const key = evKey(fen), old = EVC.mem.get(key);
+  if (old && old.depth >= rec.depth && old.ms >= rec.ms) return;
+  rec.at = Date.now();
+  evMem(key, rec);
+  try {
+    const db = await evCacheDb();
+    const t = db.transaction("positions", "readwrite"), st = t.objectStore("positions");
+    const q = st.get(key);
+    q.onsuccess = () => { const o = q.result; if (!o || o.depth < rec.depth || (o.depth === rec.depth && o.ms < rec.ms)) st.put(rec, key); };
+    EVC.puts++;
+    if (EVC.puts % 50 === 1) {
+      // more than ANALYSIS_KEEP positions: the ones used longest ago go
+      const c = st.count();
+      c.onsuccess = () => {
+        let extra = c.result - ANALYSIS_KEEP;
+        if (extra <= 0) return;
+        st.index("at").openCursor().onsuccess = (e) => {
+          const cur = e.target.result;
+          if (!cur || extra-- <= 0) return;
+          cur.delete();
+          cur.continue();
+        };
+      };
+    }
+  } catch (e) { /* no storage: the memory keeps it while the page lives */ }
+}
+// a kept result is enough when it reached the limit the settings ask for
+function evEnough(rec){
+  const l = EV.settings.limit;
+  if (l[0] === "d") return rec.depth >= parseInt(l.slice(1), 10);
+  return rec.ms >= 0.95 * parseInt(l.slice(1), 10) * 1000 || rec.depth >= 40;
+}
+function evKeep(){
+  // the search ends or stops: its deepest result is kept for the position
+  if (!EV.fen || !EV.lines[0] || !EV.lines[0].pv.length || EV.ended) return;
+  const lines = EV.lines.filter(Boolean).map(l => ({depth: l.depth, score: l.score, pv: l.pv.slice(0, 16)}));
+  evCachePut(EV.fen, {depth: EV.lines[0].depth, lines, ms: Math.round(performance.now() - EV.st)});
+}
 
 function evLoadSettings(){
   let s = {};
@@ -203,6 +298,7 @@ function evLine(line){
     return;
   }
   if (line.indexOf("bestmove") === 0) {
+    evKeep();
     EV.searching = false; EV.stopping = false;
     if (EV.want) { const f = EV.want; EV.want = null; evSearch(f); }
     else { EV.done = true; evStatus(); }
@@ -219,13 +315,16 @@ function evInfo(line){
   if (pvAt < 0 || at("depth") == null || !EV.fen) return;
   const k = parseInt(at("multipv") || "1", 10) - 1;
   const depth = parseInt(at("depth"), 10);
+  if (k === 0) EV.depth = Math.max(depth, EV.floor);
+  // a kept result shows until the search goes deeper than it
+  if (depth <= EV.floor) return;
+  EV.cached = false;
   const si = t.indexOf("score");
   if (si < 0) return;
   // the score is from the side to move's view: it is turned to White's
   const black = (EV.fen.split(" ")[1] || "w") === "b", sign = black ? -1 : 1;
   const score = t[si + 1] === "mate" ? {mate: sign * parseInt(t[si + 2], 10)} : {cp: sign * parseInt(t[si + 2], 10)};
   EV.lines[k] = {depth, score, pv: t.slice(pvAt + 1)};
-  if (k === 0) EV.depth = depth;
   const nps = parseInt(at("nps") || "0", 10);
   if (nps) EV.nps = nps;
   evRender();
@@ -256,7 +355,10 @@ function evSearch(fen){
   if (!EV.worker || !EV.ready) return;
   if (EV.searching) { EV.want = fen; if (!EV.stopping) { EV.stopping = true; evSend("stop"); } return; }
   EV.stopping = false;
-  EV.fen = fen; EV.lines = []; EV.depth = 0; EV.done = false; EV.searching = true;
+  const kept = EV.fen === fen && EV.cached;
+  EV.floor = kept && EV.lines[0] ? EV.lines[0].depth : 0;
+  EV.st = performance.now();
+  EV.fen = fen; EV.lines = kept ? EV.lines : []; EV.depth = EV.floor; EV.done = false; EV.searching = true;
   evSend("position fen " + fen);
   evSend("go " + evLimit());
   evRender(); evStatus();
@@ -283,7 +385,19 @@ function evGo(){
   // set to analyse on demand, only the position shown when the icon was pressed is analysed
   if (!EV.settings.auto && fen !== EV.ran) { halt(); return; }
   EV.deeper = 0;
-  EV.timer = setTimeout(() => { if (EV.on && !EV.hidden) evSearch(fen); }, 250);
+  const go = () => { EV.timer = setTimeout(() => { if (EV.on && !EV.hidden) evSearch(fen); }, 250); };
+  if (EV.searching) { go(); return; }
+  // what the engine found here before shows at once; the engine searches when it asks for more
+  evCacheGet(fen).then((rec) => {
+    if (!EV.on || EV.hidden || shownFen() !== fen || EV.searching) return;
+    if (!rec) { EV.cached = false; go(); return; }
+    EVC.hits++;
+    EV.fen = fen; EV.cached = true; EV.depth = rec.depth;
+    EV.lines = rec.lines.map(l => ({depth: l.depth, score: l.score, pv: l.pv.slice()}));
+    EV.done = evEnough(rec);
+    evRender(); evStatus();
+    if (!EV.done) go();
+  });
 }
 function evStop(dead){
   clearTimeout(EV.timer);
@@ -307,7 +421,9 @@ function setAnalysis(on){
     evStop();
     EV.fen = null; EV.lines = []; EV.ran = null; EV.failed = "";
     $("mevalnum").textContent = "";
-    evArrow(); evRender(); evStatus();
+    // at once, not at the next frame: the bar and its figure go with the switch
+    if (EV.raf) { cancelAnimationFrame(EV.raf); EV.raf = 0; }
+    evArrow(); evRenderNow(); evStatus();
     if (!$("evset").hidden) toggleSettings(false);
     layoutPanel(false);
     return;
@@ -395,7 +511,7 @@ function evStatus(){
     EV.on && !EV.settings.auto ? "A press on the processor icon analyses the position shown." : "";
   else if (EV.ended) t = EV.ended;
   else if (EV.searching) t = "Analysing… depth " + EV.depth + (EV.nps ? ", " + Math.round(EV.nps / 1000) + " thousand nodes a second" : "") + ".";
-  else if (EV.done) t = "Depth " + EV.depth + " reached.";
+  else if (EV.done) t = "Depth " + EV.depth + (EV.cached ? ", kept from an earlier analysis." : " reached.");
   else t = "Stopped.";
   if (EV.hidden && EV.on) t = "Paused while the page is hidden.";
   el.textContent = t;
@@ -510,6 +626,6 @@ function initEngine(){
   window.engineState = () => ({on: EV.on, ready: EV.ready, worker: !!EV.worker, searching: EV.searching, fen: EV.fen, depth: EV.depth,
     lines: EV.lines.map(l => l && {score: l.score, pv: l.pv.slice(0, 4), depth: l.depth}), done: EV.done,
     settings: Object.assign({}, EV.settings), failed: EV.failed, loading: EV.loading, name: EV.name, nps: EV.nps,
-    from: EV.from || null, loadMs: EV.loadMs || null, deeper: EV.deeper});
+    from: EV.from || null, loadMs: EV.loadMs || null, deeper: EV.deeper, cached: EV.cached});
 }
 """

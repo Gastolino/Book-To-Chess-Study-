@@ -321,6 +321,81 @@ const LIB = (() => {
     };
   }
 
+  // ---------------------------------------------------------------- the pictures of the pages
+  // The pictures the worker drew of a book's pages (JPEG, at the resolution of a phone, "small",
+  // or of a larger screen, "large") are kept on this device in the IndexedDB "chessbook-pages",
+  // one record per page ("<book id>:<size>:<page>"), whichever library holds the book: the next
+  // opening shows them without drawing them again. They go with the book when it is removed.
+  // When the device has no room left, the program stops keeping them (the book and its reading
+  // stay) and says so once.
+  const PAGES = (() => {
+    let dbp = null, full = false;
+    function open() {
+      if (!dbp) {
+        dbp = new Promise((resolve, reject) => {
+          const req = indexedDB.open("chessbook-pages", 1);
+          req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains("pages")) req.result.createObjectStore("pages"); };
+          req.onsuccess = () => {
+            const db = req.result;
+            db.onversionchange = () => { db.close(); dbp = null; };
+            db.onclose = () => { dbp = null; };
+            resolve(db);
+          };
+          req.onerror = () => { dbp = null; reject(req.error || new Error("no storage")); };
+        });
+      }
+      return dbp;
+    }
+    function run(mode, fn) {
+      return open().then((db) => new Promise((resolve, reject) => {
+        const t = db.transaction(["pages"], mode);
+        let value;
+        fn(t.objectStore("pages"), (v) => { value = v; });
+        t.oncomplete = () => resolve(value);
+        t.onabort = t.onerror = () => reject(t.error || new DOMException("The storage refused the change.", "AbortError"));
+      }));
+    }
+    const key = (id, size, p) => id + ":" + size + ":" + p;
+    return {
+      get(id, size, pages) {
+        if (!window.indexedDB) return Promise.resolve({});
+        return run("readonly", (st, keep) => {
+          const out = {};
+          keep(out);
+          for (const p of pages) {
+            const q = st.get(key(id, size, p));
+            q.onsuccess = () => { if (q.result) out[p] = q.result; };
+          }
+        });
+      },
+      put(id, size, got) {
+        if (full || !window.indexedDB) return Promise.resolve();
+        return run("readwrite", (st) => { for (const p in got) st.put(got[p], key(id, size, p)); })
+          .catch((err) => {
+            if (tooFull(err) && !full) {
+              full = true;
+              status("This device has no room left to keep the pictures of the pages. The book and its reading " +
+                     "stay in your library, and the pages are drawn again when it opens.", true);
+            }
+          });
+      },
+      remove(id) {
+        if (!window.indexedDB) return Promise.resolve();
+        return run("readwrite", (st) => st.delete(IDBKeyRange.bound(id + ":", id + ":\uffff"))).catch(() => {});
+      },
+      count(id) {
+        if (!window.indexedDB) return Promise.resolve(0);
+        return run("readonly", (st, keep) => {
+          const q = st.count(IDBKeyRange.bound(id + ":", id + ":\uffff"));
+          q.onsuccess = () => keep(q.result);
+        });
+      },
+    };
+  })();
+  api.pagesGet = (id, size, pages) => PAGES.get(id, size, pages);
+  api.pagesPut = (id, size, got) => PAGES.put(id, size, got);
+  api.pagesCount = (id) => PAGES.count(id);
+
   async function sha256(buffer) {
     const d = new Uint8Array(await crypto.subtle.digest("SHA-256", buffer));
     return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -685,6 +760,7 @@ const LIB = (() => {
       yes.disabled = no.disabled = true;
       try {
         await store.remove(b.id);
+        await PAGES.remove(b.id);
         forget(b);
         api.books = api.books.filter((x) => x.id !== b.id);
         render();
@@ -829,7 +905,7 @@ const LIB = (() => {
   };
   async function addPdf(file) {
     busy = true;
-    $("bar").classList.add("on");
+    working(true);
     try {
       say("Reading the file's fingerprint.");
       const buffer = await file.arrayBuffer();
@@ -870,7 +946,7 @@ const LIB = (() => {
       read(file, book.fileName);
     } catch (err) {
       busy = false;
-      $("bar").classList.remove("on");
+      working(false);
       say("The book could not be added: " + err.message, true);
     }
   }
@@ -879,10 +955,10 @@ const LIB = (() => {
   // selection and place, saved by "Save to Files" on this or another device.
   async function addBookFile(file) {
     busy = true;
-    $("bar").classList.add("on");
+    working(true);
     const stop = (text, error) => {
       busy = false;
-      $("bar").classList.remove("on");
+      working(false);
       say(text, error);
     };
     let parts, info;
@@ -1005,7 +1081,7 @@ const LIB = (() => {
   api.open = async function (b, given, resume, at) {
     if (busy) return;
     busy = true;
-    $("bar").classList.add("on");
+    working(true);
     const name = safeName(b.fileName);
     api.current = { id: b.id, book: b, name, restored: false, position: null, t0: Date.now(), ephemeral: !!given,
                     at: at || null };
@@ -1036,7 +1112,10 @@ const LIB = (() => {
       if (!given) store.update(b.id, { opened: Date.now() }).catch(() => {});
       if (!ready) say("The reader is still starting. The book opens in a moment.");
       await whenReady();
-      if (b.reading && b.reading.version === api.version) {
+      // a stored reading opens whatever program made it: the worker builds the pages from it with
+      // the reader of today, and says when other reading code made it (the app then offers
+      // Read again); only a reading it cannot use is read again at once ("stale")
+      if (b.reading && (given ? given.reading : true)) {
         if (!given && store.kind === "server") say("Downloading the program's reading of the book.");
         const reading = given ? given.reading.slice() : await store.reading(b.id, (text) => say(text));
         api.current.file = file;
@@ -1051,19 +1130,28 @@ const LIB = (() => {
         return;
       }
       busy = false;
-      if (b.reading) say("The program has changed since it read this book, so it reads the book again.");
       read(file, b.fileName, true);
     } catch (err) {
       busy = false;
-      $("bar").classList.remove("on");
+      working(false);
       say("The book could not be opened: " + err.message, true);
     }
+  };
+
+  // The place where the open book is to open (once): the place last read, a bookmark, or the
+  // place the app comes back to; null for a book opened for the first time (its first page).
+  api.takePlace = function () {
+    const cur = api.current;
+    const p = cur ? cur.place : null;
+    if (cur) cur.place = null;
+    return p || null;
   };
 
   // The top bar's words for a book opened from its stored reading.
   api.openedIn = function () {
     const t0 = api.current && api.current.t0;
-    return t0 ? "opened from your library in " + Math.max(1, Math.round((Date.now() - t0) / 1000)) + " seconds"
+    const k = Math.max(1, Math.round((Date.now() - (t0 || 0)) / 1000));
+    return t0 ? "opened from your library in " + k + (k === 1 ? " second" : " seconds")
               : "opened from your library";
   };
 
@@ -1107,13 +1195,10 @@ const LIB = (() => {
       saveMeta(cur.id, mm);
       seen(cur.id);
       if (!b.cover && !cur.ephemeral) worker.postMessage({ type: "cover", name: cur.name });
-      const pos = cur.position;
+      // the place last read, on this device or another (with the view, when the app comes
+      // back): the page shell opens the book there (takePlace), and a new book at its first page
+      cur.place = cur.position && cur.position.page ? cur.position : null;
       cur.position = null;
-      if (pos && pos.chapter && pos.page) {
-        // the place last read, on this device or another (with the view, when the app comes back)
-        worker.postMessage({ type: "chapter", name: pos.chapter, hash: placeHash(pos),
-                             small: window.matchMedia("(max-width: 700px)").matches });
-      }
       return false;
     }
     if (m.type === "cover") {

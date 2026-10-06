@@ -114,7 +114,13 @@ def picture_kinds(diagrams, first_page=1):
                   fewer than seven file letters and rank numbers are printed
     illustration  far larger than a board, such as a drawing across the page
     icon          far smaller than a board, such as an ornament
-    front         any picture before first_page (covers and publisher logos)
+
+    The usual size of a board is measured from first_page on (the chapters),
+    and the pictures before it (the front matter) are sorted by the same
+    rules: a board printed in an introduction is a board, and a cover or a
+    publisher's logo is an illustration or an ornament. ("front", the kind
+    that earlier versions gave every picture before first_page, stays among
+    EXCLUDED_KINDS for selections and readings made by them.)
 
     A diagram printed as text in a chess font (Stage 1 marks it "text") is
     always a board.
@@ -125,8 +131,6 @@ def picture_kinds(diagrams, first_page=1):
         w, h = d["rect"][2] - d["rect"][0], d["rect"][3] - d["rect"][1]
         if d.get("text"):
             kind = "board"              # a position printed in a chess font
-        elif d["page"] < first_page:
-            kind = "front"
         elif B is None:
             kind = "partial" if d.get("partial") else "board"
         elif max(w, h) < 0.3 * B:
@@ -152,20 +156,16 @@ def _plural(n, one, many=None):
 
 
 def default_selection(structure, diagrams):
-    """The selection used until the reader saves one: front matter pages and
-    the pictures on them are left out, and so are pictures that show part of a
-    board only, illustrations and ornaments."""
+    """The selection used until the reader saves one: every page, the front
+    matter included (its pages show in the reader and its moves are read
+    like the rest), and every picture except those that show part of a board
+    only, illustrations and ornaments."""
     chapters = structure.get("chapters") or []
     first = chapters[0]["start"] if chapters else 1
-    front_end = int(structure.get("front_matter_end") or 0)
     kinds = picture_kinds(diagrams, first)
     exclude = [did for did, k in kinds.items() if k in EXCLUDED_KINDS]
     counts = Counter(kinds[did] for did in exclude)
     parts = []
-    if front_end >= 1:
-        parts.append(f"It leaves out pages 1 to {front_end}, which come before the first "
-                     "chapter" + (f", together with {_plural(counts['front'], 'picture')} on "
-                                  "those pages." if counts["front"] else "."))
     if counts["partial"]:
         parts.append(f"It {'also ' if parts else ''}leaves out "
                      f"{_plural(counts['partial'], 'picture')} that show only part of a board.")
@@ -176,7 +176,7 @@ def default_selection(structure, diagrams):
     note = " ".join(["The program made this selection."] + parts
                     + ["Every other page and picture is included."])
     return normalise({"version": VERSION,
-                      "pages": {"exclude": [[1, front_end]] if front_end >= 1 else []},
+                      "pages": {"exclude": []},
                       "diagrams": {"exclude": exclude, "include": []},
                       "note": note})
 
@@ -247,8 +247,8 @@ class Selection:
     """The pages and diagrams in use for one book.
 
     Parts missing from a saved file fall back to the defaults, so a file that
-    holds only {"diagrams": {"include": [...]}} still leaves out the front
-    matter and the partial boards.
+    holds only {"diagrams": {"include": [...]}} still leaves out the partial
+    boards.
     """
 
     def __init__(self, data=None, defaults=None, path=None):

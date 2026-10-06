@@ -7,16 +7,17 @@
 //
 // The test:
 //   - in a browser profile kept on disk (WORK_DIR/profile-a), finds the
-//     library empty, adds BOOK1: it is read in the browser as before (the
-//     contents page shows while it is read), and its PDF, reading, cover and
-//     title are kept in IndexedDB; the browser is asked to keep the storage;
+//     library empty, adds BOOK1: it is read in the browser as before (it
+//     opens at its first page while it is read), and its PDF, reading, cover
+//     and title are kept in IndexedDB, and so are the pictures of the pages
+//     shown; the browser is asked to keep the storage;
 //   - names a piece symbol of a chapter (a correction), sets a bookmark and
 //     chooses a move;
 //   - adds BOOK2 too, for the library's pictures;
 //   - closes the browser and starts it again on the same profile: the
 //     library lists BOOK1 with its place, and opens it from the stored
 //     reading without reading it again, with the correction, at the stored
-//     page and move;
+//     page and move, with the pictures of its pages from the device's store;
 //   - saves both books as book files (.chessbook) from the library;
 //   - in a fresh profile (another device), adds BOOK1's file: the book opens
 //     without being read, with the correction, at the stored place; the
@@ -70,7 +71,10 @@ async function device(name, opts, profile) {
   });
   const page = ctx.pages()[0] || await ctx.newPage();
   page.on("console", (m) => {
-    if (m.type() === "error" && !/Failed to load resource: the server responded with a status of 404/.test(m.text()))
+    // (the manifest is fetched while the page goes to the library again: a fetch cut short reads
+    // as an empty manifest; tests/test_device_library.py checks the manifest itself)
+    if (m.type() === "error" && !/Failed to load resource: the server responded with a status of 404/.test(m.text()) &&
+        !/^Manifest: Line: 1, column: 1, Syntax error\.$/.test(m.text()) && !/icon from the Manifest/.test(m.text()))
       out.errors.push("[" + name + "] " + m.text());
   });
   page.on("pageerror", (e) => out.errors.push("[" + name + "] " + String(e)));
@@ -163,6 +167,9 @@ async function addBook(d, file) {
   await whenReady(d);
   await d.page.setInputFiles("#file", file);
   await d.page.waitForSelector("#view", { state: "visible", timeout: 1800000 });
+  // a new book opens at its first page, in the reader
+  const first = await d.waitFrame(() => window.READER && window.readerState && window.readerState.page && window.readerState, null, 1800000);
+  check("a new book opens at its first page", first.page === 1, first);
   const contents = now() - t;
   await d.page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent),
                                null, { timeout: 3600000 });
@@ -267,7 +274,7 @@ async function run() {
       !document.getElementById("libempty").hidden && document.querySelectorAll("#books li").length === 0));
     await a.instrument();
     const one = await addBook(a, book1);
-    timing("adding " + path.basename(book1) + ": until the contents page (s)", one.contents);
+    timing("adding " + path.basename(book1) + ": until its first page (s)", one.contents);
     timing("adding " + path.basename(book1) + ": until read (s)", one.read);
     timing("adding " + path.basename(book1) + ": until its reading is kept (s)", one.saved);
     note("book 1: " + one.took + "; stored reading " + one.rec.reading.stored + " bytes (gzip), " +
@@ -284,14 +291,18 @@ async function run() {
       return Array.from(d, (x) => x.toString(16).padStart(2, "0")).join("");
     }, one.id);
     check("the stored PDF is the book (its SHA-256 is its id)", pdfBack === one.id);
+    // the first page, and the pictures kept for it
+    await a.waitFrame(() => !document.getElementById("pagebox").classList.contains("waiting"), null, 300000);
+    const keptFirst = await a.until(() => a.page.evaluate((id) => LIB.pagesCount(id).then((n) => n || null), one.id),
+                                    "the pictures of the first pages in the device's store", 60000);
+    note("pictures kept after the first page: " + keptFirst);
     const persisted = await a.until(() => a.page.evaluate(() => LIB.persisted !== null ? { asked: true, granted: LIB.persisted } : null),
                                     "the answer to persist()", 10000).catch(() => ({ asked: false }));
     note("navigator.storage.persist(): " + JSON.stringify(persisted));
 
     // a correction: a piece symbol named in the first chapter that prints one
     let sym = null, chapter = null;
-    const chapters = await a.inFrame(() => Array.from(document.querySelectorAll("a[href^='ch']"))
-      .map((x) => x.getAttribute("href").replace(/#.*/, "")).filter((h, i, l) => l.indexOf(h) === i));
+    const chapters = await a.page.evaluate(() => bookChapters.map((c) => c.file));
     for (const ch of chapters) {
       await a.page.evaluate((ch) => window.postMessage({ open: ch, hash: "" }, "*"), ch);
       await a.waitFrame((ch) => window.READER && window.READER.chapter.file === ch, ch, 300000);
@@ -379,6 +390,11 @@ async function run() {
          (await a.page.evaluate(() => document.getElementById("took").textContent)));
     const nr = await notReadAgain(a);
     check("the book opens without being read again", nr.ok, nr);
+    // the pictures of the pages read before come from the device's store, not drawn again
+    await a.waitFrame(() => !document.getElementById("pagebox").classList.contains("waiting"), null, 120000);
+    const pics = await a.page.evaluate(() => Object.assign({}, window.pictureStats));
+    check("the pictures of the pages come from the device's store", pics.stored >= 1, pics);
+    note("pictures on opening from the library: " + JSON.stringify(pics));
     check("the book opens at the stored page and move", re.at.nodeId === placed.node && re.at.page === placed.page, re.at);
     const g1 = await glyphOf(a, sym.sym);
     check("the book holds the correction", g1.glyph === piece, g1);
@@ -477,6 +493,8 @@ async function run() {
       /corrections in the file are newer/.test(won.said) && won.fix.corrections.glyphs[sym.sym] === piece, won);
 
     // ---------------------------------------------------------------- removing
+    const keptPics = await b.page.evaluate((id) => LIB.pagesCount(id), one.id);
+    check("the pictures of the pages shown are kept on the device", keptPics > 0, keptPics);
     await b.page.click("#books li.book[data-id='" + one.id + "'] .remove");
     check("removing asks first", await b.page.evaluate((id) =>
       /Remove this book/.test(document.querySelector("#books li.book[data-id='" + id + "'] .confirm").textContent), one.id));
@@ -486,8 +504,9 @@ async function run() {
     const gone = await b.stored();
     const left = await b.page.evaluate(() => Object.keys(localStorage).filter((k) =>
       /^chessbook-(library|corrections|selection|bookmarks):/.test(k)));
-    check("a removed book leaves nothing behind", gone.books.length === 0 && gone.files.length === 0 && left.length === 0,
-          { gone, left });
+    const picsLeft = await b.page.evaluate((id) => LIB.pagesCount(id), one.id);
+    check("a removed book leaves nothing behind", gone.books.length === 0 && gone.files.length === 0 && left.length === 0 &&
+          picsLeft === 0, { gone, left, picsLeft });
     await b.close();
 
     // ---------------------------------------------------------------- pictures of the library

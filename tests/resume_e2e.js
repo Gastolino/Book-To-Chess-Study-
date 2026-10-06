@@ -134,9 +134,8 @@ async function addBook(d, file) {
   await d.page.waitForFunction(() => /in your library/.test(document.getElementById("note").textContent), null, { timeout: 600000 });
   return { id, read: now() - t };
 }
-// The chapter files of the contents page, in order.
-const chapterList = (d) => d.inFrame(() => Array.from(document.querySelectorAll("a[href^='ch']"))
-  .map((x) => x.getAttribute("href").replace(/#.*/, "")).filter((h, i, l) => l.indexOf(h) === i));
+// The chapter files of the open book, in order (the app's list of them).
+const chapterList = (d) => d.page.evaluate(() => bookChapters.map((c) => c.file));
 // Open chapter ch and choose a move on a page after its first, scroll the
 // window and the move list; returns the place and the view the reader reports.
 async function settle(d, ch) {
@@ -272,8 +271,8 @@ async function run() {
     await d.page.click("#books li.book[data-id='" + one.id + "'] .open");
     await d.page.waitForSelector("#view", { state: "visible", timeout: 600000 });
     await d.page.waitForFunction(() => /Reading the book|Reading the/.test(document.getElementById("took").textContent), null, { timeout: 120000 });
-    const where = await d.inFrame(() => Array.from(document.querySelectorAll("a[href^='ch']"))
-      .map((x) => x.getAttribute("href").replace(/#.*/, "")).filter((h, i, l) => l.indexOf(h) === i));
+    await d.page.waitForFunction(() => bookChapters.length > 0, null, { timeout: 600000 });
+    const where = await chapterList(d);
     const chRead = where[0];
     await d.page.evaluate((ch) => window.postMessage({ open: ch, hash: "" }, "*"), chRead);
     const early = await d.waitFrame((ch) => window.READER && window.READER.chapter.file === ch && !!window.readerState.page &&

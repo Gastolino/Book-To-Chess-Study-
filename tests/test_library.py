@@ -63,7 +63,7 @@ def test_a_stored_reading_opens_the_same_book(tmp_path, monkeypatch, garbled):
     driver.process(str(garbled), lambda *_: None)
     built = json.loads(json.dumps(driver.STATE["book"]))
     data = driver.save_reading()
-    assert data.startswith(driver.READING_MAGIC)
+    assert data.startswith(driver.READING_MAGIC2)
     saved = tmp_path / "reading.bin"
     saved.write_bytes(data)
     assert driver.reading_header(saved)["version"] == driver.VERSION
@@ -118,7 +118,7 @@ def test_corrections_apply_live_to_a_stored_reading(tmp_path, monkeypatch, garbl
     assert _same(driver.STATE["book"], fresh)
 
 
-def test_a_reading_of_another_version_or_selection_is_refused(tmp_path, monkeypatch, garbled):
+def test_a_reading_of_another_selection_is_refused(tmp_path, monkeypatch, garbled):
     driver = _driver(tmp_path, monkeypatch)
     driver.process(str(garbled), lambda *_: None)
     saved = tmp_path / "reading.bin"
@@ -126,12 +126,105 @@ def test_a_reading_of_another_version_or_selection_is_refused(tmp_path, monkeypa
     sel = json.dumps({"pages": {"exclude": [[5, 5]]}, "diagrams": {"exclude": [], "include": []}})
     out = json.loads(driver.restore(str(garbled), str(saved), sel))
     assert out[0]["type"] == "stale" and "selection" in out[0]["why"]
-    monkeypatch.setattr(driver, "VERSION", "0" * 16)
-    out = json.loads(driver.restore(str(garbled), str(saved)))
-    assert out[0]["type"] == "stale" and "version" in out[0]["why"]
     bad = tmp_path / "bad.bin"
     bad.write_bytes(b"not a reading")
     assert json.loads(driver.restore(str(garbled), str(bad)))[0]["type"] == "stale"
+
+
+def test_a_change_of_the_reader_keeps_the_stored_reading(tmp_path):
+    """The version a stored reading names is a digest of the reading code
+    alone: a change of the reader, its scripts or its look leaves it, and a
+    change of the code that reads the book changes it."""
+    import driver
+    root = tmp_path / "copy"
+    shutil.copytree(ROOT / "chessbook", root / "chessbook",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copyfile(ROOT / "stage1_inspect.py", root / "stage1_inspect.py")
+    v0 = driver._version(root=root)
+    assert v0 == driver.VERSION
+    for name in ("reader.py", "review_js.py", "engine_js.py", "style.py", "progressive.py"):
+        f = root / "chessbook" / name
+        f.write_text(f.read_text(encoding="utf-8") + "\n# a change of the reader\n", encoding="utf-8")
+    assert driver._version(root=root) == v0
+    for name in ("chessbook/reader.py", "chessbook/style.py", "web/library.js", "tools/build_web.py"):
+        assert name not in driver.READING_FILES
+    f = root / "chessbook" / "movetext.py"
+    f.write_text(f.read_text(encoding="utf-8") + "\n# a change of the reading\n", encoding="utf-8")
+    assert driver._version(root=root) != v0
+
+
+def test_a_reading_of_other_reading_code_opens_and_offers_a_new_reading(tmp_path, monkeypatch, garbled):
+    """A stored reading that other reading code made opens all the same,
+    marked outdated: the app offers Read again, and forces nothing."""
+    driver = _driver(tmp_path, monkeypatch)
+    driver.process(str(garbled), lambda *_: None)
+    built = json.loads(json.dumps(driver.STATE["book"]))
+    saved = tmp_path / "reading.bin"
+    saved.write_bytes(driver.save_reading())
+    monkeypatch.setattr(driver, "VERSION", "0" * 16)
+    out = json.loads(driver.restore(str(garbled), str(saved)))
+    assert out[0]["type"] == "index" and out[0]["outdated"] == "code"
+    assert _same(driver.STATE["book"], built)
+    name = next(c["file"] for c in built["chapters"] if c["end"] >= c["start"] and c["index"] > 0)
+    assert "<html" in driver.chapter(name, lambda *_: None)
+    # corrections still apply: the builder's state loaded
+    res = json.loads(driver.correct(json.dumps({"version": 1, "glyphs": {"tLl": "N"}}), name))
+    assert res["patch"] is not None
+    # the reading of today opens without a note
+    monkeypatch.undo()
+    driver = _driver(tmp_path, monkeypatch)
+    out = json.loads(driver.restore(str(garbled), str(saved)))
+    assert out[0]["type"] == "index" and out[0]["outdated"] is None
+
+
+def test_a_reading_whose_builder_cannot_load_opens_for_reading(tmp_path, monkeypatch, garbled):
+    """The builder's state of a stored reading is pickled apart from the
+    book: when this program cannot load it, the book opens from the book
+    alone, and a correction says that the book needs reading again."""
+    import pickle
+    driver = _driver(tmp_path, monkeypatch)
+    driver.process(str(garbled), lambda *_: None)
+    built = json.loads(json.dumps(driver.STATE["book"]))
+    data = driver.save_reading()
+    head, _ = data[len(driver.READING_MAGIC2):].split(b"\n", 1)
+    broken = (driver.READING_MAGIC2 + head + b"\n" + pickle.dumps(driver.STATE["book"])
+              + b"\x80\x05c" + b"chessbook.nothing\nBuilder\n.")
+    saved = tmp_path / "reading.bin"
+    saved.write_bytes(broken)
+    out = json.loads(driver.restore(str(garbled), str(saved)))
+    assert out[0]["type"] == "index" and out[0]["outdated"] == "state"
+    assert _same(driver.STATE["book"], built)
+    _drain(driver)
+    name = next(c["file"] for c in built["chapters"] if c["end"] >= c["start"] and c["index"] > 0)
+    assert "<html" in driver.chapter(name, lambda *_: None)
+    with pytest.raises(ValueError, match="Read again"):
+        driver.correct(json.dumps({"version": 1, "glyphs": {"tLl": "N"}}), name)
+    # a reading of the first format, which held one pickle, still opens
+    old = driver.READING_MAGIC + head + b"\n" + pickle.dumps({"book": built, "keep": None})
+    saved.write_bytes(old)
+    out = json.loads(driver.restore(str(garbled), str(saved)))
+    assert out[0]["type"] == "index" and out[0]["outdated"] == "state"
+
+
+def test_pages_are_drawn_ten_at_a_time(tmp_path, monkeypatch, garbled):
+    """The chapter readers of the app hold no page pictures; draw() gives the
+    pictures of the pages asked for, at the resolution of the screen."""
+    driver = _driver(tmp_path, monkeypatch)
+    driver.process(str(garbled), lambda *_: None)
+    name = next(c["file"] for c in driver.STATE["book"]["chapters"] if c["end"] >= c["start"] and c["index"] > 0)
+    html = driver.chapter(name, lambda *_: None)
+    assert '<script type="application/json" id="images">{}</script>' in html
+    data = driver.draw(json.dumps([1, 2, 3, 999]), "large")
+    head, body = data.split(b"\n", 1)
+    head = json.loads(head)
+    assert [p for p, _ in head["pages"]] == [1, 2, 3] and head["dpi"] == driver.DRAW["large"][0]
+    assert body[:3] == b"\xff\xd8\xff" and len(body) == sum(n for _, n in head["pages"])
+    small = driver.draw(json.dumps([1]), "small")
+    assert len(small.split(b"\n", 1)[1]) < head["pages"][0][1]
+    # the chapter about to be turned to is built without becoming the open one
+    other = next(c["file"] for c in driver.STATE["book"]["chapters"] if c["end"] >= c["start"] and c["file"] != name)
+    driver.chapter(other, lambda *_: None, prepare=True)
+    assert driver.STATE["open"] == name
 
 
 def test_cover_is_a_small_jpeg(tmp_path, monkeypatch, garbled):

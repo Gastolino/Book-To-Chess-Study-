@@ -17,16 +17,30 @@ reading the book again gives the same result. While the book is still
 read, a correction applies to a reading of the open chapter alone, and the
 final book holds every correction.
 
-In the app's library (served by the Cloudflare site, see docs/CLOUDFLARE.md)
-a book is read once: save_reading() gives the finished reading as bytes,
-which the app stores, and restore() opens the book from them on any device
-without reading it again. A stored reading names the VERSION of the program
-that made it and the selection it was made with; restore() refuses one made
-by another version or with another selection, and the app then reads the
-book again.
+In the app's library (on the device, or on the Cloudflare site, see
+docs/CLOUDFLARE.md) a book is read once: save_reading() gives the finished
+reading as bytes, which the app stores, and restore() opens the book from
+them without reading it again. A stored reading holds what the reading
+produced (the book, as book.json holds it, and the builder's state that
+applies corrections live), never the reader's pages: the contents page and
+the chapter readers are always built from it by the reader code of the day,
+so a change of the reader, the app or their look keeps every stored reading.
+A stored reading names the VERSION of the reading code that made it (a
+digest of the modules that decide what is read, READING_FILES) and the
+selection it was made with. restore() refuses one made with another
+selection (the user asked for Read again); one made by other reading code
+opens all the same, marked "outdated", and the app offers to read the book
+again ("An improved reading is available"). When the builder's state of a
+stored reading cannot be loaded by this program, the book opens from the
+stored book alone, for reading, and corrections need the book read again.
+
+The pages are not part of the chapter readers: the app asks draw() for the
+pictures of ten pages at a time (a window), around the page shown, and
+keeps them in the device's library.
 """
 import gc
 import hashlib
+import io
 import json
 import pickle
 import sys
@@ -41,26 +55,42 @@ OUT = Path("/out")
 CFG = Path("/cfg")
 STATE = {}
 BATCH_PAGES = 10        # pages of lines a piece-symbol correction replays per call (correct_more)
-READING_MAGIC = b"chessbook-reading\n"
+READING_MAGIC = b"chessbook-reading\n"          # format 1: one pickle of {"book", "keep"}
+READING_MAGIC2 = b"chessbook-reading/2\n"       # format 2: the book, then the keep (save_reading)
 COVER_WIDTH = 240       # pixels across the cover picture of the library
-# Chapter readers kept built (their file with the page pictures, and the data
-# their reader holds) after the reader leaves them: the last few, so that
+# Chapter readers kept built (their file, and the data their reader holds) after the reader leaves them: the last few, so that
 # going back is quick, and the rest of the book takes no memory. An iPhone
 # drops a page that takes too much, and the reader then loses its place.
 KEEP_CHAPTERS = 3
 
 
-def _version():
-    """A digest of the program's own files: a stored reading is used only by
-    the program that made it, since another version may read the book
-    differently (and its objects may differ)."""
-    root = Path(corrections.__file__).resolve().parents[1]
-    files = sorted(p for p in (root / "chessbook").rglob("*")
-                   if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc")
-    files += [root / "stage1_inspect.py", Path(__file__).resolve()]
-    h = hashlib.sha256()
-    for p in files:
-        h.update(p.name.encode("utf-8"))
+# The files whose change can change what the program reads in a book: the
+# reading itself, the layout and the board and figurine pictures, the
+# selection and the corrections. Everything else (the reader, its scripts,
+# its look, the app) builds pages from a reading and leaves it valid.
+READING_FILES = ("chessbook/assemble.py", "chessbook/movetext.py", "chessbook/boards.py",
+                 "chessbook/figshapes.py", "chessbook/figurines.py", "chessbook/pdftext.py",
+                 "chessbook/textdiagram.py", "chessbook/selection.py", "chessbook/corrections.py",
+                 "chessbook/live.py", "chessbook/assets", "stage1_inspect.py")
+# The form of a stored reading (save_reading); raised by hand when it changes.
+READING_FORMAT = 2
+
+
+def _version(files=READING_FILES, root=None):
+    """A digest of the reading code (the files under root, the project by
+    default): a stored reading made by other reading code opens all the
+    same, and the app offers to read the book again."""
+    root = Path(root) if root else Path(corrections.__file__).resolve().parents[1]
+    paths = []
+    for name in files:
+        p = root / name
+        if p.is_dir():
+            paths += sorted(q for q in p.rglob("*") if q.is_file() and "__pycache__" not in q.parts)
+        elif p.exists():
+            paths.append(p)
+    h = hashlib.sha256(str(READING_FORMAT).encode("ascii"))
+    for p in paths:
+        h.update(p.relative_to(root).as_posix().encode("utf-8"))
         h.update(p.read_bytes())
     return h.hexdigest()[:16]
 
@@ -177,7 +207,7 @@ def step():
     for ev in job.step():
         if ev["type"] == "index":
             ev["html"] = _index_html()
-            ev.update(title=job.plain["title"], pages=job.plain["page_count"])
+            ev.update(title=job.plain["title"], pages=job.plain["page_count"], **_chapter_list(job.plain))
         elif ev["type"] == "patch":
             STATE["data"][ev["chapter"]] = job.data[ev["chapter"]]
             # the reader holds the new reading; its file is written again when opened
@@ -223,13 +253,16 @@ def _index_html():
     return (STATE["out"] / "index.html").read_text(encoding="utf-8")
 
 
-def chapter(name, say, small=False):
-    """The HTML of chapter file name (such as "ch07.html"), built on first use.
-    small draws the pages at a lower resolution, for phones. A chapter that a
-    changed piece symbol has not reached yet (see correct_more) gets it first,
-    so that it opens with every correction applied. While the book is read,
-    the chapter opens with its best reading so far (pages only, or a first
-    reading), and its reading comes first."""
+def chapter(name, say, small=False, prepare=False):
+    """The HTML of chapter file name (such as "ch07.html"), built on first use,
+    without its page pictures (the app asks draw() for them, ten pages at a
+    time). small is kept for older pages of the app and changes nothing now.
+    A chapter that a changed piece symbol has not reached yet (see
+    correct_more) gets it first, so that it opens with every correction
+    applied. While the book is read, the chapter opens with its best reading
+    so far (pages only, or a first reading), and its reading comes first.
+    prepare builds the chapter that the reader is about to turn to, without
+    making it the open one (the app shows it at once when the page turns)."""
     out = STATE["out"]
     k = int(name[2:-5])
     loading = _loading()
@@ -241,31 +274,53 @@ def chapter(name, say, small=False):
     if loading and STATE["built_from"].get(name) is not book:
         STATE["built"].discard(name)        # written from another reading
     if name not in STATE["built"]:
-        dpi, quality = reader.PAGE_DPI, reader.PAGE_QUALITY
-        if small:
-            reader.PAGE_DPI, reader.PAGE_QUALITY = 90, 55
-        try:
-            reader.build_reader(book, STATE["pdf"], out, chapters={k},
-                                progress=say, with_index=False)
-        finally:
-            reader.PAGE_DPI, reader.PAGE_QUALITY = dpi, quality
+        reader.build_reader(book, STATE["pdf"], out, chapters={k},
+                            progress=say, with_index=False, images=False)
         STATE["built"].add(name)
         STATE["built_from"][name] = book
         ch = book["chapters"][k]
         STATE["data"][name] = live.snapshot(reader.chapter_data(book, ch, ""))
         _lighten()
-    STATE["open"] = name
-    if loading:
-        STATE["job"].opened(name, STATE["data"][name])
-    _forget_old(name)
+    if not prepare:
+        STATE["open"] = name
+        if loading:
+            STATE["job"].opened(name, STATE["data"][name])
+    _forget_old(name, keep_open=prepare)
     return (out / name).read_text(encoding="utf-8")
 
 
-def _forget_old(name):
-    """Chapter name is open: the chapters left longest ago, beyond
-    KEEP_CHAPTERS, lose their built file and their data (they are built
-    again when they open)."""
+# The resolution of the page pictures for each kind of screen: a phone, and
+# anything larger (reader.PAGE_DPI and PAGE_QUALITY).
+DRAW = {"small": (90, 55), "large": (reader.PAGE_DPI, reader.PAGE_QUALITY)}
+
+
+def draw(pages_json, size="large"):
+    """The pictures of the given pages (a JSON list of PDF page numbers), as
+    one bytes object: a header line (JSON {"pages": [[page, length], ...],
+    "size", "dpi"}) and the JPEGs one after another. size is "small" for a
+    phone and "large" otherwise."""
+    dpi, quality = DRAW.get(size, DRAW["large"])
+    doc = _doc()
+    parts, index = [], []
+    for p in json.loads(pages_json):
+        if not isinstance(p, int) or not 1 <= p <= doc.page_count:
+            continue
+        jpg = reader.page_jpeg(doc, p, dpi, quality)
+        parts.append(jpg)
+        index.append([p, len(jpg)])
+    _lighten()
+    head = json.dumps({"pages": index, "size": size, "dpi": dpi}).encode("utf-8")
+    return head + b"\n" + b"".join(parts)
+
+
+def _forget_old(name, keep_open=False):
+    """Chapter name is open (or about to open): the chapters left longest
+    ago, beyond KEEP_CHAPTERS, lose their built file and their data (they
+    are built again when they open). keep_open spares the open chapter."""
     recent = [n for n in STATE.get("recent", []) if n != name] + [name]
+    if keep_open and STATE.get("open") in recent:
+        recent.remove(STATE["open"])
+        recent.append(STATE["open"])
     for old in recent[:-KEEP_CHAPTERS]:
         STATE["built"].discard(old)
         STATE["built_from"].pop(old, None)
@@ -313,6 +368,7 @@ def correct(corrections_json, name):
     "seconds"}. While the book is read, "queued" says that the correction
     waits for the chapter's reading."""
     t0 = time.perf_counter()
+    _no_state()
     fix = corrections.parse_corrections_text(corrections_json)
     corrections.save(fix, STATE["fix_path"])
     if _loading():
@@ -339,7 +395,7 @@ def correct_more(chapters_json, name=""):
     the patch for the chapter the worker opened last (name when it has
     opened none since the contents page) when its lines changed."""
     t0 = time.perf_counter()
-    if _loading():
+    if _loading() or STATE.get("keep") is None:
         return json.dumps({"patch": None, "pending": [], "chapter": name, "seconds": 0})
     todo = set(json.loads(chapters_json))
     fix = STATE["book"]["corrections"]
@@ -388,36 +444,77 @@ def _stale(res, keep=None):
 
 def save_reading():
     """The finished reading of the book as bytes, to open it again later
-    without reading it (restore()): a header line (JSON: the program's
-    VERSION, the selection used, the PDF's name and page count), then the
-    book and the state that applies corrections live (live.py), pickled.
-    The PDF itself is not part of it: restore() opens it again."""
+    without reading it (restore()): a header line (JSON: the VERSION of the
+    reading code, the format, the selection used, the PDF's name and page
+    count), then two pickles in one stream: the book (book.json as a dict:
+    plain values only, so that any later program loads it) and the state
+    that applies corrections live (live.py: the builder, whose classes a
+    later program may have changed). One pickler writes both, so that what
+    they share stays shared. The PDF itself is not part of it: restore()
+    opens it again."""
     if _loading():
         raise ValueError("The book is still being read.")
     keep = STATE["keep"]
+    if keep is None:
+        raise ValueError("The book was opened without the state that applies corrections.")
     b = keep["builder"]
     book = STATE["book"]
-    header = {"version": VERSION, "selection": STATE.get("selection"), "pdf": STATE["pdf"].name,
-              "pages": book["page_count"]}
+    header = {"version": VERSION, "format": READING_FORMAT, "selection": STATE.get("selection"),
+              "pdf": STATE["pdf"].name, "pages": book["page_count"]}
     doc, b.doc = b.doc, None
+    out = io.BytesIO()
+    out.write(READING_MAGIC2 + json.dumps(header).encode("utf-8") + b"\n")
     try:
-        body = pickle.dumps({"book": book, "keep": {k: v for k, v in keep.items() if k != "doc"}},
-                            protocol=pickle.HIGHEST_PROTOCOL)
+        p = pickle.Pickler(out, protocol=pickle.HIGHEST_PROTOCOL)
+        p.dump(book)
+        p.dump({k: v for k, v in keep.items() if k != "doc"})
     finally:
         b.doc = doc
-    return READING_MAGIC + json.dumps(header).encode("utf-8") + b"\n" + body
+    return out.getvalue()
 
 
 def reading_header(path):
     """The header of a stored reading (save_reading), or None when the file
-    is not one."""
+    is not one. A reading of format 1 has no "format" in its header."""
     with open(path, "rb") as f:
-        if f.read(len(READING_MAGIC)) != READING_MAGIC:
+        head = f.read(len(READING_MAGIC2))
+        if head == READING_MAGIC2:
+            pass
+        elif head[:len(READING_MAGIC)] == READING_MAGIC:
+            f.seek(len(READING_MAGIC))
+        else:
             return None
         try:
-            return json.loads(f.readline())
+            h = json.loads(f.readline())
         except ValueError:
             return None
+        h["format"] = 2 if head == READING_MAGIC2 else 1      # the form of the file is its first line
+        return h
+
+
+def _load_reading(path, header):
+    """(book, keep) from a stored reading; keep is None when this program
+    cannot load the builder's state, and book None when it cannot load the
+    book either."""
+    with open(path, "rb") as f:
+        f.read(len(READING_MAGIC2) if header["format"] >= 2 else len(READING_MAGIC))
+        f.readline()
+        u = pickle.Unpickler(f)
+        if header["format"] < 2:
+            try:
+                data = u.load()
+            except Exception:
+                return None, None
+            return data["book"], data["keep"]
+        try:
+            book = u.load()
+        except Exception:
+            return None, None
+        try:
+            keep = u.load()
+        except Exception:
+            keep = None
+        return book, keep
 
 
 def restore(path, reading_path, selection_json=None, corrections_json=None):
@@ -425,38 +522,47 @@ def restore(path, reading_path, selection_json=None, corrections_json=None):
     save_reading() in the file reading_path) instead of reading it. The
     corrections stored in the browser are applied live when they differ
     from those the reading holds. Returns JSON: the messages for the page,
-    [{"type": "stale", "why"}] when the reading cannot be used (another
-    version of the program, another selection), or the contents page
-    ({"type": "index"}). step() then draws the page thumbnails and ends
-    with {"type": "done"}, as when the book is read."""
+    [{"type": "stale", "why"}] when the reading cannot be used (it is
+    damaged, or it was made with another selection), or the contents page
+    ({"type": "index"}), whose "outdated" names why the book could be read
+    better ("code": other reading code made it; "state": this program
+    cannot apply corrections to it). step() then draws the page thumbnails
+    and ends with {"type": "done"}, as when the book is read."""
     pdf = Path(path)
     header = reading_header(reading_path)
     if header is None:
         return json.dumps([{"type": "stale", "why": "The stored reading is damaged."}])
-    if header.get("version") != VERSION:
-        return json.dumps([{"type": "stale", "why": "The stored reading was made by another "
-                                                    "version of the program."}])
     if header.get("selection") != _selection_key(selection_json):
         return json.dumps([{"type": "stale", "why": "The selection of pages and diagrams changed "
                                                     "since the stored reading was made."}])
     t0 = time.perf_counter()
-    with open(reading_path, "rb") as f:
-        f.read(len(READING_MAGIC))
-        f.readline()
-        data = pickle.load(f)
+    book, keep = _load_reading(reading_path, header)
+    if book is None:
+        return json.dumps([{"type": "stale", "why": "The stored reading was made by a version of "
+                                                    "the program that this one cannot open."}])
+    outdated = None
+    if keep is None:
+        outdated = "state"
+    elif header.get("version") != VERSION:
+        outdated = "code"
     import pymupdf
     _clear()
     doc = pymupdf.open(pdf)
-    book, keep = data["book"], data["keep"]
-    keep.update(doc=doc, pdf=pdf)
-    keep["builder"].doc = doc
+    if keep is not None:
+        keep.update(doc=doc, pdf=pdf)
+        keep["builder"].doc = doc
     fix_path = corrections.corrections_path(pdf, CFG)
     fix = corrections.parse_corrections_text(corrections_json) if corrections_json else \
         corrections.empty()
     corrections.save(fix, fix_path)
     old = corrections.normalise(book.get("corrections") or {})
-    if any(fix[k] != old[k] for k in corrections.PARTS):
-        live.apply(keep, book, fix)
+    if keep is not None and any(fix[k] != old[k] for k in corrections.PARTS):
+        try:
+            live.apply(keep, book, fix)
+        except Exception:
+            # the builder of other reading code: the book opens as it was stored
+            outdated = "state"
+            keep = None
     target = selection.selection_path(pdf, CFG)
     if target.exists():
         target.unlink()
@@ -467,14 +573,29 @@ def restore(path, reading_path, selection_json=None, corrections_json=None):
     STATE.update(job=None, pdf=pdf, out=OUT / pdf.stem / "reader", doc=doc, thumbs={},
                  built=set(), built_from={}, data={}, recent=[], fix_path=fix_path, index_stale=False,
                  pending=set(), open=None, book=book, keep=keep, t0=t0,
-                 selection=header.get("selection"), restored=True, timeline={})
+                 selection=header.get("selection"), restored=True, timeline={}, outdated=outdated)
     reader.build_reader(book, pdf, STATE["out"], chapters=set(), app=True, thumbs=STATE["thumbs"])
     html = (STATE["out"] / "index.html").read_text(encoding="utf-8")
-    del data
     _lighten(full=True)
-    return json.dumps([{"type": "index", "html": html, "title": book["title"],
-                        "pages": book["page_count"], "restored": True,
-                        "seconds": round(time.perf_counter() - t0, 2)}])
+    return json.dumps([dict({"type": "index", "html": html, "title": book["title"],
+                             "pages": book["page_count"], "restored": True, "outdated": outdated,
+                             "seconds": round(time.perf_counter() - t0, 2)}, **_chapter_list(book))])
+
+
+def _chapter_list(book):
+    """The chapters for the app (which chapter file holds which pages), and
+    the file of the chapter that holds page 1, where a new book opens."""
+    chs = [{"file": c["file"], "start": c["start"], "end": c["end"]}
+           for c in book["chapters"] if c["end"] >= c["start"]]
+    first = next((c["file"] for c in chs if c["start"] <= 1 <= c["end"]), chs[0]["file"] if chs else None)
+    return {"chapters": chs, "first": first}
+
+
+def _no_state():
+    if STATE.get("book") is not None and STATE.get("keep") is None:
+        raise ValueError("This copy of the book was read by an earlier version of the program, which "
+                         "this one cannot correct. Read again reads the book anew and keeps your "
+                         "corrections, bookmarks and place.")
 
 
 def _restored_step():

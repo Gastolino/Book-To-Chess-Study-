@@ -9,9 +9,14 @@
 // test, in a fresh browser profile:
 //   - loads the site and waits for "Ready" (numpy and OpenCV may be missing:
 //     the app then reads the book without board reading);
-//   - uploads the book; the contents page shows while the book is still read
-//     (SITE_URL may carry ?pace=MS, which slows each step of the reading down,
-//     so that a small book is read slowly enough for the following);
+//   - uploads the book; it opens at its first page in the reader while the book
+//     is still read (SITE_URL may carry ?pace=MS, which slows each step of the
+//     reading down, so that a small book is read slowly enough for the
+//     following): the front matter's page is ticked, the page counter counts
+//     the whole book, the pictures of the pages come ten at a time, and the
+//     page after a chapter's last page is the next chapter's first page;
+//   - the Contents button opens the contents, which say that the book is
+//     still read, and "Back to page N" (and the browser's back) come back;
 //   - opens the first chapter before the reading finishes, waits for its first
 //     reading and steps through its moves; reading mode says it is a first
 //     reading;
@@ -136,11 +141,12 @@ async function run(browser, which) {
   };
   // ---------------------------------------------------------------- upload
   // the contents page shows as soon as the chapters are known; the book is read on
+  // a new book opens at its first page in the reader
   const upload = async () => {
     const t = now();
     await page.setInputFiles("#file", bookPdf);
     await page.waitForSelector("#view", { state: "visible", timeout: 1800000 });
-    await waitFrame(() => !!document.querySelector("li.chapter"), null, 1800000);
+    await waitFrame(() => window.READER && window.readerState && window.readerState.page, null, 1800000);
     return now() - t;
   };
   const tookText = () => page.evaluate(() => document.getElementById("took").textContent);
@@ -155,15 +161,70 @@ async function run(browser, which) {
   };
   const tUpload = now();
   let secs = await upload();
-  timing("upload until the contents page (s)", secs);
+  timing("upload until the first page shows (s)", secs);
   const took0 = await tookText();
-  check("the contents page shows while the book is still read", await loading(), took0);
+  const first0 = await inFrame(() => ({ page: window.readerState.page, chapter: window.READER.chapter,
+    use: document.getElementById("usepage").checked, total: document.getElementById("pagetotal").textContent,
+    pageCount: window.READER.pageCount, pages: Object.keys(window.READER.pages).map(Number) }));
+  check("a new book opens at its first page in the reader", first0.page === 1, first0);
+  check("the book opens while it is still read", await loading(), took0);
   check("the top bar says how far the reading has come", /^Reading/.test(took0), took0);
   check("the thin line under the top bar moves while the book is read",
     await page.evaluate(() => document.getElementById("topbar").classList.contains("on")));
+  check("the small book at the top right shows that the program is at work",
+    await page.evaluate(() => { const b = document.getElementById("busy"); return b.classList.contains("on") &&
+      getComputedStyle(b).visibility === "visible" && b.querySelectorAll(".leaf").length === 1; }));
+  if (first0.chapter.index === 0)
+    check("the front matter's pages are read by default: page 1 is ticked", first0.use, first0);
+  check("the page counter counts the whole book", /^of \d+$/.test(first0.total), first0);
+  // the pictures come ten pages at a time: the window of the page shown first
+  await waitFrame(() => !document.getElementById("pagebox").classList.contains("waiting") &&
+    document.getElementById("pageimg").naturalWidth > 0, null, 300000);
+  const pics0 = await page.evaluate(() => Object.assign({}, window.pictureStats));
+  check("the pictures of the pages come in windows of ten pages",
+    pics0.draws >= 1 && pics0.drawn <= 10 * pics0.draws + 10 && pics0.delivered >= 1, pics0);
+  await shot("02_first_page");
+  // the next page after the last page of a chapter is the first page of the next chapter
+  {
+    const ch = first0.chapter;
+    if (ch.end < first0.pageCount) {
+      for (let p = 1; p <= ch.end; p++) {
+        await inFrame(() => document.getElementById("nextpage").click());
+        await waitFrame((q) => window.readerState && window.readerState.page === q, Math.min(p + 1, first0.pageCount), 300000);
+      }
+      const nx = await inFrame(() => ({ page: window.readerState.page, file: window.READER.chapter.file,
+        start: window.READER.chapter.start, total: document.getElementById("pagetotal").textContent }));
+      check("turning past a chapter's last page shows the next chapter's first page",
+        nx.file !== ch.file && nx.page === ch.end + 1 && nx.start === ch.end + 1, { nx, ch });
+      check("the page counter runs on over the chapters", nx.total === first0.total, { nx, first0 });
+      await waitFrame(() => !document.getElementById("pagebox").classList.contains("waiting"), null, 300000);
+      await shot("02b_next_chapter");
+      await inFrame(() => document.getElementById("prevpage").click());
+      await waitFrame((q) => window.READER.chapter.file === q.file && window.readerState.page === q.page,
+        { file: ch.file, page: ch.end }, 300000);
+      check("turning back from a chapter's first page shows the previous chapter's last page", true);
+    } else note("the book has one chapter: no page turn across chapters");
+  }
+  // the contents, on request; one tap comes back
+  await inFrame(() => document.querySelector("a.nav[href='index.html']").click());
+  await waitFrame(() => !window.READER && !!document.querySelector("li.chapter"), null, 300000);
+  const back0 = await page.evaluate(() => ({ hidden: document.getElementById("backbtn").hidden,
+    text: document.getElementById("backbtn").textContent }));
+  check("the contents show a way back to the page", !back0.hidden && /^Back to page /.test(back0.text), back0);
   check("the contents page says that the book is still read",
     /is reading the book/.test(await inFrame(() => document.querySelector("main").innerText)));
   await shot("02_contents_loading");
+  const backAt = await page.evaluate(() => { const b = document.getElementById("backbtn"); b.click(); return b.textContent; });
+  await waitFrame(() => window.READER && window.readerState && window.readerState.page, null, 300000);
+  check("Back to page N comes back to that page",
+    await inFrame((t) => ("Back to page " + document.getElementById("pagenum").value) === t, backAt), backAt);
+  await inFrame(() => document.querySelector("a.nav[href='index.html']").click());
+  await waitFrame(() => !window.READER && !!document.querySelector("li.chapter"), null, 300000);
+  await page.goBack();
+  await waitFrame(() => window.READER && window.readerState && window.readerState.page, null, 300000);
+  check("the browser's back comes back from the contents to the page", true);
+  await inFrame(() => document.querySelector("a.nav[href='index.html']").click());
+  await waitFrame(() => !window.READER && !!document.querySelector("li.chapter"), null, 300000);
   const openLink = async (file) => {
     const t = now();
     await inFrame((f) => { const a = document.querySelector("li.chapter a.read[href='" + f + "']"); a.click(); }, file);
@@ -829,6 +890,7 @@ async function run(browser, which) {
   await upload();
   await waitFinal();
   timing("book processing with the stored corrections (s)", now() - tAgain);
+  if (await page.evaluate(() => openChapter !== "index.html")) await toContents();
   const again = await inFrame(() => document.querySelector("main").innerText);
   const m2 = /The run used your corrections of ([^.]*)\./.exec(again);
   check("reading the book again applies the stored corrections", !!m2 && m2[0] === m[0], { before: m && m[0], after: m2 && m2[0] });

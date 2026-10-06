@@ -108,8 +108,21 @@ onmessage = async (event) => {
       const bytes = bytesOf(driver.cover("/books/" + msg.name));
       postMessage({ type: "cover", bytes }, [bytes.buffer]);
     } else if (msg.type === "chapter") {
-      const html = driver.chapter(msg.name, say, !!msg.small);
-      postMessage({ type: "page", name: msg.name, hash: msg.hash || "", html });
+      // prepare: the chapter the reader is about to turn to, built without opening it
+      const html = driver.chapter(msg.name, msg.prepare ? () => {} : say, !!msg.small, !!msg.prepare);
+      postMessage({ type: "page", name: msg.name, hash: msg.hash || "", html, prepared: !!msg.prepare,
+                    quiet: !!msg.quiet });
+    } else if (msg.type === "draw") {
+      // the pictures of a window of pages: one header line, then the JPEGs
+      const t0 = performance.now();
+      const all = bytesOf(driver.draw(JSON.stringify(msg.pages), msg.size || "large"));
+      const nl = all.indexOf(10);
+      const head = JSON.parse(new TextDecoder().decode(all.subarray(0, nl)));
+      const pages = {};
+      let at = nl + 1;
+      for (const [p, n] of head.pages) { pages[p] = all.slice(at, at + n); at += n; }
+      postMessage({ type: "drawn", pages, size: head.size, window: msg.window, gen: msg.gen,
+                    seconds: (performance.now() - t0) / 1000 }, Object.values(pages).map((b) => b.buffer));
     } else if (msg.type === "correct") {
       // a correction made in the open chapter: applied to the book at once
       const out = driver.correct(msg.corrections, msg.chapter);
