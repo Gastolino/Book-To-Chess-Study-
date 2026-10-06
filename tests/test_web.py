@@ -210,7 +210,8 @@ def test_the_library_uses_the_server_only_when_the_site_answers(tmp_path):
     books (the Cloudflare site), and in the browser's IndexedDB otherwise
     (GitHub Pages), with the same library page."""
     page = build(tmp_path)
-    assert '<script src="library.js"></script>' in page and "LIB.start();" in page
+    # the shell hands the library the session record, so that it can go back to the open book
+    assert '<script src="library.js"></script>' in page and "LIB.start(SESSION.pending())" in page
     assert "if (LIB.message(m)) return;" in page and "if (LIB.on) { LIB.add(file); return; }" in page
     lib = (tmp_path / "site" / "library.js").read_text(encoding="utf-8")
     assert 'fetch("api/books"' in lib
