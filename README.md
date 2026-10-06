@@ -271,6 +271,17 @@ corrector. The corrector of a move also changes the line it belongs to:
   move ends it, and form a variation from it otherwise. The program refuses
   a join whose first move is not legal there and says why.
 
+A move printed without its move number after a comment ("10.Nd3 Every swap
+helps Black. b5 11.Bb3"), which the program could not confirm as the line's
+next move (see "Lines that go on"), stands in no line and is an item of the
+Review list. Its corrector offers "Continue the line after 10.Nd3", the move
+the text prints it after, as the first choice; a tap on it joins the move
+there, and the numbered moves after it then go on from it, since the
+numbering now fits (the join is applied right after the move it follows, so
+the moves printed after it find the line gone on). The other choices stay:
+another move of a line, "Continue a line…" with a tap on any move, or "Not
+a variation".
+
 In the browser app every correction applies at once: the worker replays only
 the lines it touches and sends the open chapter its changes, so the board,
 the move list, the outlines on the page and the Review list change while the
@@ -372,6 +383,34 @@ Inside a bracket, a run whose numbering goes on from the variation before it
 in the same bracket continues that variation: in "1.Ra7+ Kg8 (1...Kh6 is met
 by the waiting move 2.Rb7, while if 1...Kh8 then 2.Kg6) 2.Kf6", 2.Rb7 follows
 1...Kh6 and 2.Kf6 stays the move after 1...Kg8.
+
+Annotators often follow a move with a comment and print the reply without
+its move number: "10.Nd3 Every swap helps Black, so White retreats. b5
+11.Bb3 a5 12.a3". Such a bare move is the line's next move when the text
+and the moves agree: it is the last word before a numbered run (the words
+between may only join them: "b5, and then 11.Bb3"), it looks like a move
+with its rank printed and carries no stop or comma, it is the only move in
+its sentence, no word such as "Threat", "idea", "plan", "intending" or
+"in mind" stands in its clause ("Threat: Qxf7 mate!" stays text), the
+numbered run after it continues the numbering of the line in progress
+exactly (the next move number, the other side), the bare move is legal for
+the side to move at that line's end, and the run reads cleanly after it.
+It then goes with the line even where the run would also read as a
+variation elsewhere, since a legal bare move that makes the numbering fit
+is the stronger evidence. The line in progress is the latest variation of
+the same note and bracket, or the main line's end; in the game itself the
+reply may stand in the notes' font between the moves of the move font
+("7.Bd3 Every swap helps Black. Nbd7 8.Qc2"), and the run is then read in
+two parts. A bare move that ends a variation inside a bracket, with no run
+after it, is read only in the narrow case where a colon introduces it
+("walks into a trick which all Alekhiners should be familiar with: Qxd4!
+picking off ..."), it is the only move of its sentence, no such cue stands
+in the clause before the colon and it is legal at the variation's end;
+anywhere else a bare move with no numbered run after it stays text. In the
+reader, a bare move that passes the text's tests and is legal at the line's
+end, but whose numbered run does not read on from it, is listed as a
+sequence placed in no line, with "Continue the line after 10.Nd3" as its
+first choice (see the pencil below).
 
 In the reader, an eye marks a piece symbol on the page only when the program
 is unsure of that symbol; a move it doubts for another reason (its square,

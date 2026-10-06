@@ -1777,7 +1777,8 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
         if (st.in_seq and st.prev == "move" and i + 1 < len(pieces) and len(w) <= 5
                 and not any(ch.isdigit() for ch in w) and pieces[i + 1][0] - e == 1
                 and w.lower() not in _COMMON_WORDS and w.lower() not in _STOP_WORDS
-                and not (w.isalpha() and w[:1].isupper() and w[1:].islower())):
+                and not (w.isalpha() and w[:1].isupper() and w[1:].islower())
+                and not _prose_word(w)):         # ("Idea: g5" is no move)
             a, b = pieces[i + 1]                 # a glyph split from its square: "ttl d4"
             w2 = text[a:b]
             if (_plain_square_start(w2) and _shape(w2) == "strong"

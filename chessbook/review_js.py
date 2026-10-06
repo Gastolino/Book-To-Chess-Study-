@@ -853,6 +853,7 @@ function openSeq(key){
   for (const el of document.querySelectorAll(".mark[data-seq='" + CSS.escape(key) + "']")) { el.classList.add("seqcur"); if (!first) first = el; }
   RV.edit = {kind: "seq", key};
   const fixed = FIX.get("unattached", key);
+  const joined = FIX.get("connect", key);
   const num = /^(\d{1,3})/.exec(u.text || "");
   const want = num ? parseInt(num[1], 10) : null;
   // the main-line moves on this page and the page before it, those with the sequence's move number first
@@ -867,18 +868,27 @@ function openSeq(key){
   let h = "<div class=fh><h3>Place “<span class=n>" + shownHtml(u.text) + "</span>”</h3></div>";
   h += "<p class='small muted'>The program placed these moves in no line" + (u.reason ? ", because " + esc(u.reason) : "") +
     ". Choose the move of the line that they replace, or tap that move on the page.</p>";
+  // a move printed without its number after a comment: the move the text prints it after is the natural join
+  const afterId = u.after ? nodeByKey(u.after) : null;
+  if (afterId && !joined)
+    h += "<div class=fixacts><button class=tb id=fixafter>Continue the line after " + esc(moveText(afterId, true)) +
+      "</button></div>";
   if (cands.length)
     h += "<div class='choices lines'>" + cands.slice(0, 12).map(n => "<button data-to='" + esc(n.key) + "' aria-pressed='" +
       String(!!fixed && fixed.attach_to === n.key) + "'>" + esc(moveText(n.id, true)) + "<span class=sub>" +
       esc(title(D.lines[n.line] ? D.lines[n.line].title : "")) + ", " + esc(pageName(n.page)) + "</span></button>").join("") + "</div>";
   h += "<p class='fixmsg small' id=fixmsg role=status></p>";
-  const joined = FIX.get("connect", key);
   h += "<div class=fixacts><button class=tb id=fixdismiss>Not a variation</button>" +
     "<button class=tb id=fixjoin>Continue a line…</button>" +
     (fixed || joined ? "<button class=tb id=fixundo>Remove your correction</button>" : "") + "</div>";
   h += "<p class='small muted'>Continue a line… joins these moves to a line: you then tap the move after which they follow.</p>";
   showFix(h, "seq");
   $("fixjoin").addEventListener("click", () => startConnect(key, "these moves"));
+  if ($("fixafter")) $("fixafter").addEventListener("click", () => {
+    PEN.connect = {key, label: "this move"};
+    finishConnect(afterId);
+    if (FIX.get("connect", key)) { const said = $("fixmsg").textContent; openSeq(key); setMsg(said, "good"); }
+  });
   if (first) revealMark(first);
   $("fix").querySelector(".fix").addEventListener("click", (e) => {
     const t = e.target.closest("button[data-to]");

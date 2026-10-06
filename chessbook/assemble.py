@@ -153,6 +153,16 @@ variation of the same note, from the same square to the same square, unless
 a piece of that kind came to the square since (long_reference). Anything
 else stays text, and only a variation that is not legal stands in no line.
 
+A reply printed without its move number after a comment ("10.Nd3 Every swap
+helps Black. b5 11.Bb3 a5") is no token of any run; it is the line's next
+move when the text and the moves agree (bare_move_before, bare_lead,
+place_bare, bare_cut, bare_tail): the last word before a numbered run that
+continues the line's numbering one move on, alone in its sentence, with no
+cue such as "Threat" or "idea" in its clause, legal at the line's end, and
+the run reading cleanly after it. A bare move that passes the text's tests
+and is legal, but whose run does not read on from it, is placed in no line
+with the move it follows ("after"), for the reader to join.
+
 Note runs become variations. A note run whose first move has the number of a
 move in the line becomes an alternative to that move; a run that continues a
 variation of the same note continues it ("..., followed by 15...Nxb4" can
@@ -236,7 +246,7 @@ from .movetext import GlyphModel, Token, clean_run, decode, find_sequences, numb
 from .movetext import DOTLESS_MIN, DOTLESS_SHARE
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
 from .movetext import CAPTURE_CHARS, _ocr_digit_slip, junk_prefix, letter_symbol, symbol_span
-from .movetext import _resolve_letters, SHAPE_KNOWN
+from .movetext import _resolve_letters, SHAPE_KNOWN, _RESULT_RE, _CASTLE_RE
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -267,6 +277,16 @@ _CONNECT_WORDS = {"and", "then", "followed", "by", "or", "with", "of", "the", "a
                   "to", "carry", "out", "play", "playing", "double", "move", "moves", "after",
                   "continue", "next", "is", "are", "was", "were", "now", "already",
                   "mate", "check", "mating"}
+# Words that make a move printed without a move number, after the prose that
+# follows a line's last move, an idea rather than the line's next move
+# ("Threat: Qxf7", "intending b5", "with Nd5 in mind"); see bare_move_before.
+_BARE_CUE_RE = re.compile(
+    r"\b(?:threat\w*|ideas?|plans?|planning|planned|intend\w*|intention\w*|in mind|"
+    r"prepar(?:es|ing|ed) to|wants? to|wanting to|aim\w*|hop(?:es|ing) for)\b", re.I)
+# Words that may stand between such a bare move and the numbered run that
+# goes on after it ("b5, and then 11.Bb3", "b5 and if 11.Bb3").
+_BARE_JOIN_WORDS = {"and", "then", "now", "if", "when", "after", "followed", "by", "with",
+                    "next", "whereupon", "where", "e.g.", "eg", "say"}
 # Words that tie a run without a move number to the move it replaces.
 _ALT_CUE_RE = re.compile(r"\b(?:instead|better|stronger|weaker|preferable|worse|"
                          r"alternatively|or)\b", re.I)
@@ -1453,6 +1473,7 @@ class _Builder:
                     self.note_spot(t)
         self.all_runs = runs
         self.run_starts = [r.start for r in runs]
+        self.token_spans = sorted((t.start, t.end) for r in runs for t in r.tokens)
         items = [(off, 0, order, kind, payload) for off, order, kind, payload in st.events]
         items += [(r.start, 1, i, "run", r) for i, r in enumerate(runs)]
         items.sort(key=lambda t: (t[0], t[1], t[2]))
@@ -2345,16 +2366,21 @@ class _Builder:
             return run.text
         return re.sub(r"[ \n\r]+", " ", self.st.orig_text[run.start:run.end]).strip()
 
-    def unplaced(self, run, reason, src=None, dismiss=None):
+    def unplaced(self, run, reason, src=None, dismiss=None, after=None):
         """A sequence placed in no line, with the reason in words. src is the
         line whose notes held it; dismiss holds the entry fields of a
-        sequence the reader dismissed as no variation."""
+        sequence the reader dismissed as no variation; after is the key of
+        the move that the text prints it after (a bare move, see
+        bare_move_before), which the reader offers as the move to join it
+        to."""
         ci = run.ci if run.ci >= 0 else self.ci
         page, box = self.place_of(run.moves[0], ci) if run.moves else (None, None)
         key = fixes.token_key(page, box, run.moves[0].raw) if box is not None else None
         entry = {"page": page or self.place_of(run.tokens[0], ci)[0], "chapter": ci,
                  "text": self.run_text(run), "reason": reason, "key": key, "bbox": box,
                  "_src": src.id if src is not None else None}
+        if after:
+            entry["after"] = after
         if dismiss is not None:
             entry.update(dismiss)
             self.dismissed.append(entry)
@@ -2449,6 +2475,18 @@ class _Builder:
                 self.pending_header = None
             self.extend_or_defer(L, run)
             return
+        if (L is not None and P is not None and P == L.next_ply + 1 and not L.waiting
+                and not L.broken and L.last_fen and not self.lost(L)
+                and not self.diagram_between(L, run)):
+            # the reply printed without its number after a comment ("10.Nd3
+            # Every swap helps Black. b5 11.Bb3"): the line goes on with it
+            hit = self.bare_reply(run, L.last_fen, L.last_token_end, main=True)
+            if hit is not None:
+                ext, decs, clean = hit
+                if clean:
+                    self.extend(L, ext, decs)
+                    return
+                self.bare_unplaced(ext, L.main_nodes[-1])
         # (an earlier move of the open line that the run names makes it an
         # alternative within that line, not a resumption)
         R = (self.resumable(run, L) if P is not None and P > 0
@@ -2756,6 +2794,15 @@ class _Builder:
 
     def extend(self, L, run, decs=None):
         """Append a run to the main line of L."""
+        cut = self.bare_cut(L, run)
+        if cut is not None and cut[4]:
+            # the reply printed without its number between the run's moves
+            # ("7.Bd3 Every swap helps Black. Nbd7 8.Qc2"): the line goes on
+            # with it, and the run is read in two parts
+            head, ext, dh, de, _ = cut
+            self.extend(L, head, dh)
+            self.extend(L, ext, de)
+            return
         if not self.replaying:
             L.ops.append(("main", run))
         else:
@@ -2793,6 +2840,12 @@ class _Builder:
             if run.result:
                 L.result = run.result
             return
+        if cut is not None:
+            # a bare move the moves after it do not confirm: an item to join
+            head, ext = cut[0], cut[1]
+            nid = next((n for s_, _, n in L.main_tok if s_ == head.moves[-1].start), None)
+            if nid is not None:
+                self.bare_unplaced(ext, nid)
         for t in run.tokens:
             L.consumed.append((t.start, t.end))
         L.last_token_end = max(L.last_token_end, run.end)
@@ -2934,13 +2987,27 @@ class _Builder:
                                        "\"instead\" or \"better\" ties it to a move of the line")
                 self.tidy(L, run)
             else:
+                # the reply printed without its number after a comment
+                # ("10.Nd3 Every swap helps Black. b5 11.Bb3") goes with the run
+                ext = self.bare_lead(L, run, state, blocks)
+                run = ext or run
                 cue = bool(_FOLLOW_RE.search(self.lead_text(run.start, 40)))
                 op = ["note", run, as_main, bisect.bisect_left(blocks, run.start), cue, False]
                 if run.ply == 0 and not as_main and (L.waiting or 0 not in L.ply_node):
                     op[5] = None            # may be a sequence of its own (see note_op)
+                if ext is not None:
+                    op.append(True)         # begins with a bare move (see do_note)
                 op = tuple(op)
             L.ops.append(op)
-            self.do_note(L, op, state, base=True)
+            placed = self.do_note(L, op, state, base=True)
+            if placed and op[0] == "note":
+                tail = self.bare_tail(L, run, state, op[3])
+                if tail is not None:
+                    # a move without its number that ends the variation
+                    # ("... familiar with: Qxd4!"): it may only go on with it
+                    op = ("note", tail, as_main, op[3], True, False)
+                    L.ops.append(op)
+                    self.do_note(L, op, state, base=True)
 
     @staticmethod
     def is_long(run):
@@ -3169,9 +3236,29 @@ class _Builder:
         if op[0] == "long":
             self.do_long(L, op, state)
             return False
-        _, run, as_main, block, cue, side = op
+        _, run, as_main, block, cue, side = op[:6]
         if self.replaying:
             run = self.forced(run)
+        if len(op) > 6 and op[6]:
+            # the run begins with a move printed without its number
+            # (bare_lead): it goes on with the line when the moves confirm it,
+            # else the numbered moves are placed on their own and the bare
+            # move stands in no line, for the reader to join
+            hit = self.place_bare(L, run, block, state["vars"][block])
+            if hit is True:
+                L.variations += 1
+                state["last"] = state["vars"][block][-1]
+                state["last_start"] = run.start
+                return True
+            head, run = self.cut_run(run, 1)
+            if hit is not None:
+                parent, decs = hit
+                if decs and decs[0].status == "ok" and decs[0].san:
+                    self.unplaced(head, f"it carries no move number, and the moves after it do not "
+                                        f"read on from it after {self.move_words(parent)}", src=L,
+                                  after=self.nodes[parent].get("key"))
+            if base:
+                self.tidy(L, head)
         follows = state["last"] is not None and cue
         placed = self.place(L, run, block, state["vars"][block],
                             only=state["last"] if follows else None)
@@ -3337,7 +3424,8 @@ class _Builder:
                 plies[ply] = nid
         last = nodes[-1] if nodes else parent
         vars_.append({"depth": run.depth, "plies": plies, "last": last,
-                      "next": (max(plies) + 1) if plies else None, "bracket": run.bracket})
+                      "next": (max(plies) + 1) if plies else None, "bracket": run.bracket,
+                      "end": run.end})
         return True
 
     def unread_reason(self, L, run, decs):
@@ -3427,6 +3515,275 @@ class _Builder:
                 text = readable_move(t.raw, self.dec.glyphs, self.dec.letters)
                 if text:
                     L.replace.append((t.start, t.end, text))
+
+    # -------------------------------------------------------- bare moves
+    #
+    # Annotators often follow a move with a comment and print the reply
+    # without its move number ("10.Nd3 Every swap helps Black. b5 11.Bb3
+    # a5"). Such a word is no token of any run (tokenize reads a move only
+    # inside a numbered run); the methods below find it in the text between
+    # a line's last move and the numbered run that goes on after it, and the
+    # moves decide: see bare_move_before for what the text must look like,
+    # bare_lead and on_main for the numbered run that confirms it, and
+    # bare_tail for a move that ends a variation in a bracket.
+
+    def token_at(self, s, e):
+        """True when a token of a run overlaps text[s:e]."""
+        k = bisect.bisect_right(self.token_spans, (s, 10 ** 9))
+        return (k > 0 and self.token_spans[k - 1][1] > s) or \
+            (k < len(self.token_spans) and self.token_spans[k][0] < e)
+
+    def bare_move_before(self, lo, hi, main=False):
+        """A move printed without a move number as the last word before hi,
+        after lo (the end of the line's last move), or None. The word must
+        look like a move with its rank printed ("b5", "Qc7", "Bxf3!"), carry
+        no stop or comma after it, and stand in no run; the words after it
+        may only join it to the run ("b5, and then"). Its sentence (from the
+        last stop, semicolon, colon or bracket before it) holds no other
+        move, and its clause before a colon no cue that makes it a threat, a
+        plan or an idea ("Threat: Qxf7 mate!"). With main, a word such as
+        "Or", "Instead", "If" or "After" before it keeps it an alternative.
+        Returns the move's token, with no number yet."""
+        text = self.st.orig_text
+        words = list(re.finditer(r"\S+", text[lo:hi]))
+        k = len(words) - 1
+        while k >= 0 and words[k].group().lower().strip(",;") in _BARE_JOIN_WORDS:
+            k -= 1
+        if k < 0:
+            return None
+        w = words[k].group()
+        s, e = lo + words[k].start(), lo + words[k].end()
+        if w[-1] in ".,;:" or w[0] in "([{\"'“‘" or _RESULT_RE.match(w) or self.token_at(s, e):
+            return None
+        core, _, _ = _strip_suffix(w)
+        if not core or _shape(w) != "strong" or core.isdigit() or len(core) < 2:
+            return None
+        if not (re.search(r"[a-h][1-8]$", core) or _CASTLE_RE.match(core.replace(" ", ""))):
+            return None                 # a rank read from a letter is no bare move
+        head = text[lo:s]
+        # the sentence and the clause the move stands in
+        stops = [m.end() for m in re.finditer(r"[.!?;]\s|[(\[]", head)]
+        clause = head[stops[-1]:] if stops else head
+        cuts = [m.end() for m in re.finditer(r"[.!?;:]\s|[(\[]", head)]
+        sentence = head[cuts[-1]:] if cuts else head
+        if _BARE_CUE_RE.search(clause):
+            return None
+        if main and _ALT_LEAD_RE.search(re.sub(r"\s+", " ", sentence)):
+            return None
+        for m in re.finditer(r"\S+", sentence):
+            ww = m.group()
+            if _shape(ww) == "strong" and not ww.endswith((".", ",", ";")) \
+                    and re.search(r"[a-h][1-8]", _strip_suffix(ww)[0]):
+                return None             # another move in the sentence: prose about moves
+        return Token("move", w, s, e, None, False)
+
+    def bare_extended(self, run, tok, ply):
+        """The run with the bare move tok before its first move, numbered
+        from ply (the ply tok is played at)."""
+        toks = [tok] + list(run.tokens)
+        _relabel(toks, ply // 2 + 1, bool(ply % 2))
+        moves = [t for t in toks if t.kind == "move"]
+        saved, self.ci = self.ci, run.ci if run.ci >= 0 else self.ci
+        try:
+            self.place_of(moves[0])
+            self.note_spot(moves[0])
+        finally:
+            self.ci = saved
+        text = re.sub(r"[ \n\r]+", " ", self.st.orig_text[toks[0].start:toks[-1].end]).strip()
+        return replace(run, tokens=toks, moves=moves, start=toks[0].start, ply=ply, text=text)
+
+    def bare_reply(self, run, fen, lo, main=False):
+        """(the run with the bare move before it, its decoding, clean) when a
+        bare move stands last before the run (bare_move_before), the run's
+        numbering is one move ahead of the position fen and the bare move is
+        legal there; clean says whether the run reads cleanly after it. None
+        otherwise."""
+        if run.ply is None or not fen or _board_ply(fen) != run.ply - 1:
+            return None
+        tok = self.bare_move_before(lo, run.start, main=main)
+        if tok is None:
+            return None
+        ext = self.bare_extended(run, tok, run.ply - 1)
+        decs = self.dec.run(fen, ext.tokens)
+        if not decs or decs[0].status != "ok" or not decs[0].san:
+            return None
+        clean = _fit(decs)[0] == 0 and not any(d.capture_mark and d.san and "x" not in d.san
+                                               for d in decs)
+        return ext, decs, clean
+
+    def bare_unplaced(self, ext, nid):
+        """The bare move before the run ext stands in no line, with the move
+        nid (of the line in progress) the reader may join it to."""
+        head, _ = self.cut_run(ext, 1)
+        self.unplaced(head, "it carries no move number, and the moves after it do not read "
+                            f"on from it after {self.move_words(nid)}",
+                      after=self.nodes[nid].get("key"))
+
+    def bare_cut(self, L, run):
+        """A main run whose numbering skips one move inside it ("7.Bd3 8.Qc2
+        Re8", the reply printed in the notes' font between them): (head, the
+        rest with the bare move before it, the decodings of both) when the
+        head reads cleanly from the line's last position, the bare move is
+        legal after it and the rest reads cleanly after the bare move
+        (bare_reply); else None."""
+        if L.waiting or L.broken or not L.last_fen or run.ply is None or self.replaying:
+            return None
+        expect = run.ply
+        j = None
+        for i, t in enumerate(run.tokens):
+            if t.kind != "move":
+                continue
+            p = _ply(t)
+            if p == expect + 1 and i > 0 and run.tokens[i - 1].kind == "number":
+                j = i
+                break
+            if p != expect:
+                return None
+            expect = p + 1
+        if j is None:
+            return None
+        head, tail = self.cut_run(run, j)
+        if head is None or tail is None or self.diagram_cut(run) is not None:
+            return None
+        dh = self.dec.run(L.last_fen, head.tokens)
+        if _fit(dh)[0] != 0 or not dh[-1].fen:
+            return None
+        hit = self.bare_reply(tail, dh[-1].fen, head.end, main=True)
+        if hit is None:
+            return None
+        ext, de, clean = hit
+        return head, ext, dh, de, clean
+
+    def bare_lead(self, L, run, state, blocks):
+        """The note run with the bare move that the text prints before it
+        (bare_move_before) as the next move of the variation it would go on
+        with: the latest variation of the same note and bracket, or the main
+        line's end, whose next move the run's numbering skips. The moves
+        decide in place_bare whether it goes on so; else None."""
+        if run.ply is None or L.waiting:
+            return None
+        block = bisect.bisect_left(blocks, run.start)
+        vars_ = state["vars"][block]
+        lo = None
+        v = self.bare_parent(run, vars_, run.ply - 1)
+        if v is not None and v.get("end", run.start) < run.start:
+            lo = v["end"]
+        elif (run.depth == 0 and block >= len(L.main_tok) and L.main_tok and not L.broken
+                and L.next_ply == run.ply - 1):
+            lo = L.main_tok[-1][1]
+        if lo is None:
+            return None
+        tok = self.bare_move_before(lo, run.start)
+        if tok is None:
+            return None
+        ext = self.bare_extended(run, tok, run.ply - 1)
+        return None if self.is_threat(ext) else ext
+
+    @staticmethod
+    def bare_parent(run, vars_, ply):
+        """The variation of the note that a bare move before run would go on
+        with: the latest one of the run's depth and bracket whose next move
+        is ply, or, for a run outside any bracket, the latest one of the note
+        at all (the tokenizer's bracket depth ends inside a long bracket)."""
+        cont = [v for v in vars_ if v["depth"] == run.depth
+                and (run.depth == 0 or v.get("bracket") == run.bracket)]
+        if cont and cont[-1]["next"] == ply:
+            return cont[-1]
+        if run.depth == 0 and vars_ and vars_[-1]["next"] == ply:
+            return vars_[-1]
+        return None
+
+    def place_bare(self, L, run, block, vars_):
+        """Place a note run that begins with a bare move (bare_lead) as the
+        continuation of the variation, or of the main line, whose next move
+        it is: only when the bare move is legal there and the whole reads
+        cleanly. Returns True, or (the parent node tried, its decoding)."""
+        cands = []
+        v = self.bare_parent(run, vars_, run.ply)
+        if v is not None:
+            cands.append(v["last"])
+        if (run.depth == 0 and not L.broken and L.main_tok and run.start > L.main_tok[-1][1]
+                and run.ply == L.next_ply):
+            cands.append(L.main_nodes[-1])
+        tried = None
+        for parent in cands:
+            fen = self.nodes[parent]["fen"]
+            if not fen:
+                continue
+            decs = self.dec.run(fen, run.tokens)
+            if tried is None:
+                tried = (parent, decs)
+            if not decs or decs[0].status != "ok" or not decs[0].san or _fit(decs)[0] != 0:
+                continue
+            if any(d.capture_mark and d.san and "x" not in d.san for d in decs):
+                continue
+            if not self.replaying:
+                self.dec.accepted.append(decs)
+            nodes = self.insert_decoded(L, parent, run, decs)
+            plies = {}
+            for nid in nodes:
+                ply = self.node_ply(nid)
+                if ply is not None:
+                    plies[ply] = nid
+            vars_.append({"depth": run.depth, "plies": plies, "last": nodes[-1] if nodes else parent,
+                          "next": (max(plies) + 1) if plies else None, "bracket": run.bracket,
+                          "end": run.end})
+            return True
+        return tried
+
+    def bare_tail(self, L, run, state, block):
+        """A move printed without a move number that ends a variation inside
+        a bracket: after the variation's last run, before the bracket closes
+        and with no run between, a colon introduces it ("... should be
+        familiar with: Qxd4!"), it is the only move of its sentence, no cue
+        makes it a threat or an idea, and it is legal at the variation's
+        end. Returns a note run of that move, or None."""
+        if run.depth == 0 or run.ply is None or L.waiting:
+            return None
+        vars_ = state["vars"][block]
+        v = vars_[-1] if vars_ else None
+        if v is None or v.get("end") != run.end or v["next"] is None:
+            return None
+        text = self.st.orig_text
+        k = bisect.bisect_right(self.run_starts, run.end)
+        limit = self.all_runs[k].start if k < len(self.all_runs) else len(text)
+        close = re.search(r"[)\]]", text[run.end:limit])
+        if close is None:
+            return None
+        seg_end = run.end + close.start()
+        open_ = re.search(r"[(\[]", text[run.end:seg_end])
+        if open_ is not None:
+            seg_end = run.end + open_.start()
+        seg = text[run.end:seg_end]
+        m = re.search(r"(?:^|\s)\S+:\s+(\S+)", seg)
+        if m is None:
+            return None
+        s, e = run.end + m.start(1), run.end + m.end(1)
+        w = m.group(1)
+        if w[-1] in ".,;:" or self.token_at(s, e):
+            return None
+        core, _, _ = _strip_suffix(w)
+        if not core or _shape(w) != "strong" or not re.search(r"[a-h][1-8]$", core):
+            return None
+        clause = seg[:m.start(1)]
+        stops = [x.end() for x in re.finditer(r"[.!?;]\s", clause)]
+        if _BARE_CUE_RE.search(clause[stops[-1]:] if stops else clause):
+            return None
+        rest = seg[m.end(1):]
+        stop = re.search(r"[.!?;]\s", rest)
+        for x in re.finditer(r"\S+", rest[:stop.start()] if stop else rest):
+            if _shape(x.group()) == "strong" and re.search(r"[a-h][1-8]", _strip_suffix(x.group())[0]):
+                return None
+        fen = self.nodes[v["last"]]["fen"]
+        if not fen:
+            return None
+        tok = Token("move", w, s, e, None, False)
+        tail = self.bare_extended(_Run("note", [], [], s, e, run.depth, None, None, ci=run.ci,
+                                       bracket=run.bracket), tok, v["next"])
+        decs = self.dec.run(fen, tail.tokens)
+        if not decs or decs[0].status != "ok" or not decs[0].san:
+            return None
+        return tail
 
     # -------------------------------------------------------- closing
     def suspend(self, off):
@@ -3963,10 +4320,10 @@ class _Builder:
                 sub = [("main", tail)]
             else:
                 rec, oi, j = loc[1], loc[2], loc[3]
-                if rec is tgt[1]:
-                    continue                # a line cannot continue itself
                 ops = rec[1]
                 op = ops[oi]
+                if rec is tgt[1] and op[0] == "main":
+                    continue                # a line cannot continue itself
                 if op[0] in ("note", "unplaced"):
                     ops[oi] = ("skip",)
                     sub = [("main", op[1])]
@@ -3984,7 +4341,12 @@ class _Builder:
                         rec[1] = ops[:oi] + ([("main", head)] if head is not None else []) + notes
                 else:
                     continue
-            tgt[1][1].append(("graft", v["after"], sub, key))
+            # the join goes right after the step that placed the move chosen,
+            # so that the moves printed after it (a numbered run after a
+            # bare move) find the line gone on when their turn comes
+            tops = tgt[1][1]
+            at = tgt[2] + 1 if tops[tgt[2]][0] in ("main", "note") else len(tops)
+            tops.insert(at, ("graft", v["after"], sub, key))
         globs = [(g[0], g[1]) for g in glob if g is not None]
         return [(rec[0], rec[1]) for rec in recs], globs, dismissed
 
@@ -4075,7 +4437,7 @@ class _Builder:
             elif kind == "attach":
                 self.do_attach(L, op[1], op[2])
             elif kind == "graft":
-                self.do_graft(L, op)
+                self.do_graft(L, op, state)
 
     def target_node(self, L, key):
         """The node of line L whose move token key names, or None."""
@@ -4158,11 +4520,12 @@ class _Builder:
             return "the start of the line"
         return f"{n['number']}{'...' if n['black'] else '.'}{n['san'] or _shown(n['raw'])}"
 
-    def do_graft(self, L, op):
+    def do_graft(self, L, op, state=None):
         """Runs that the reader said continue this line after one of its moves:
         the main line goes on with them when that move ends it, and they form
-        a variation from that move otherwise. Moves that are not legal there
-        are placed in no line, with the reason."""
+        a variation from that move otherwise (and a note run that continues
+        their numbering goes on with them, state). Moves that are not legal
+        there are placed in no line, with the reason."""
         _, target, sub, src_key = op
         nid = self.target_node(L, target)
         mains = [o[1] for o in sub if o[0] == "main"]
@@ -4204,6 +4567,16 @@ class _Builder:
         L.variations += 1
         if nodes and src_key:
             self.set_corrected(nodes[0], "connected")
+        if state is not None and nodes and not self.nodes[nid]["main"]:
+            plies = {}
+            for n in nodes:
+                ply = self.node_ply(n)
+                if ply is not None:
+                    plies[ply] = n
+            block = bisect.bisect_left([s_ for s_, _, _ in L.main_tok], whole.start)
+            state["vars"][block].append({"depth": run0.depth, "plies": plies, "last": nodes[-1],
+                                         "next": (max(plies) + 1) if plies else None,
+                                         "bracket": run0.bracket, "end": whole.end})
 
     def add_variations(self, L):
         """The variations the reader added on the board (corrections.py
