@@ -1,7 +1,8 @@
 """The legal moves of a position, in the browser.
 
 CHESS_JS gives legalMoves(fen) -> [[SAN, UCI], ...] sorted by SAN, as
-reader.legal_moves() does in Python, so that the chapter reader can offer
+reader.legal_moves() does in Python, after(fen, uci) -> the FEN after a move
+and inCheck(fen) -> whether the side to move is in check, so that the chapter reader can offer
 the legal moves of any position (the pencil corrects any move, not only the
 moves the program was unsure of) without the build listing them for every
 move. Squares are numbered 0..63 from a8 to h1, row by row.
@@ -152,6 +153,11 @@ const CJ = (function(){
     const p = parse(f), m = legal(p).find(o => sq(o.from >> 3, o.from & 7) + sq(o.to >> 3, o.to & 7) + o.promo === uci);
     return m ? fen(play(p, m)) : null;
   }
-  return {legalMoves, after};
+  function sideInCheck(f){
+    let p;
+    try { p = parse(f); } catch (e) { return false; }
+    return inCheck(p, p.turn === "w");
+  }
+  return {legalMoves, after, inCheck: sideInCheck};
 })();
 """

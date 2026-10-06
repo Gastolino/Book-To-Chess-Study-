@@ -35,6 +35,9 @@ TOKENS = {
     "fail": ("#b4413a", "#e0756d"),
     "board-light": ("#ecebe6", "#b9b8b2"),
     "board-dark": ("#bdbab2", "#8f8d87"),
+    # the bookmark icon when set and the ribbon on a bookmarked page, and
+    # nothing else: one sharp warm yellow in both schemes, so that it stands out
+    "bookmark": ("#f2b705", "#f2b705"),
 }
 
 
@@ -155,6 +158,13 @@ ICONS = {
     "pencil": "<path d='M4 16l.9-3.6L13.6 3.7a1.3 1.3 0 0 1 1.8 0l.9.9a1.3 1.3 0 0 1 0 1.8L7.6 15.1z"
               "M12.2 5.1l2.7 2.7'/>",
     "download": "<path d='M10 3.5v9M6.5 9l3.5 3.5L13.5 9M4.5 16h11'/>",
+    # a processor: a square with pins on its sides, for the analysis switch
+    "cpu": "<path d='M5.5 5.5h9v9h-9zM8 8h4v4H8zM8 2.5v3M12 2.5v3M8 14.5v3M12 14.5v3M2.5 8h3M2.5 12h3"
+           "M14.5 8h3M14.5 12h3'/>",
+    # a gear: a circle with six short teeth, for the analysis settings
+    "gear": "<circle cx='10' cy='10' r='3'/><path d='M10 2.5v3M10 14.5v3M3.5 6.25l2.6 1.5M13.9 12.25l2.6 1.5"
+            "M3.5 13.75l2.6-1.5M13.9 7.75l2.6-1.5'/>",
+    "bookmark": "<path d='M5.5 3.5h9v13l-4.5-3.3-4.5 3.3z'/>",
 }
 
 

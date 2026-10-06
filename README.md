@@ -128,6 +128,23 @@ storage), so nothing leaves the device:
   Primer takes about 15 MB: the PDF 11 MB and the reading 4 MB. When the device has no room left,
   the app says so and opens the book for the moment without keeping it.
 
+### Coming back to the open book
+
+An iPhone or iPad drops a page left in the background for too long, and
+the app then starts afresh when it is opened again. The app keeps a small
+note of where the reader was (the book, the chapter, the page, the move and
+how far the page and the move list were scrolled), written a moment after
+each change and at once when the app goes to the background. When the app
+starts again within a day, it skips the library page and opens that book at
+that place from its stored reading, with one line in the top bar ("Back to
+The Soviet Chess Primer, page 31") and the **Library** link beside it. A
+book whose reading was not finished when the system closed the app is read
+again, from the same page, and the line says so. The place last read is
+written to the library at once as well when the app goes to the background,
+so nothing is lost. **Library** forgets the note. On a site where the
+browser keeps no library (a private window), the start page says that the
+book has to be chosen again; chosen again, it opens at that place.
+
 On an iPhone or iPad, Safari may clear the storage of a site that has not
 been opened for seven days. An app added to the Home Screen keeps its
 storage: open the site in Safari, choose the share button and **Add to Home
@@ -151,6 +168,21 @@ If the file was made by another version of the program, the book is read
 again, with the corrections. If the library holds the book already (the same
 PDF), the newer of the two sets of corrections wins, and the page says which.
 The file is an ordinary zip archive; `book.pdf` inside it is the book.
+
+### Bookmarks
+
+The bookmark icon in the reader's top bar (and in the bar at the foot of a
+phone screen) marks the page shown, with the move chosen on it. The icon
+fills in a warm yellow on a bookmarked page, and a yellow ribbon hangs from
+the top edge of the page picture, in the margin beside the moves. A tap on
+the ribbon (or on the filled icon) removes the bookmark; one line over the
+page's corner says "Bookmark removed" with Undo for a few seconds. A book
+holds any number of bookmarks, one per page. The contents page lists them
+("Bookmarks: page 31, page 57"), each a link that opens the chapter at that
+page and move, and the library lists them under each book ("Bookmarks on
+pages 31 and 57"), where a tap opens the book there. The bookmarks are kept
+with the corrections: in the browser, in the site's library, and in the book
+file, so that they travel to another device; the newer copy wins.
 
 The reader names the book by its title in words. It takes the title the PDF
 records (without the "Microsoft Word -" that some converters put before it),
@@ -333,6 +365,56 @@ and they travel with the other corrections (part "added" of the
 corrections), through Read again, the book file and a new build. In a reader
 built from the command line the board shows your move at once, and the next
 run, with the corrections copied into the chat, adds it to the line.
+
+## Analysis with Stockfish
+
+The board panel of every chapter reader carries a small processor icon next
+to the icon that turns the board round. A tap on it turns analysis on: the
+chess engine Stockfish 19 (Stockfish.js by Nathan Rugg, the lite
+single-threaded build, free software under the GNU General Public License,
+version 3; see `docs/THIRD_PARTY.md`) analyses the position the board
+shows, whatever it is: a move of the book, a variation you added on the
+board, or the preview of a move you have just made. The engine runs on
+your own device, in a worker of the browser, and sends nothing anywhere.
+
+- A thin bar along the left side of the board shows the evaluation, White's
+  share from the bottom (from the top when the board is turned round), with
+  the figure at its foot: "+0.8" for White, "−1.3" for Black, "M3" for a
+  mate in three. The figure is always from White's point of view.
+- A section between the board's controls and the title of the line lists
+  the engine's lines, one row each: its evaluation and its moves, numbered
+  from the shown position. A tap on a row plays its first move on the
+  board, through the same choice as a piece moved by hand: the book's move
+  steps, any other move corrects the line or adds a variation of your own.
+  So the evaluation of a new variation is one tap away. A quiet line above
+  says how deep the engine has looked; "Deeper" lifts the limit for this
+  position.
+- Stepping through the moves analyses each position after a short pause;
+  the engine stops when its limit is reached, pauses while the page is
+  hidden, and stops when analysis is turned off or the chapter is left, so
+  that it drains no phone. On a phone the processor icon stands in the bar
+  at the foot of the screen as well, and the figure shows next to the
+  current move.
+- The gear beside the icon opens the settings: the number of lines (1 to
+  5), where the search stops (a depth, 18 by default, or a time per
+  position), whether every shown position is analysed or only the one shown
+  when the icon is pressed, an arrow for the best move on the board, and the
+  engine's memory (16 or 32 MB). The settings are kept in the browser. The
+  foot of the settings names the engine and its licence.
+
+The engine (1.8 MB) is loaded the first time analysis is turned on, not
+before, so the site stays light; the browser then keeps its two files in
+its storage, and analysis works offline afterwards, in the Home Screen app
+as well. Safari on iOS 16 and macOS 11 and later and every current browser
+run it. `.github/workflows/pages.yml` fetches the engine with
+`tools/fetch_engine.py`, which checks the files against pinned checksums,
+and `tools/build_web.py --engine` copies them into the site. A reader built
+from the command line offers analysis when the engine files stand beside
+it: `python3 tools/fetch_engine.py local/engine` once, then
+`python3 make_reader.py book.pdf --engine local/engine`; without them the
+processor icon says that the engine is not installed. A reader opened as a
+file (not through a web server or the app) cannot start the engine in most
+browsers. `tests/engine_e2e.js` runs the analysis in Chromium.
 
 ## Lines that go on
 

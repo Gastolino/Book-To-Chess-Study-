@@ -36,6 +36,7 @@ NODE = shutil.which("node") or "/opt/node22/bin/node"
 NODE_PATH = "/opt/node22/lib/node_modules"
 PYODIDE = Path(os.environ.get("CHESSBOOK_PYODIDE", ROOT / "local" / "pyodide"))
 WHEELS = Path(os.environ.get("CHESSBOOK_WHEELS", ROOT / "local" / "wheels"))
+ENGINE = Path(os.environ.get("CHESSBOOK_ENGINE", ROOT / "local" / "engine"))
 
 
 def _wheel(pattern):
@@ -60,9 +61,12 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
 @pytest.mark.skipif(not _ready(), reason="no local Pyodide folder, Pyodide wheels, node or Playwright")
 def test_app_in_chromium(tmp_path):
     site = tmp_path / "site"
+    from chessbook import engine_files
+    # the engine (local/engine, tools/fetch_engine.py) when it is there: the reader then shows an eval
+    engine = ["--engine", str(ENGINE)] if engine_files.present(ENGINE) else []
     subprocess.run([sys.executable, str(ROOT / "tools" / "build_web.py"), "--out", str(site),
                     "--local", str(PYODIDE), "--pymupdf", str(_wheel("pymupdf-*.whl")),
-                    "--chess", str(_wheel("chess-*.whl"))], check=True)
+                    "--chess", str(_wheel("chess-*.whl"))] + engine, check=True)
     book = os.environ.get("CHESSBOOK_APP_BOOK")
     # the generated book is read in a few seconds: each step of its reading is
     # slowed down, so that the test can read it while it is read
@@ -102,5 +106,7 @@ def test_app_in_chromium(tmp_path):
             "the final reading keeps the chosen move",
             "the correction made while the book was read survives the final reading"} <= names
     assert {c["mode"] for c in res["checks"]} >= {"desktop", "phone"}
+    if engine:
+        assert "the app's reader shows an eval from the engine" in names
     print(json.dumps(res["timings"], indent=1))
     print("\n".join(res["notes"]))

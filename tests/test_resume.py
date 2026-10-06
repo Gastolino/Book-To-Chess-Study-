@@ -1,16 +1,15 @@
-"""The library in the browser (web/library.js with its IndexedDB store), on
-the static site that GitHub Pages serves, with no server: a book added once
-opens again without being read, with its corrections and at its place, after
-the browser is started again; a book saved as a book file (.chessbook) opens
-in another browser profile the same way; removing a book leaves nothing
-behind (tests/device_library_e2e.js).
+"""Coming back to the open book after the system closed the app: the page
+keeps a small record of where the reader was (SESSION in
+tools/build_web.py), and when it loads again within a day it opens the book
+at that chapter, page, move and scroll from the stored reading, skipping
+the library page (tests/resume_e2e.js, on the static site with the library
+in the browser).
 
 The test needs a local Pyodide distribution and the PyMuPDF and python-chess
 wheels for Pyodide (CHESSBOOK_PYODIDE, CHESSBOOK_WHEELS, as
 tests/test_app_e2e.py), node and Playwright; it is skipped without them.
-The books are the generated test book with a garbled game and a second
-book, or the two PDFs that CHESSBOOK_DEVICE_BOOKS names (separated by a
-comma)."""
+The book is the generated test book with a garbled game and a second
+chapter, or the PDF that CHESSBOOK_RESUME_BOOK names."""
 import functools
 import http.server
 import json
@@ -53,10 +52,12 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def test_the_shell_offers_the_library_everywhere(tmp_path):
-    """The start page is the library wherever the app runs: the server's when
-    /api/books answers, else the one in the browser; the app can be added to
-    the Home Screen; the file chooser takes book files as well as PDFs."""
+def test_the_shell_keeps_a_session_record(tmp_path):
+    """The shell writes the record on changes and when the page is hidden,
+    reads the reader's view from its page, and resumes through the library;
+    the manifest's start page is the page that resumes; nothing stops the
+    browser from keeping the page alive in its back-forward cache (no
+    unload handler)."""
     site = tmp_path / "site"
     wheel = tmp_path / "chess-1.0-py3-none-any.whl"
     wheel.write_bytes(b"")
@@ -64,43 +65,41 @@ def test_the_shell_offers_the_library_everywhere(tmp_path):
                     "--pymupdf-url", "https://example.invalid/pymupdf.whl", "--chess", str(wheel)],
                    check=True, capture_output=True)
     page = (site / "index.html").read_text(encoding="utf-8")
-    assert '<link rel="manifest" href="manifest.webmanifest">' in page
-    assert 'accept="application/pdf,.pdf,.chessbook,application/zip,.zip"' in page
-    assert 'id="libspace"' in page and 'id="libhint"' in page
+    assert '"chessbook-session"' in page and "LIMIT = 24 * 3600 * 1000" in page
+    for ev in ('"visibilitychange"', '"pagehide"', '"freeze"'):
+        assert ev in page
+    assert '"unload"' not in page and "beforeunload" not in page
+    assert "w.readerView()" in page and "LIB.start(SESSION.pending())" in page
+    assert 'id="resume"' in page and "Back to " in page
     manifest = json.loads((site / "manifest.webmanifest").read_text(encoding="utf-8"))
-    assert manifest["display"] == "standalone"
-    assert (site / "icon-180.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert manifest["start_url"] == "./" and manifest["scope"] == "./"
     lib = (site / "library.js").read_text(encoding="utf-8")
-    assert 'indexedDB.open(NAME, 1)' in lib and "navigator.storage.persist()" in lib
-    assert "navigator.storage.estimate()" in lib and "navigator.share(" in lib
+    assert "api.start = async function (resume)" in lib and "api.leaving = function (rec)" in lib
+    assert 'window.addEventListener("pagehide", () => flush(true));' in lib
+    reader = (ROOT / "chessbook" / "reader.py").read_text(encoding="utf-8")
+    assert "window.readerView = readerView;" in reader and "&v=" in reader
+    assert '"unload"' not in reader
 
 
 @pytest.mark.skipif(not _ready(), reason="no local Pyodide folder, Pyodide wheels, node or Playwright")
-def test_device_library_end_to_end(tmp_path):
+def test_resume_end_to_end(tmp_path):
     site = tmp_path / "site"
     subprocess.run([sys.executable, str(ROOT / "tools" / "build_web.py"), "--out", str(site),
                     "--local", str(PYODIDE), "--pymupdf", str(_wheel("pymupdf-*.whl")),
                     "--chess", str(_wheel("chess-*.whl"))], check=True)
-    books = [b for b in os.environ.get("CHESSBOOK_DEVICE_BOOKS", "").split(",") if b]
-    if len(books) < 2:
-        import pymupdf
+    book = os.environ.get("CHESSBOOK_RESUME_BOOK")
+    if not book:
         from test_assemble import make_book
         from test_corrections import GARBLED, NOTE
-        first = make_book(tmp_path / "garbled_games.pdf", game=GARBLED, note7=NOTE, second=True)
-        plain = make_book(tmp_path / "plain.pdf", second=True)
-        doc = pymupdf.open(plain)
-        doc.set_metadata({"title": "Endgame Lessons for Club Players"})
-        second = tmp_path / "endgame_lessons.pdf"
-        doc.save(second)
-        books = [str(first), str(second)]
+        book = str(make_book(tmp_path / "garbled_games.pdf", game=GARBLED, note7=NOTE, second=True))
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), functools.partial(_Handler, directory=str(site)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    screens = Path(os.environ.get("CHESSBOOK_SCREENS", ROOT / "output" / "screens" / "device_library"))
+    screens = Path(os.environ.get("CHESSBOOK_SCREENS", ROOT / "output" / "screens" / "resume"))
     try:
         env = dict(os.environ, NODE_PATH=NODE_PATH)
-        proc = subprocess.run([NODE, str(ROOT / "tests" / "device_library_e2e.js"),
-                               f"http://127.0.0.1:{server.server_address[1]}/", *books[:2],
+        proc = subprocess.run([NODE, str(ROOT / "tests" / "resume_e2e.js"),
+                               f"http://127.0.0.1:{server.server_address[1]}/", book,
                                str(tmp_path / "work"), str(screens)],
                               capture_output=True, text=True, env=env, timeout=7200)
     finally:
@@ -112,18 +111,14 @@ def test_device_library_end_to_end(tmp_path):
     assert res["ok"], (res.get("failure"), failed, res["errors"])
     assert res["errors"] == []
     names = {c["name"] for c in res["checks"]}
-    assert {"the PDF, the reading and the record are kept in IndexedDB",
-            "the book opens without being read again",
-            "the book opens at the stored page and move",
-            "the book holds the correction",
-            "the book file holds the book, its reading, its cover and its record",
-            "the book from the file opens without being read",
-            "the book from the file holds the correction",
-            "the book file carries the bookmark",
-            "the library on the other device lists the bookmark under the book",
-            "the bookmark in the library opens the book at its page and move",
-            "the newer corrections of a book file win, and the user is told",
-            "a removed book leaves nothing behind"} <= names
+    assert {"the session record holds the book, chapter, page, move and view",
+            "the start page says where the app goes back to, with a Library link",
+            "the top bar says where the app came back to",
+            "the book opened from the stored reading, not read again",
+            "the reader is at the same scroll, in the page and in the move list",
+            "a record older than a day shows the library",
+            "closed while the book was read: the chapter opens at the page, and the app says the book is read again",
+            "without a library the start page says the book has to be chosen again",
+            "the book chosen again opens at the place"} <= names
     print(json.dumps(res["timings"], indent=1))
-    print(json.dumps(res["storage"], indent=1))
     print("\n".join(res["notes"]))

@@ -3,6 +3,7 @@
 Usage:
     python3 make_reader.py BOOK.pdf [--chapters 5,7] [--selection FILE]
                            [--corrections FILE] [--letters English] [--passes 3] [--reuse]
+                           [--engine DIR]
 
 Writes, under output/<book>/:
     book.json           every line, move, variation and comment the program assembled
@@ -21,6 +22,9 @@ corrections" button (a file holding the pasted text) and saves them as the
 book's corrections (books/<book>/corrections.json) before building; the
 build always applies the book's saved corrections.
 --reuse skips the assembly when output/<book>/book.json already exists.
+--engine DIR copies the chess engine (tools/fetch_engine.py fetches it into
+DIR) into reader/engine/, so that the chapter readers offer analysis with
+Stockfish; a reader whose folder already holds engine/ offers it as well.
 """
 import argparse
 import json
@@ -31,7 +35,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from chessbook import assemble, corrections, reader, selection  # noqa: E402
+from chessbook import assemble, corrections, engine_files, reader, selection  # noqa: E402
 from chessbook.movetext import LETTER_SETS  # noqa: E402
 
 
@@ -48,6 +52,8 @@ def main(argv=None):
                     help="piece letters of the book's notation (default English)")
     ap.add_argument("--passes", type=int, default=3)
     ap.add_argument("--reuse", action="store_true", help="reuse output/<book>/book.json")
+    ap.add_argument("--engine", type=Path, default=None,
+                    help="folder holding the chess engine files, copied next to the reader")
     args = ap.parse_args(argv)
     pdf = args.pdf
     if not pdf.exists():
@@ -74,7 +80,12 @@ def main(argv=None):
     chapters = None
     if args.chapters:
         chapters = {int(x) for x in args.chapters.replace(" ", "").split(",") if x}
-    rep = reader.build_reader(book, pdf, out_root / "reader", chapters=chapters, progress=print)
+    if args.engine:
+        engine_files.copy(args.engine, out_root / "reader" / "engine")
+        print(f"Copied the engine into {out_root / 'reader' / 'engine'}")
+    engine = engine_files.present(out_root / "reader" / "engine")
+    rep = reader.build_reader(book, pdf, out_root / "reader", chapters=chapters, progress=print,
+                              engine=engine)
     st = book["stats"]
     print(json.dumps({"lines": st["lines"], "games": st["games"], "fragments": st["fragments"],
                       "line_status": st["line_status"], "moves": st["moves"],

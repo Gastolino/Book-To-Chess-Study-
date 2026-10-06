@@ -17,6 +17,8 @@
 //   GET    /api/books/:id/corrections
 //   PUT    /api/books/:id/selection      the same, for the selection
 //   GET    /api/books/:id/selection
+//   PUT    /api/books/:id/bookmarks      the same, for the bookmarks (listed with the book as well)
+//   GET    /api/books/:id/bookmarks
 //   PUT    /api/books/:id/position       {position: {chapter, page, node}, updated}
 //   PUT    /api/books/:id/cover          a small JPEG of the first page
 //   GET    /api/books/:id/cover
@@ -27,10 +29,10 @@ import { authenticate } from "./auth.js";
 // to spare under that limit; a larger book is refused with a clear message.
 export const MAX_PDF = 95 * 1024 * 1024;
 export const MAX_READING = 95 * 1024 * 1024;
-const MAX_JSON = 4 * 1024 * 1024;       // corrections, selection and position
+const MAX_JSON = 4 * 1024 * 1024;       // corrections, selection, bookmarks and position
 const MAX_COVER = 1024 * 1024;
 const ID = /^[0-9a-f]{64}$/;
-const KINDS = ["corrections", "selection"];
+const KINDS = ["corrections", "selection", "bookmarks"];
 
 function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
@@ -93,10 +95,19 @@ async function serve(env, request, objectKey, type, cache) {
   return new Response(obj.body, { headers });
 }
 
+// The library, each book with its bookmarks (so that the library page lists
+// them without opening the book).
 async function list(env, user) {
   const { results } = await env.DB.prepare(
     "SELECT * FROM books WHERE owner = ? ORDER BY COALESCE(opened, added) DESC").bind(user.email).all();
-  return json({ books: results.map(publicBook), maxPdf: MAX_PDF, user: user.email });
+  const marks = await env.DB.prepare(
+    "SELECT id, data, updated FROM book_data WHERE owner = ? AND kind = 'bookmarks'").bind(user.email).all();
+  const byId = {};
+  for (const row of marks.results || []) {
+    byId[row.id] = { data: row.data ? JSON.parse(row.data) : null, updated: row.updated };
+  }
+  const books = results.map((row) => ({ ...publicBook(row), bookmarks: byId[row.id] || null }));
+  return json({ books, maxPdf: MAX_PDF, user: user.email });
 }
 
 async function upload(env, request, user, id) {

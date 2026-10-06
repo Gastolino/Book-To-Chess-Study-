@@ -100,8 +100,18 @@ async function device(browser, name, opts) {
 }
 
 async function openLibrary(d) {
+  // the library, not the book that was open (the app goes back to it otherwise, as after the
+  // system closed it): the Library button forgets that record first, and so does this, on the
+  // site's own page (a window that has not loaded the site yet cannot reach the record)
+  if (!/^https?:/.test(d.page.url())) await d.page.goto(siteUrl);
+  await d.page.evaluate(() => {
+    // as the Library button does: the record in the page as well, or the page writes it back as it unloads
+    try { SESSION.clear(true); } catch (e) { /* no page yet */ }
+    try { localStorage.removeItem("chessbook-session"); } catch (e) { /* no page yet */ }
+  }).catch(() => {});
   await d.page.goto(siteUrl);
-  await d.page.waitForFunction(() => document.body.classList.contains("library"), null, { timeout: 60000 });
+  await d.page.waitForFunction(() => document.body.classList.contains("library") &&
+                               !document.body.classList.contains("resuming"), null, { timeout: 60000 });
 }
 
 async function addBook(d, file) {
@@ -265,6 +275,46 @@ async function run() {
          "; moves with the symbol in the chapter: " + there.moves + ", corrected: " + there.corrected);
     const stored = await b.page.evaluate((id) => localStorage.getItem("chessbook-library:" + id), one.id);
     check("the second device keeps the server's corrections in its storage", stored && /corrections/.test(stored), stored);
+
+    // ---------------------------------------------------------------- closed by the system, and back
+    // a step forward, then the page hidden and dropped at once (as an iPhone
+    // drops a page in the background): the place reaches the server without
+    // the usual wait, and the page loaded again comes back to the book there
+    // (a step back when the move ends its line, since forward then has nowhere to go)
+    await b.inFrame(() => {
+      const id = window.readerState.nodeId, n = id && window.READER.nodes[id];
+      document.getElementById(n && n.children && n.children.length ? "bfwd" : "bback").click();
+    });
+    const moved = await b.waitFrame((p) => window.readerState.nodeId !== p && window.readerState, placed.node);
+    await b.page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: false }));
+    });
+    const prompt = await b.until(async () => {
+      const r = await b.api("books/" + one.id);
+      const p = r.json.book.position;
+      return p && p.node === moved.nodeId ? p : null;
+    }, "the place on the server after the page was hidden", 3000);
+    check("the place reaches the server at once when the page is hidden", prompt.page === moved.page, { prompt, moved });
+    await b.page.evaluate(() => { window.__sent = []; });
+    await b.page.addInitScript(() => {
+      window.__sent = [];
+      const post = Worker.prototype.postMessage;
+      Worker.prototype.postMessage = function (m, t) { window.__sent.push(m && m.type); return t === undefined ? post.call(this, m) : post.call(this, m, t); };
+    });
+    const tb = now();
+    await b.page.reload();
+    await b.page.waitForFunction(() => /^Back to /.test(document.getElementById("took").textContent), null, { timeout: 600000 });
+    const backAt = await b.waitFrame((p) => window.READER && window.READER.chapter.file === p.chapter &&
+      window.readerState.nodeId === p.nodeId && window.readerState, Object.assign({ chapter: placed.chapter }, moved), 300000);
+    timing("second device: back in the book after the page loaded again (s)", now() - tb);
+    const tookBack = await b.page.evaluate(() => document.getElementById("took").textContent);
+    check("the page loaded again comes back to the book at the move, from the server's library",
+      /^Back to .*, page /.test(tookBack) && backAt.page === moved.page &&
+      (await b.page.evaluate(() => window.__sent.includes("restore") && !window.__sent.includes("process"))),
+      { tookBack, backAt });
+    check("the library page did not show on the way back", await b.page.evaluate(() => document.getElementById("start").style.display === "none"));
 
     // ---------------------------------------------------------------- removing
     await b.page.click("#another");

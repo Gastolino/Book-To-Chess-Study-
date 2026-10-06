@@ -59,6 +59,11 @@ Give `body` an explicit background.
 | `--fail` | `#b4413a` | `#e0756d` | failed |
 | `--board-light` | `#ecebe6` | `#b9b8b2` | light squares |
 | `--board-dark` | `#bdbab2` | `#8f8d87` | dark squares |
+| `--bookmark` | `#f2b705` | `#f2b705` | the bookmark icon when set, and the ribbon |
+
+The bookmark is the only element that uses the warm yellow; nothing else may
+use it. It keeps the same value in dark mode, since it is meant to stand out
+from everything else on the page.
 
 In dark mode, pictures of the book (page images, thumbnails, diagram crops)
 are dimmed slightly and never inverted.
@@ -69,6 +74,10 @@ Flat squares in the two board colours (kept light enough in dark mode that
 black pieces stay visible), a 1px outline in the line colour,
 coordinates in DM Sans at 10px in the secondary colour, and the piece
 drawings from python-chess. No shadows or textures.
+The eval bar of the analysis stands along the board's side as a strip in
+the two board colours with a 1px outline in the line colour, White's share
+from the bottom, and its figure in Geist Mono at 10px at its foot; the
+engine's lines are rows of notation, the suggested move at weight 500.
 
 ## Layout
 

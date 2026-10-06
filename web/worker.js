@@ -123,6 +123,13 @@ onmessage = async (event) => {
       postMessage({ type: "page", name: "index.html", hash: msg.hash || "", html: driver.index() });
     } else if (msg.type === "timeline") {
       postMessage({ type: "timeline", timeline: JSON.parse(driver.timeline()) });
+    } else if (msg.type === "memory") {
+      // what the worker holds (for measurements): the wasm heap never shrinks,
+      // so its size is the most memory Python has needed so far
+      const mem = JSON.parse(driver.memory());
+      mem.heap = py._module.HEAP8.length;
+      mem.jsHeap = self.performance && performance.memory ? performance.memory.usedJSHeapSize : null;
+      postMessage({ type: "memory", memory: mem });
     }
   } catch (err) {
     // the type of the failed request lets the page say what did not happen
