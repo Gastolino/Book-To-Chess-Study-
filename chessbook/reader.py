@@ -300,6 +300,10 @@ CHAPTER_CSS = r"""
 .pnav .ib{padding:4px 6px}
 .pnav .ib svg{width:16px;height:16px}
 #pagenum{width:3.6em}
+.ptotal{white-space:nowrap;margin:0 2px 0 6px;font-variant-numeric:tabular-nums}
+/* a page whose picture the app has not sent yet: a light sheet of the page's size */
+.pagebox.waiting{background:var(--line)}
+.pagebox.waiting img{visibility:hidden}
 .notes{padding:8px 24px;border-bottom:1px solid var(--line)}
 .notes p:empty,.notes:not(:has(p:not(:empty))){display:none}
 .reader{display:grid;grid-template-columns:minmax(0,1fr) 50vw;align-items:start}
@@ -582,19 +586,91 @@ function notation(text){
   return out;
 }
 
+/* ---------------------------------------------------------------- page pictures */
+// A reader built from the command line holds the pictures of its pages (base64 JPEGs). In the
+// browser app the pictures come from the app, ten pages at a time (a window: pages 1 to 10, 11 to
+// 20, ...): the window of the page shown first, then the one ahead and the one behind. A page whose
+// picture has not come yet shows a light placeholder of its size. The reader keeps the pictures of
+// the window shown and of the windows next to it, and lets the others go.
+const WIN = 10;
+const urls = {};            // page -> object URL of a picture the app sent (a Blob)
+const waitCrop = {};        // page -> diagram crops waiting for its picture
+const win = (p) => Math.floor((p - 1) / WIN);
+function picSrc(p){
+  const v = IMG[p];
+  if (!v) return null;
+  if (typeof v === "string") return "data:image/jpeg;base64," + v;
+  if (!urls[p]) urls[p] = URL.createObjectURL(v);
+  return urls[p];
+}
 function pageImage(p){
-  if (!imgCache[p]) {
-    const im = new Image(); im.src = "data:image/jpeg;base64," + IMG[p]; imgCache[p] = im;
+  const src = picSrc(p);
+  if (!src) return null;
+  if (!imgCache[p] || imgCache[p].src !== src) {
+    const im = new Image(); im.src = src; imgCache[p] = im;
     const keys = Object.keys(imgCache);
     if (keys.length > IMG_KEEP) delete imgCache[keys[0]];
   }
   return imgCache[p];
 }
+// the app keeps the windows around the page shown: it is told which page that is
+function wantPictures(p){
+  if (window.CHESSBOOK_APP) parent.postMessage({pictures: {page: p, start: D.chapter.start, end: D.chapter.end}}, "*");
+}
+function dropFar(){
+  if (!window.CHESSBOOK_APP || !S.page) return;
+  const w = win(S.page);
+  for (const k in IMG) {
+    if (Math.abs(win(+k) - w) <= 1) continue;
+    delete IMG[k];
+    delete imgCache[k];
+    if (urls[k]) { URL.revokeObjectURL(urls[k]); delete urls[k]; }
+  }
+}
+function showPicture(p){
+  const img = $("pageimg"), src = picSrc(p);
+  $("pagebox").classList.toggle("waiting", !src);
+  if (src) {
+    if (img.getAttribute("src") !== src) img.src = src;
+    // the app shows a reader that loaded in the background once its page shows
+    if (window.CHESSBOOK_APP) {
+      const told = () => parent.postMessage({pictureShown: p}, "*");
+      if (img.complete) told(); else img.addEventListener("load", told, {once: true});
+    }
+  } else img.removeAttribute("src");
+}
+function picturesCame(pics){
+  let n = 0;
+  for (const k in pics) {
+    const p = parseInt(k, 10);
+    if (!(p in D.pages) || !pics[k]) continue;
+    if (urls[p]) { URL.revokeObjectURL(urls[p]); delete urls[p]; }
+    IMG[p] = pics[k];
+    delete imgCache[p];
+    n++;
+    if (p === S.page) showPicture(p);
+    for (const f of waitCrop[p] || []) f();
+    delete waitCrop[p];
+  }
+  window.picturesShown = (window.picturesShown || 0) + n;
+  dropFar();
+}
+window.addEventListener("message", (e) => {
+  if (e.source !== window.parent || e.source === window) return;
+  if (e.data && e.data.pictures) picturesCame(e.data.pictures);
+});
 function folio(p){ const f = D.folios[p - 1]; return f == null ? null : String(f); }
 const HAS_FOLIOS = D.folios.some(f => f != null);
 // the number of a page as the reader types it: the printed number, or "PDF 1" for a page without one
 function label(p){ const f = folio(p); return f ? f : (HAS_FOLIOS ? "PDF " + p : String(p)); }
 function pageName(p){ const f = folio(p); return f ? "page " + f : (HAS_FOLIOS ? "PDF page " : "page ") + p; }
+// the number of the book's last page, as the page counter shows it: the highest printed page
+// number, or the number of pages of a book that prints none
+const LAST = (() => {
+  let m = 0;
+  for (const f of D.folios) if (f != null && /^\d+$/.test(String(f))) m = Math.max(m, parseInt(f, 10));
+  return HAS_FOLIOS && m ? String(m) : String(D.pageCount);
+})();
 function nodeFen(id){ const n = D.nodes[id]; return n && n.fen ? n.fen : null; }
 function setState(){
   window.readerState = {fen: S.node ? nodeFen(S.node) : null, nodeId: S.node, page: S.page};
@@ -697,7 +773,7 @@ function showPage(p){
   const P = D.pages[p];
   S.page = p;
   const img = $("pageimg");
-  img.src = "data:image/jpeg;base64," + IMG[p];
+  showPicture(p);
   img.alt = cap(pageName(p)) + " of the book";
   $("pagebox").style.aspectRatio = P.w + " / " + P.h;
   const ov = $("ov");
@@ -736,9 +812,12 @@ function showPage(p){
   bmNote("");
   bookmarkState();
   $("pagenum").value = label(p);
-  $("pagenum").title = "PDF page " + p;
+  $("pagenum").title = "PDF page " + p + " of " + D.pageCount;
+  $("pagetotal").textContent = "of " + LAST;
   $("prevpage").disabled = p <= 1;
   $("nextpage").disabled = p >= D.pageCount;
+  wantPictures(p);
+  dropFar();
   pageState();
   renderChips();
   highlightMark(false);
@@ -985,6 +1064,11 @@ function cropInto(canvas, id){
   if (!d) return false;
   const P = D.pages[p];
   const im = pageImage(p);
+  if (!im) {
+    // the picture of the page has not come yet: the crop is drawn when it comes
+    (waitCrop[p] = waitCrop[p] || []).push(() => cropInto(canvas, id));
+    return true;
+  }
   const draw = () => {
     const k = im.naturalWidth / P.w;
     const r = d.rect;
@@ -1730,7 +1814,7 @@ CHAPTER_HTML = """<!doctype html>
 <div class="where"><span class="book">__BOOK__</span><h1__H1CLASS__>__H1__</h1></div>
 <nav class="tools" aria-label="Pages">
 <span class="pnav"><button class="ib" id="prevpage" aria-label="Previous page" title="Previous page (Page Up)">__ICON_BACK__</button>
-<input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number">
+<input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number"><span class="ptotal small muted" id="pagetotal"></span>
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
 <button class="ib" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
 <button class="tb" id="reviewbtn" aria-pressed="false">Review</button>
@@ -2509,7 +2593,7 @@ def _chevron():
 # ---------------------------------------------------------------- build
 
 def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_index=True,
-                 app=False, thumbs=None, loading=False, engine=False):
+                 app=False, thumbs=None, loading=False, engine=False, images=True):
     """Write index.html and chNN.html into out_dir. chapters limits the chapter
     readers to those indices (the contents page always covers the whole book).
     thumbs, when given, holds the page thumbnails drawn already ({page: base64
@@ -2517,7 +2601,8 @@ def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_ind
     draws them while it reads the book). loading marks the contents page of a
     book the app is still reading. engine says that the engine files stand
     in out_dir/engine (make_reader.py --engine), so that the chapter readers
-    offer analysis.
+    offer analysis. images=False leaves the page pictures out of the chapter
+    readers: the browser app sends them, ten pages at a time.
     Returns {"files": {name: bytes}, "pgn": pgnout report, "sizes": {index: bytes}}."""
     say = progress or (lambda *_: None)
     out_dir = Path(out_dir)
@@ -2539,12 +2624,12 @@ def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_ind
         info = pgn_report.get(ch["index"], {})
         quality, dpi = PAGE_QUALITY, PAGE_DPI
         while True:
-            images = {p: _b64(page_jpeg(doc, p, dpi, quality))
-                      for p in range(ch["start"], ch["end"] + 1)}
-            text = chapter_html(book, ch, images, pgn_text,
+            pics = {p: _b64(page_jpeg(doc, p, dpi, quality))
+                    for p in range(ch["start"], ch["end"] + 1)} if images else {}
+            text = chapter_html(book, ch, pics, pgn_text,
                                 (info.get("games", 0), info.get("waiting", 0)), engine=engine)
             data = text.encode("utf-8")
-            if len(data) <= TARGET_BYTES or quality <= 30:
+            if len(data) <= TARGET_BYTES or quality <= 30 or not images:
                 break
             quality -= 10
             if quality <= 40:
@@ -2553,7 +2638,8 @@ def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_ind
         path.write_bytes(data)
         sizes[ch["index"]] = len(data)
         files[ch["file"]] = len(data)
-        say(f"{ch['file']}: {len(data) / 1048576:.1f} MB (JPEG quality {quality}, {dpi} dpi)")
+        say(f"{ch['file']}: {len(data) / 1048576:.1f} MB" +
+            (f" (JPEG quality {quality}, {dpi} dpi)" if images else ""))
     if not with_index:
         return {"files": files, "pgn": pgn_report, "sizes": sizes}
     if thumbs is None:

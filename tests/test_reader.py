@@ -630,7 +630,8 @@ def test_design_guide(little):
         for v in re.findall(r"background(?:-color)?:([^;}]+)", low):
             assert v.strip() in ("none", "transparent", "var(--bg)") or v.strip().startswith("var(--ok)") \
                 or v.strip() in ("var(--doubt)", "var(--fail)", "var(--muted)") \
-                or v.strip() in ("var(--board-light)", "var(--board-dark)"), (name, v)
+                or v.strip() in ("var(--board-light)", "var(--board-dark)") \
+                or v.strip() == "var(--line)", (name, v)          # a page whose picture is on its way
         # prose sets 1.5 and the move list 1.7
         for v in re.findall(r"line-height:([^;}]+)", low):
             assert v.strip() in ("1.5", "1.7", "1.35", "1.3", "1.25", "0"), (name, v)

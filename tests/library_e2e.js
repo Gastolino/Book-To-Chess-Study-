@@ -162,8 +162,7 @@ async function run() {
 
     // a correction: a piece symbol named in the first chapter that prints one
     let sym = null, chapter = null;
-    const chapters = await a.inFrame(() => Array.from(document.querySelectorAll("a[href^='ch']"))
-      .map((x) => x.getAttribute("href").replace(/#.*/, "")).filter((h, i, l) => l.indexOf(h) === i));
+    const chapters = await a.page.evaluate(() => bookChapters.map((c) => c.file));
     for (const ch of chapters) {
       await a.page.evaluate((ch) => window.postMessage({ open: ch, hash: "" }, "*"), ch);
       await a.waitFrame((ch) => window.READER && window.READER.chapter.file === ch, ch, 300000);
@@ -253,7 +252,7 @@ async function run() {
     await b.page.click("#books li.book[data-id='" + one.id + "'] .open");
     await b.page.waitForFunction(() => /opened from your library/.test(document.getElementById("took").textContent),
                                  null, { timeout: 600000 });
-    timing("second device: opening " + path.basename(book1) + " from the library, until the contents (s)", now() - t);
+    timing("second device: opening " + path.basename(book1) + " from the library, until the reading opens (s)", now() - t);
     note("second device: the driver opened the stored reading in " +
          (await b.page.evaluate(() => LIB.last && LIB.last.seconds)) + " s");
     const atPlace = await b.waitFrame((p) => window.READER && window.READER.chapter.file === p.chapter &&
