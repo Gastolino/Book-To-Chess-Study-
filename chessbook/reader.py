@@ -240,6 +240,52 @@ makeSelection.canon = function(S0){
 };
 """
 
+# The bookmarks of a book, shared by the contents page and the chapter readers:
+# one per page at most, with the move chosen when it was set, the chapter file
+# and the time. The browser keeps them under one entry per book, as it keeps
+# the corrections; the app's library sends that entry to its store and puts it
+# into the book file (web/library.js).
+BOOKMARKS_JS = r"""
+function makeBookmarks(B0, opts){
+  // B0: the bookmarks the build was given (none from the command line as a rule)
+  const key = "chessbook-bookmarks:" + opts.pdf + ":" + opts.pageCount;
+  function canon(list){
+    const out = [], seen = {};
+    for (const b of (Array.isArray(list) ? list : [])) {
+      const p = parseInt(b && b.page, 10);
+      if (!(p >= 1 && p <= opts.pageCount) || seen[p]) continue;
+      seen[p] = true;
+      out.push({page: p, node: b.node || null, chapter: b.chapter || null, at: b.at || 0});
+    }
+    return out.sort((a, b) => a.page - b.page);
+  }
+  let st = canon(B0), stored = false;
+  function load(){
+    try {
+      const raw = localStorage.getItem(key);
+      const v = raw ? JSON.parse(raw) : null;
+      if (v && v.bookmarks) { st = canon(v.bookmarks); stored = true; }
+    } catch (e) { /* the browser keeps no storage */ }
+  }
+  load();
+  const api = {
+    key: key,
+    all(){ return st.slice(); },
+    get(p){ return st.find(b => b.page === p) || null; },
+    set(b){ st = canon(st.filter(x => x.page !== b.page).concat([b])); api.save(); },
+    remove(p){ st = st.filter(b => b.page !== p); api.save(); },
+    save(){
+      try { localStorage.setItem(key, JSON.stringify({bookmarks: st})); stored = true; }
+      catch (e) { /* no storage: the bookmarks live in this page only */ }
+      if (window.CHESSBOOK_APP) parent.postMessage({bookmarksChanged: true}, "*");
+    },
+    stored(){ return stored; },
+    reload: load
+  };
+  return api;
+}
+"""
+
 # ---------------------------------------------------------------- chapter page
 
 CHAPTER_CSS = r"""
@@ -378,6 +424,21 @@ background:var(--muted)}
 .dot.st-ok{background:var(--ok)}
 .dot.st-guessed,.dot.st-ambiguous,.dot.st-inserted{background:var(--doubt)}
 .dot.st-failed{background:var(--fail)}
+/* The bookmark: the only use of the warm yellow (DESIGN.md). The icon fills
+   in on a bookmarked page, and a ribbon hangs from the top edge of the page
+   picture, sized with the page as the marks are. */
+#bmbtn[aria-pressed="true"],#mbm[aria-pressed="true"]{color:var(--bookmark)}
+#bmbtn[aria-pressed="true"] svg,#mbm[aria-pressed="true"] svg{fill:var(--bookmark)}
+.ribbon{position:absolute;top:0;width:4.5%;padding:0;margin:0;border:0;border-radius:0;background:none;
+cursor:pointer;z-index:5;line-height:0}
+.ribbon[hidden]{display:none}
+.ribbon svg{display:block;width:100%;height:auto;fill:var(--bookmark)}
+.ribbon:hover svg{opacity:.85}
+.ribbon:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+.bmnote{position:absolute;top:2%;right:2%;z-index:6;margin:0;padding:4px 8px;background:var(--bg);
+border:1px solid var(--line);white-space:nowrap}
+.bmnote:empty{display:none}
+.bmnote .tb{margin-left:4px}
 .mbar,.mini,.touch{display:none}
 @media (hover:none) and (pointer:coarse){.touch{display:block}.mouse{display:none}
 .mark{border-bottom:1px solid color-mix(in srgb,var(--accent) 45%,transparent)}}
@@ -435,6 +496,7 @@ const kinds = {};
 for (const p in D.pages) for (const d of D.pages[p].diagrams) kinds[d.id] = d.kind;
 const SEL = makeSelection(D.selection, {pdf: D.book.pdf, pageCount: D.pageCount, base: D.selBase,
   kinds: kinds, excludedKinds: D.excludedKinds, title: D.book.title});
+const MARKS = makeBookmarks(D.bookmarks, {pdf: D.book.pdf, pageCount: D.pageCount});
 const NUMBER_WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 // moves and squares inside running text: 12.Nf3, 3...Bd3+, exd5, e4, O-O, e1-h4
 const SAN_RE = new RegExp("(\\b\\d{1,3}\\.(?:\\.\\.)?\\s?)?(?:\\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]" +
@@ -630,6 +692,8 @@ function showPage(p){
   });
   pageEyes();
   closeSymMenu();
+  bmNote("");
+  bookmarkState();
   $("pagenum").value = label(p);
   $("pagenum").title = "PDF page " + p;
   $("prevpage").disabled = p <= 1;
@@ -674,6 +738,73 @@ function pageState(){
   }
   $("diagnote").textContent = note;
 }
+
+/* ---------------------------------------------------------------- bookmarks */
+// The icons say whether this page holds a bookmark, and the ribbon shows on
+// a bookmarked page only.
+function bookmarkState(){
+  const b = MARKS.get(S.page);
+  for (const id of ["bmbtn", "mbm"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.setAttribute("aria-pressed", String(!!b));
+    el.setAttribute("aria-label", b ? "Bookmarked page: a tap removes the bookmark" : "Bookmark this page");
+    el.title = b ? "This page holds a bookmark. A tap removes it." : "Bookmark: a tap marks this page and the chosen move.";
+  }
+  const r = $("ribbon");
+  r.hidden = !b;
+  if (b) placeRibbon();
+}
+// The ribbon hangs in the right margin of the page where the margin has room
+// for it beside the moves and diagrams printed near the top, and at the
+// page's right edge otherwise, so that it covers no move box.
+function placeRibbon(){
+  const P = D.pages[S.page];
+  const w = 0.045 * P.w, pad = 0.01 * P.w, h = w * 3.2;
+  let right = 0;
+  for (const d of P.diagrams) if (d.rect[1] < h + pad) right = Math.max(right, d.rect[2]);
+  for (const m of P.marks) if (m.bbox[1] < h + pad) right = Math.max(right, m.bbox[2]);
+  let x = P.w - w - 2 * pad;
+  if (right > x - pad) x = right + pad + w <= P.w ? right + pad : P.w - w;
+  $("ribbon").style.left = pct(x, P.w);
+}
+let bmTimer = 0, bmUndo = null;
+// one quiet line over the page's corner: "Bookmark removed. Undo", for a few seconds
+function bmNote(text, undo){
+  const el = $("bmnote");
+  clearTimeout(bmTimer);
+  el.textContent = text;
+  if (!undo) return;
+  const u = document.createElement("button");
+  u.type = "button"; u.className = "tb"; u.id = "bmundo"; u.textContent = "Undo";
+  u.addEventListener("click", () => {
+    if (bmUndo) { MARKS.set(bmUndo); bmUndo = null; }
+    bmNote(""); bookmarkState();
+    say("The bookmark is back on " + pageName(S.page) + ".");
+  });
+  el.appendChild(u);
+  bmTimer = setTimeout(() => bmNote(""), 8000);
+}
+function setBookmark(){
+  // the chosen move goes with the bookmark when it is printed on this page (a move chosen
+  // on the page before stays chosen while the pages turn)
+  const node = S.node && D.pages[S.page].marks.some(m => m.node === S.node) ? S.node : null;
+  const b = {page: S.page, node: node, chapter: D.chapter.file, at: Date.now()};
+  MARKS.set(b);
+  bmNote("");
+  bookmarkState();
+  say("Bookmark set on " + pageName(S.page) + (node ? ", at " + moveText(node, true) : "") + ".");
+}
+function removeBookmark(){
+  const b = MARKS.get(S.page);
+  if (!b) return;
+  MARKS.remove(S.page);
+  bmUndo = b;
+  bookmarkState();
+  bmNote("Bookmark removed.", true);
+  say("");
+}
+function toggleBookmark(){ if (MARKS.get(S.page)) removeBookmark(); else setBookmark(); }
 
 function linesHere(){
   return D.lineOrder.filter(id => { const L = D.lines[id]; return L.page <= S.page && S.page <= L.end_page; });
@@ -1472,6 +1603,11 @@ function init(){
     if (S.diagram) diagramState(S.diagram);
     selNote();
   });
+  $("bmbtn").addEventListener("click", toggleBookmark);
+  $("mbm").addEventListener("click", toggleBookmark);
+  $("ribbon").addEventListener("click", removeBookmark);
+  // a bookmark set or removed in another page of this book (the contents page, another tab)
+  window.addEventListener("storage", (e) => { if (e.key === MARKS.key) { MARKS.reload(); if (S.page) bookmarkState(); } });
   const pgn = $("pgnbtn");
   if (!D.pgn) pgn.disabled = true;
   pgn.addEventListener("click", () => {
@@ -1540,6 +1676,7 @@ CHAPTER_HTML = """<!doctype html>
 <button class="tb" id="reviewbtn" aria-pressed="false">Review</button>
 <button class="tb" id="showread" aria-pressed="false">Show reading</button>
 <a class="nav" href="index.html">Contents</a>
+<button class="ib" id="bmbtn" aria-pressed="false" aria-label="Bookmark this page" title="Bookmark: a tap marks this page and the chosen move.">__ICON_BOOKMARK__</button>
 __PGNBTN__
 </nav>
 </header>
@@ -1552,6 +1689,8 @@ __PGNBTN__
 <p class="provnote small muted" id="provnote">The program is still reading the book. The moves of this chapter are a first reading, made with what the program had learnt when it reached them. When it has read the whole book, the final reading replaces them here, and the page and the chosen move stay where they are.</p>
 <div class="pagescroll" id="pagescroll">
 <div class="pagebox" id="pagebox"><img class="scan" id="pageimg" alt=""><div class="ov" id="ov"></div>
+<button class="ribbon" id="ribbon" type="button" hidden aria-label="Bookmark on this page: a tap removes it" title="This page holds a bookmark. A tap removes it."><svg viewBox="0 0 20 64" aria-hidden="true"><polygon points="0,0 20,0 20,64 10,54 0,64"/></svg></button>
+<p class="bmnote small" id="bmnote" role="status"></p>
 <ul class="symmenu small" id="symmenu" role="menu" hidden></ul></div>
 </div>
 <div class="key small muted">
@@ -1610,6 +1749,7 @@ __PGNBTN__
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
 <div class="mside"><span class="mtxt" id="mtxt"></span>
 <span class="mbtns"><button class="ib" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
+<button class="ib" id="mbm" aria-pressed="false" aria-label="Bookmark this page">__ICON_BOOKMARK__</button>
 <button class="ib" id="mback" aria-label="Previous move">__ICON_BACK__</button>
 <button class="ib" id="mfwd" aria-label="Next move">__ICON_FWD__</button>
 <button class="tb" id="mboard" aria-pressed="false">Board</button>
@@ -1618,6 +1758,7 @@ __PGNBTN__
 <script type="application/json" id="data">__DATA__</script>
 <script type="application/json" id="images">__IMAGES__</script>
 <script>__SELJS__</script>
+<script>__BMJS__</script>
 <script>__CORRJS__</script>
 <script>__CHESSJS__</script>
 <script>__JS__</script>
@@ -1715,6 +1856,8 @@ def chapter_data(book, ch, pgn_text):
         "pieceWords": PIECE_WORDS,
         # while the browser app reads the book: "pages" or "first" (progressive.py)
         "reading": book.get("reading"),
+        # bookmarks the build was given; the browser's own come first
+        "bookmarks": bookmarks_of(book),
     }
 
 
@@ -1786,9 +1929,11 @@ def chapter_html(book, ch, images, pgn_text, pgn_info):
         "__ICON_END__": style.icon("end"),
         "__ICON_FLIP__": style.icon("flip"),
         "__ICON_PENCIL__": style.icon("pencil"),
+        "__ICON_BOOKMARK__": style.icon("bookmark"),
         "__PIECES__": _pieces_defs(),
         "__EYE__": EYE_SVG,
         "__SELJS__": SELECTION_JS,
+        "__BMJS__": BOOKMARKS_JS,
         "__CORRJS__": CORRECTIONS_JS,
         "__CHESSJS__": CHESS_JS,
         "__JS__": CHAPTER_JS,
@@ -1874,6 +2019,7 @@ INDEX_JS = r"""
 (function(){
 "use strict";
 const D = JSON.parse(document.getElementById("data").textContent);
+const MARKS = makeBookmarks(D.bookmarks, {pdf: D.pdf, pageCount: D.pageCount});
 const kinds = {}, info = {};
 for (const p of D.pages) for (const d of p.diagrams) {
   kinds[d.id] = d.kind; info[d.id] = Object.assign({page: p.page, folio: p.folio}, d);
@@ -1928,6 +2074,28 @@ function refresh(){
   }
 }
 function say(text){ $("msg").textContent = text || defaultMsg(); }
+// "Bookmarks: page 31, page 57.", each a link that opens the chapter at that page and move
+function chapterFileOf(p){
+  for (const c of D.chapters) if (p >= c.start && p <= c.end && c.file && !c.empty) return c.file;
+  return null;
+}
+function bookmarkList(){
+  const el = $("bmlist"), list = MARKS.all();
+  el.innerHTML = "";
+  if (!list.length) return;
+  el.append("Bookmarks: ");
+  list.forEach((b, i) => {
+    const file = chapterFileOf(b.page) || b.chapter;
+    const name = pageName(b.page, D.folios[b.page - 1]);
+    if (file) {
+      const a = document.createElement("a");
+      a.href = file + "#at=" + b.page + ":" + (b.node || "");
+      a.textContent = name;
+      el.appendChild(a);
+    } else el.append(name);
+    el.append(i < list.length - 1 ? ", " : ".");
+  });
+}
 document.addEventListener("change", (e) => {
   const t = e.target;
   if (t.classList.contains("pcb")) { const p = parseInt(t.dataset.page, 10); SEL.setPages(p, p, t.checked); }
@@ -1999,10 +2167,12 @@ $("copyfix").addEventListener("click", async () => {
     "The browser refused to copy the corrections.");
 });
 fixNote();
+bookmarkList();
 refresh(); say();
 // the browser may restore the ticks of the boxes when the reader comes back to this page: the
-// stored selection wins
-window.addEventListener("pageshow", () => { refresh(); });
+// stored selection wins, and the bookmarks are read again
+window.addEventListener("pageshow", () => { refresh(); MARKS.reload(); bookmarkList(); });
+window.addEventListener("storage", (e) => { if (e.key === MARKS.key) { MARKS.reload(); bookmarkList(); } });
 // the browser app sends the page thumbnails as it draws them, while it reads the book
 window.addEventListener("message", (e) => {
   const t = e.data && e.data.thumbs;
@@ -2036,6 +2206,7 @@ INDEX_HTML = """<!doctype html>
 </div>
 <p class="summary">__SUMMARY__</p>
 <p class="summary small muted" id="fixnote"></p>
+<p class="summary small" id="bmlist">__BOOKMARKS__</p>
 __COLS__
 <ol class="chapters">
 __CHAPTERS__
@@ -2043,12 +2214,45 @@ __CHAPTERS__
 </main>
 <script type="application/json" id="data">__DATA__</script>
 <script>__SELJS__</script>
+<script>__BMJS__</script>
 <script>__CORRJS__</script>
 <script>__CHESSJS__</script>
 <script>__JS__</script>
 </body>
 </html>
 """
+
+
+def bookmarks_of(book):
+    """The bookmarks a build was given, one per page at most, in page order:
+    [{page, node, chapter, at}, ...]."""
+    out, seen = [], set()
+    for b in book.get("bookmarks") or []:
+        p = b.get("page") if isinstance(b, dict) else None
+        if not isinstance(p, int) or p < 1 or p > book["page_count"] or p in seen:
+            continue
+        seen.add(p)
+        out.append({"page": p, "node": b.get("node"), "chapter": b.get("chapter"), "at": b.get("at") or 0})
+    return sorted(out, key=lambda b: b["page"])
+
+
+def bookmarks_line(book, folios):
+    """'Bookmarks: page 31, page 57.' for the contents page, each page a link
+    that opens its chapter at that page and move ('' without bookmarks)."""
+    marks = bookmarks_of(book)
+    if not marks:
+        return ""
+    parts = []
+    for b in marks:
+        lab = page_label(folios, b["page"])
+        name = f"PDF page {b['page']}" if lab.startswith("PDF") else f"page {lab}"
+        ch = next((c for c in book["chapters"] if c["start"] <= b["page"] <= c["end"]), None)
+        if ch and ch.get("file"):
+            href = f'{ch["file"]}#at={b["page"]}:{b.get("node") or ""}'
+            parts.append(f'<a href="{html.escape(href)}">{html.escape(name)}</a>')
+        else:
+            parts.append(html.escape(name))
+    return "Bookmarks: " + ", ".join(parts) + "."
 
 
 def _n(k):
@@ -2184,6 +2388,10 @@ def index_html(book, thumbs, sizes, app=False, loading=False):
         "corrections": book.get("corrections") or corrections.empty(),
         "app": app,
         "loading": loading,
+        "chapters": [{"index": c["index"], "start": c["start"], "end": c["end"], "file": c["file"],
+                      "empty": c["end"] < c["start"]} for c in book["chapters"]],
+        "folios": folios,
+        "bookmarks": bookmarks_of(book),
         "pages": [{"page": p["page"], "folio": p.get("folio"),
                    "diagrams": [{"id": d["id"], "kind": d["kind"], "label": d.get("label")}
                                 for d in p["diagrams"]]}
@@ -2205,9 +2413,11 @@ def index_html(book, thumbs, sizes, app=False, loading=False):
             '<div class="cols small muted" aria-hidden="true"><span></span><span></span>'
             + "".join(f"<span>{w}</span>" for w in COUNT_COLUMNS) + "</div>"),
         "__CHAPTERS__": "\n".join(parts),
+        "__BOOKMARKS__": bookmarks_line(book, folios),
         "__STYLE__": style.page_css(),
         "__INDEX_CSS__": INDEX_CSS,
         "__SELJS__": SELECTION_JS,
+        "__BMJS__": BOOKMARKS_JS,
         "__CORRJS__": CORRECTIONS_JS,
         "__CHESSJS__": CHESS_JS,
         "__JS__": INDEX_JS,

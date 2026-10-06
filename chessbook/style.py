@@ -35,6 +35,9 @@ TOKENS = {
     "fail": ("#b4413a", "#e0756d"),
     "board-light": ("#ecebe6", "#b9b8b2"),
     "board-dark": ("#bdbab2", "#8f8d87"),
+    # the bookmark icon when set and the ribbon on a bookmarked page, and
+    # nothing else: one sharp warm yellow in both schemes, so that it stands out
+    "bookmark": ("#f2b705", "#f2b705"),
 }
 
 
@@ -155,6 +158,7 @@ ICONS = {
     "pencil": "<path d='M4 16l.9-3.6L13.6 3.7a1.3 1.3 0 0 1 1.8 0l.9.9a1.3 1.3 0 0 1 0 1.8L7.6 15.1z"
               "M12.2 5.1l2.7 2.7'/>",
     "download": "<path d='M10 3.5v9M6.5 9l3.5 3.5L13.5 9M4.5 16h11'/>",
+    "bookmark": "<path d='M5.5 3.5h9v13l-4.5-3.3-4.5 3.3z'/>",
 }
 
 
