@@ -494,8 +494,12 @@ function chapterOf(p) {
 // The reader is near the end (or the start) of its chapter: the next (or previous) chapter is
 // built now, so that the page turn shows it at once. Not while the book is read: its reading
 // changes from one moment to the next.
+let prepareTimer = 0;
 function prepare(w) {
+  clearTimeout(prepareTimer);
   if (loading || !w || !w.page) return;
+  // the pictures of the page shown come first: the worker does one thing at a time
+  if (PICS.busy()) { prepareTimer = setTimeout(() => prepare(w), 400); return; }
   const near = w.page >= w.end - 1 ? w.end + 1 : w.page <= w.start + 1 ? w.start - 1 : 0;
   const name = near ? chapterOf(near) : null;
   if (!name || prepared[name] || name === openChapter) return;
@@ -541,10 +545,10 @@ function outdated(why) {
 const PICS = (() => {
   const WIN = 10;
   let id = null, pages = 0, size = "large", cache = new Map(), want = null, client = null;
-  let queue = [], busyWin = null, gen = 0;
+  let queue = [], busyWin = null, busyFull = false, gen = 0, drawT0 = 0;
   const win = (p) => Math.floor((p - 1) / WIN);
   const range = (w) => { const out = []; for (let p = w * WIN + 1; p <= Math.min(pages, w * WIN + WIN); p++) out.push(p); return out; };
-  const stats = { draws: 0, drawn: 0, stored: 0, delivered: 0 };
+  const stats = { draws: 0, drawn: 0, stored: 0, delivered: 0, drawMs: 0, storeMs: 0, storeReads: 0 };
   window.pictureStats = stats;
   function deliver(got) {
     if (!client || !want) return;
@@ -560,15 +564,21 @@ const PICS = (() => {
     const w = win(want.page);
     for (const p of [...cache.keys()]) if (Math.abs(win(p) - w) > 1) cache.delete(p);
   }
+  // a job is a window (a number), or the page shown alone ({page}): drawn before the rest of
+  // its window, so that it shows as soon as it can
   async function pump() {
     if (busyWin !== null || !queue.length) return;
-    const w = queue.shift();
-    const todo = range(w).filter((p) => !cache.has(p));
+    const job = queue.shift();
+    const w = typeof job === "number" ? job : win(job.page);
+    const todo = (typeof job === "number" ? range(w) : [job.page]).filter((p) => !cache.has(p));
     if (!todo.length) return pump();
     busyWin = w;
+    busyFull = typeof job === "number";
     const g = gen;
     let kept = {};
+    const t0 = performance.now();
     if (id) { try { kept = await LIB.pagesGet(id, size, todo); } catch (e) { kept = {}; } }
+    if (Object.keys(kept).length) { stats.storeMs += performance.now() - t0; stats.storeReads++; }
     if (g !== gen) { busyWin = null; return pump(); }
     const got = {};
     for (const p in kept) { cache.set(+p, kept[p]); got[p] = kept[p]; stats.stored++; }
@@ -576,6 +586,7 @@ const PICS = (() => {
     const missing = todo.filter((p) => !kept[p]);
     if (!missing.length) { busyWin = null; return pump(); }
     stats.draws++;
+    drawT0 = performance.now();
     indicate();
     worker.postMessage({ type: "draw", pages: missing, size, window: w, gen: g });
   }
@@ -595,7 +606,8 @@ const PICS = (() => {
       const now = {};
       for (const x of order) for (const p of range(x)) if (cache.has(p)) now[p] = cache.get(p);
       deliver(now);
-      queue = order.filter((x) => x !== busyWin && range(x).some((p) => !cache.has(p)));
+      queue = order.filter((x) => !(busyFull && x === busyWin) && range(x).some((p) => !cache.has(p)));
+      if (!cache.has(w.page) && busyWin !== c) queue.unshift({ page: w.page });
       trim();
       pump();
     },
@@ -604,6 +616,7 @@ const PICS = (() => {
       for (const p in m.pages) got[p] = new Blob([m.pages[p]], { type: "image/jpeg" });
       if (m.gen !== gen) return;
       busyWin = null;
+      stats.drawMs += performance.now() - drawT0;
       if (m.size === size) {
         for (const p in got) { cache.set(+p, got[p]); stats.drawn++; }
         deliver(got);
