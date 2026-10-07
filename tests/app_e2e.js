@@ -174,13 +174,15 @@ async function run(browser, which) {
     await page.evaluate(() => { const b = document.getElementById("busy"); return b.classList.contains("on") &&
       getComputedStyle(b).visibility === "visible" && b.querySelectorAll(".leaf").length === 1; }));
   // the words of the work stay out of the bar, which names the book: a tap on the small book shows them
+  // (the words may change between the tap and the look: either is fine)
+  const words0 = await tookText();
   await page.click("#busy");
   const told = await page.evaluate(() => ({ tip: document.getElementById("tip").hidden ? "" : document.getElementById("tip").textContent,
     words: document.getElementById("took").textContent, name: document.getElementById("booktitle").textContent,
     inBar: document.getElementById("took").getClientRects().length > 0 }));
   check("a tap on the small book says how far the reading has come",
-    /^Reading/.test(took0) && told.words.length > 0 && told.tip.startsWith(told.words) && !told.inBar && told.name.length > 0,
-    Object.assign({ took0 }, told));
+    /^Reading/.test(took0) && told.words.length > 0 && (told.tip.startsWith(told.words) || (words0 && told.tip.startsWith(words0))) &&
+    !told.inBar && told.name.length > 0, Object.assign({ took0, words0 }, told));
   await page.click("#tip");
   if (first0.chapter.index === 0)
     check("the front matter's pages are read by default: page 1 is ticked", first0.use, first0);

@@ -146,6 +146,8 @@ async function run(browser, which) {
   });
   check("the small book appears and goes without moving the reader", shift.on === shift.off, shift);
   const h0 = await page.evaluate(() => document.getElementById("top").getBoundingClientRect().height);
+  // the words of the work just before the tap and just after it (they may change in between)
+  const words0 = await page.evaluate(() => document.getElementById("took").textContent);
   await page.click("#busy");
   const said = await page.evaluate(() => {
     const tip = document.getElementById("tip"), top = document.getElementById("top").getBoundingClientRect();
@@ -154,8 +156,8 @@ async function run(browser, which) {
              under: tip.getBoundingClientRect().top >= top.bottom - 2 };
   });
   check("a tap on the small book says what the program does, under the bar, moving nothing",
-    said.tip.length > 0 && (!said.loading || said.tip.startsWith(said.words)) && said.note === "" && said.under &&
-    Math.abs(said.h - h0) < 1, { said, h0 });
+    said.tip.length > 0 && (!said.loading || (said.words && said.tip.startsWith(said.words)) || (words0 && said.tip.startsWith(words0))) &&
+    said.note === "" && said.under && Math.abs(said.h - h0) < 1, { said, words0, h0 });
   await inFrame(() => document.getElementById("pageimg").decode().catch(() => null));
   await both("flow_book_opened");
   const topH = await page.evaluate(() => document.getElementById("top").getBoundingClientRect().height);
