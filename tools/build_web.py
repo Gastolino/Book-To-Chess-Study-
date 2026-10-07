@@ -393,7 +393,7 @@ function show(name, hash, htmlText) {
 worker.onmessage = (e) => {
   const m = e.data;
   // the reading is saved to the library after the book is read: the sign of work shows meanwhile
-  if (m.type === "done" && !m.restored && LIB.on && LIB.current && !LIB.current.ephemeral) saving = true;
+  if (m.type === "done" && (!m.restored || m.resave) && LIB.on && LIB.current && !LIB.current.ephemeral) saving = true;
   if (m.type === "reading" || (m.type === "error" && m.during === "save")) { saving = false; indicate(); }
   // the library's own messages (the stored reading, the cover) end here
   if (LIB.message(m)) return;
@@ -767,7 +767,8 @@ async function take(file) {
   read(file, file.name);
 }
 // The program reads the book (file, a File or Blob, named fileName).
-async function read(file, fileName) {
+// partial: the gzipped parts of an earlier reading of the book that was cut short (the library's)
+async function read(file, fileName, partial) {
   if (!file || busy) return;
   if (!ready) { status("The reader is still starting. Try again in a moment."); return; }
   busy = true;
@@ -785,8 +786,9 @@ async function read(file, fileName) {
     SESSION.begin({ name, title: same && r.title ? r.title : fileName.replace(/\\.pdf$/i, "") }, same ? r : null);
     if (same && !resuming) resumeStart(r);
   }
+  const p = partial instanceof Uint8Array ? partial : null;
   worker.postMessage({ type: "process", name, bytes, selection: storedSelection(name),
-    corrections: storedCorrections(name) }, [bytes]);
+    corrections: storedCorrections(name), partial: p }, p ? [bytes, p.buffer] : [bytes]);
 }
 $("drop").addEventListener("click", () => $("file").click());
 $("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") $("file").click(); });

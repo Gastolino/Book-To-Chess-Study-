@@ -208,7 +208,7 @@ async function run(browser, which) {
   // ---------------------------------------------------------------- a reading of other reading code
   if (which === "ipad") {
     const id = await page.evaluate(() => LIB.current.id);
-    await page.waitForFunction(() => /in your library/.test(document.getElementById("note").textContent), null, { timeout: 600000 });
+    await page.waitForFunction(() => document.body.dataset.saved === LIB.current.id, null, { timeout: 600000 });
     const place = await inFrame(() => ({ page: window.readerState.page }));
     // the stored reading's header names other reading code
     await page.evaluate(async (id) => {

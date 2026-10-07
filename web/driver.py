@@ -38,6 +38,7 @@ The pages are not part of the chapter readers: the app asks draw() for the
 pictures of ten pages at a time (a window), around the page shown, and
 keeps them in the device's library.
 """
+import base64
 import gc
 import hashlib
 import io
@@ -57,6 +58,7 @@ STATE = {}
 BATCH_PAGES = 10        # pages of lines a piece-symbol correction replays per call (correct_more)
 READING_MAGIC = b"chessbook-reading\n"          # format 1: one pickle of {"book", "keep"}
 READING_MAGIC2 = b"chessbook-reading/2\n"       # format 2: the book, then the keep (save_reading)
+PARTIAL_MAGIC = b"chessbook-partial/1\n"        # the parts of an unfinished reading (checkpoint)
 COVER_WIDTH = 240       # pixels across the cover picture of the library
 # Chapter readers kept built (their file, and the data their reader holds) after the reader leaves them: the last few, so that
 # going back is quick, and the rest of the book takes no memory. An iPhone
@@ -108,7 +110,7 @@ def _selection_key(selection_json):
     return json.dumps(data, sort_keys=True)
 
 
-def start(path, selection_json=None, corrections_json=None):
+def start(path, selection_json=None, corrections_json=None, partial_path=None):
     """Begin to read the book at path; step() does the work. selection_json
     is the selection the reader stored in the browser, if any;
     corrections_json holds the reader's corrections stored there (diagrams,
@@ -116,7 +118,9 @@ def start(path, selection_json=None, corrections_json=None):
     selection or corrections file that an earlier reading of the same book
     left in the worker is removed when the browser holds none. Returns
     JSON: the messages for the page ({"type": "error"} when the stored
-    corrections cannot be used)."""
+    corrections cannot be used). partial_path names the parts of an earlier,
+    unfinished reading of the book (checkpoint()): what of them this code
+    made, and for the same selection, is not read again."""
     pdf = Path(path)
     notes = []
     fix_path = corrections.corrections_path(pdf, CFG)
@@ -136,11 +140,77 @@ def start(path, selection_json=None, corrections_json=None):
                           encoding="utf-8")
     _clear()
     job = progressive.Job(pdf, OUT, CFG)
+    saved = _resume_parts(pdf, partial_path, _selection_key(selection_json), job) if partial_path else set()
+    if saved:
+        notes.append({"type": "progress", "text": "The earlier reading of this book is taken up where it "
+                      "stopped: " + ("the pages and the boards are" if "boards" in saved
+                                     else "the pages are") + " read already."})
     STATE.update(job=job, pdf=pdf, out=OUT / pdf.stem / "reader", thumbs=job.thumbs,
                  built=set(), built_from={}, data={}, recent=[], fix_path=fix_path, index_stale=False,
                  pending=set(), open=None, book=None, keep=None, t0=time.perf_counter(),
-                 selection=_selection_key(selection_json), restored=False, timeline={})
+                 selection=_selection_key(selection_json), restored=False, timeline={},
+                 saved=saved, reading_version=None)
     return json.dumps(notes)
+
+
+STAGE1_FILES = ("diagrams.json", "numbers.json", "pages.json")
+
+
+def checkpoint():
+    """The parts of the reading under way that cost the most and are done
+    (Stage 1's findings, then the board readings), as bytes: a header line
+    (JSON: the VERSION of the reading code, the selection, the PDF's name
+    and page count, the parts), then one pickle of plain values. Stored by
+    the app until the reading is finished, so that a reading cut short (the
+    app closed, the phone took the memory back) goes on from them."""
+    job = STATE["job"]
+    if job is None:
+        raise ValueError("No book is being read.")
+    ctx = job.ctx
+    dest = OUT / STATE["pdf"].resolve().stem / "stage1"
+    stage1 = {n: (dest / n).read_text(encoding="utf-8") for n in STAGE1_FILES if (dest / n).exists()}
+    if ctx.get("diagrams") is None or "diagrams.json" not in stage1:
+        raise ValueError("Nothing of the reading is finished yet.")
+    readings = ctx.get("readings") if ctx.get("boards_read") else None
+    parts = ["stage1"] + (["boards"] if readings is not None else [])
+    header = {"version": VERSION, "selection": STATE.get("selection"), "pdf": STATE["pdf"].name,
+              "pages": ctx["doc"].page_count, "parts": parts}
+    out = io.BytesIO()
+    out.write(PARTIAL_MAGIC + json.dumps(header).encode("utf-8") + b"\n")
+    pickle.dump({"stage1": stage1, "readings": readings}, out, protocol=pickle.HIGHEST_PROTOCOL)
+    return out.getvalue()
+
+
+def _resume_parts(pdf, partial_path, selection_key, job):
+    """Put back the parts of an unfinished reading (checkpoint()) that this
+    code made: Stage 1's files where the build finds them, and the board
+    readings when the selection is the same (the first pass, which teaches
+    the board reader, depends on it). Returns the parts put back."""
+    try:
+        with open(partial_path, "rb") as f:
+            if f.read(len(PARTIAL_MAGIC)) != PARTIAL_MAGIC:
+                return set()
+            header = json.loads(f.readline())
+            data = pickle.load(f)
+    except Exception:
+        return set()
+    if header.get("version") != VERSION or header.get("pdf") != pdf.name:
+        return set()
+    stage1 = data.get("stage1") or {}
+    if "diagrams.json" not in stage1 or "pages.json" not in stage1:
+        return set()
+    dest = OUT / pdf.resolve().stem / "stage1"
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in STAGE1_FILES:
+        if (dest / name).exists():
+            (dest / name).unlink()
+        if name in stage1:
+            (dest / name).write_text(stage1[name], encoding="utf-8")
+    saved = {"stage1"}
+    if data.get("readings") is not None and header.get("selection") == selection_key:
+        job.ctx["stored_readings"] = data["readings"]
+        saved.add("boards")
+    return saved
 
 
 def _clear():
@@ -217,6 +287,15 @@ def step():
             if STATE["open"] is None:
                 ev["html"] = index()
         events.append(ev)
+    if not job.done:
+        # a part of the reading finished: the app stores it (checkpoint())
+        saved = STATE["saved"]
+        if "stage1" not in saved and job.ctx.get("diagrams") is not None:
+            saved.add("stage1")
+            events.append({"type": "checkpoint", "parts": sorted(saved)})
+        elif "boards" not in saved and job.ctx.get("boards_read"):
+            saved.add("boards")
+            events.append({"type": "checkpoint", "parts": sorted(saved)})
     # the pages drawn in this step are not needed again: without this the
     # cache grows to 256 MB while the book is read, and that memory stays taken
     if STATE.get("job") is not None:      # (the job is let go when the book is done)
@@ -459,18 +538,30 @@ def save_reading():
         raise ValueError("The book was opened without the state that applies corrections.")
     b = keep["builder"]
     book = STATE["book"]
-    header = {"version": VERSION, "format": READING_FORMAT, "selection": STATE.get("selection"),
-              "pdf": STATE["pdf"].name, "pages": book["page_count"]}
+    # a reading saved again (with the thumbnails drawn since) keeps the version of the code that
+    # made it, so that the app still offers to read it again with today's code
+    header = {"version": STATE.get("reading_version") or VERSION, "format": READING_FORMAT,
+              "selection": STATE.get("selection"), "pdf": STATE["pdf"].name,
+              "pages": book["page_count"], "thumbs": True}
     doc, b.doc = b.doc, None
     out = io.BytesIO()
     out.write(READING_MAGIC2 + json.dumps(header).encode("utf-8") + b"\n")
     try:
         p = pickle.Pickler(out, protocol=pickle.HIGHEST_PROTOCOL)
         p.dump(book)
+        # the contents page's thumbnails, so that a book opened again draws none
+        # (as JPEG bytes: base64 would take a third more room)
+        p.dump({k: base64.b64decode(v) for k, v in (STATE.get("thumbs") or {}).items()})
         p.dump({k: v for k, v in keep.items() if k != "doc"})
     finally:
         b.doc = doc
     return out.getvalue()
+
+
+def reading_version():
+    """The VERSION that save_reading() writes in its header: that of the code
+    that read the book (a stored reading saved again keeps it)."""
+    return STATE.get("reading_version") or VERSION
 
 
 def reading_header(path):
@@ -493,9 +584,9 @@ def reading_header(path):
 
 
 def _load_reading(path, header):
-    """(book, keep) from a stored reading; keep is None when this program
-    cannot load the builder's state, and book None when it cannot load the
-    book either."""
+    """(book, keep, thumbs) from a stored reading; keep is None when this
+    program cannot load the builder's state, and book None when it cannot
+    load the book either. thumbs is {} for a reading saved without them."""
     with open(path, "rb") as f:
         f.read(len(READING_MAGIC2) if header["format"] >= 2 else len(READING_MAGIC))
         f.readline()
@@ -504,17 +595,23 @@ def _load_reading(path, header):
             try:
                 data = u.load()
             except Exception:
-                return None, None
-            return data["book"], data["keep"]
+                return None, None, {}
+            return data["book"], data["keep"], {}
         try:
             book = u.load()
         except Exception:
-            return None, None
+            return None, None, {}
+        thumbs = {}
+        if header.get("thumbs"):
+            try:
+                thumbs = {k: base64.b64encode(v).decode("ascii") for k, v in u.load().items()}
+            except Exception:
+                return book, None, {}
         try:
             keep = u.load()
         except Exception:
             keep = None
-        return book, keep
+        return book, keep, thumbs
 
 
 def restore(path, reading_path, selection_json=None, corrections_json=None):
@@ -536,7 +633,7 @@ def restore(path, reading_path, selection_json=None, corrections_json=None):
         return json.dumps([{"type": "stale", "why": "The selection of pages and diagrams changed "
                                                     "since the stored reading was made."}])
     t0 = time.perf_counter()
-    book, keep = _load_reading(reading_path, header)
+    book, keep, thumbs = _load_reading(reading_path, header)
     if book is None:
         return json.dumps([{"type": "stale", "why": "The stored reading was made by a version of "
                                                     "the program that this one cannot open."}])
@@ -570,10 +667,11 @@ def restore(path, reading_path, selection_json=None, corrections_json=None):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(selection.parse_selection_text(selection_json)),
                           encoding="utf-8")
-    STATE.update(job=None, pdf=pdf, out=OUT / pdf.stem / "reader", doc=doc, thumbs={},
+    STATE.update(job=None, pdf=pdf, out=OUT / pdf.stem / "reader", doc=doc, thumbs=thumbs,
                  built=set(), built_from={}, data={}, recent=[], fix_path=fix_path, index_stale=False,
                  pending=set(), open=None, book=book, keep=keep, t0=t0,
-                 selection=header.get("selection"), restored=True, timeline={}, outdated=outdated)
+                 selection=header.get("selection"), restored=True, timeline={}, outdated=outdated,
+                 reading_version=header.get("version"), thumbs_drawn=False)
     reader.build_reader(book, pdf, STATE["out"], chapters=set(), app=True, thumbs=STATE["thumbs"])
     html = (STATE["out"] / "index.html").read_text(encoding="utf-8")
     _lighten(full=True)
@@ -607,10 +705,13 @@ def _restored_step():
     if todo:
         got = {p: reader.thumb(doc, p) for p in todo}
         STATE["thumbs"].update(got)
+        STATE["thumbs_drawn"] = True
         return json.dumps({"events": [{"type": "thumbs", "thumbs": got}], "done": False})
     STATE["restored"] = False
     STATE["index_stale"] = True
-    ev = {"type": "done", "restored": True}
+    # a reading stored without its thumbnails is stored again with them (by the app)
+    ev = {"type": "done", "restored": True,
+          "resave": bool(STATE.get("thumbs_drawn")) and STATE.get("keep") is not None}
     if STATE["open"] is None:
         ev["html"] = index()
     _lighten()

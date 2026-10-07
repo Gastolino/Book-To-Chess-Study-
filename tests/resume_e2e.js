@@ -131,7 +131,7 @@ async function addBook(d, file) {
   await d.page.waitForFunction(() => document.body.dataset.book === "read",
                                null, { timeout: 3600000 });
   const id = await d.page.evaluate(() => LIB.current.id);
-  await d.page.waitForFunction(() => /in your library/.test(document.getElementById("note").textContent), null, { timeout: 600000 });
+  await d.page.waitForFunction(() => document.body.dataset.saved === LIB.current.id, null, { timeout: 600000 });
   return { id, read: now() - t };
 }
 // The chapter files of the open book, in order (the app's list of them).

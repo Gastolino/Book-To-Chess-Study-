@@ -226,6 +226,7 @@ second pass, whose runs read cleanly enough to teach them.
 from __future__ import annotations
 
 import bisect
+import copy
 import json
 import re
 import sys
@@ -4862,6 +4863,17 @@ def read_boards(doc, diagrams, known=None, say=None):
 BOARD_BATCH = 20        # board pictures per step of read_boards_steps
 
 
+def _boards_or_stored(ctx, doc, diagrams, known, say):
+    """The board readings: those a caller stored from an earlier, unfinished
+    reading of the same book by the same code (ctx["stored_readings"]), which
+    are what read_boards_steps would read again, or read now."""
+    stored = ctx.get("stored_readings")
+    if stored is not None:
+        say(f"board readings taken from the earlier reading: {len(stored)} pictures")
+        return copy.deepcopy(stored)
+    return (yield from read_boards_steps(doc, diagrams, known=known, say=say))
+
+
 def read_boards_steps(doc, diagrams, known=None, say=None, batch=BOARD_BATCH):
     """read_boards in steps: yields ("boards", (pictures done, pictures))
     after each batch of pictures; the readings that need the whole book
@@ -5051,10 +5063,10 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
     timings = []
     readings = dict(readings or {})
     if read_now and passes <= 1:
-        readings = yield from read_boards_steps(doc, diagrams, say=say)
+        readings = yield from _boards_or_stored(ctx, doc, diagrams, None, say)
         diagram_fens = {**usable_fens(readings), **text_fens}
         read_now = False
-        ctx.update(readings=readings, diagram_fens=diagram_fens)
+        ctx.update(readings=readings, diagram_fens=diagram_fens, boards_read=True)
     figmap, learnt = {}, {}
     shapes_on = shapes
     shapes_read, shapes, use_shapes = None, {}, shapes_on
@@ -5067,10 +5079,10 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
             # positions the first pass reached at diagrams teach the reader
             known = {did: builder.nodes[nid]["fen"] for did, nid in builder.after_node.items()
                      if builder.nodes.get(nid, {}).get("fen")}
-            readings = yield from read_boards_steps(doc, diagrams, known=known, say=say)
+            readings = yield from _boards_or_stored(ctx, doc, diagrams, known, say)
             diagram_fens = {**usable_fens(readings), **text_fens}
             read_now = False
-            ctx.update(readings=readings, diagram_fens=diagram_fens)
+            ctx.update(readings=readings, diagram_fens=diagram_fens, boards_read=True)
         if k >= 1 and use_shapes:
             # the figurines' pictures, named from the moves the pass before
             # read with certainty (cut out once, named again after each pass)
