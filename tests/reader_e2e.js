@@ -245,6 +245,33 @@ async function openChapterOf(page, p) {
     const diag = await page.$("#ov .diag");
     check("page " + PAGE + " has a diagram box", diag);
     const did = await diag.getAttribute("data-diagram");
+    // reading: a tap on the diagram sets up the position the book starts a line from, at the line's
+    // start, so that the arrows step through the line; or the move after which the diagram stands
+    const want = await page.evaluate((id) => {
+      const d = Object.values(window.READER.pages).flatMap((pg) => pg.diagrams).find((x) => x.id === id);
+      const lid = (d.lines || []).find((l) => window.READER.lines[l]);
+      return lid ? window.READER.lines[lid].root : (d.after_node && window.READER.nodes[d.after_node] ? d.after_node : null);
+    }, did);
+    check("not in reading mode to begin with", !(await page.evaluate(() => document.body.classList.contains("reading"))));
+    await diag.click();
+    if (want) {
+      const tapped = await page.evaluate(() => ({ node: window.readerState.nodeId,
+        panel: !document.getElementById("dpanel").hidden, board: !!document.querySelector("#board svg"),
+        start: !!document.querySelector("#tree .mv.start.cur") }));
+      check("a tap on a diagram sets up the line it starts at its starting position, with no panel",
+            tapped.node === want && !tapped.panel && tapped.board, { tapped, want });
+      await page.click("#bfwd");
+      const next = await page.evaluate(() => window.readerState.nodeId);
+      check("the arrow then plays the line's first move", next && next !== want &&
+            (await page.evaluate((w) => window.READER.nodes[w].children, want)).indexOf(next) >= 0, { next, want });
+      // the line's description names the diagram, and opens its panel (in reading mode)
+      await page.click("#showread");
+      await page.click("#linemeta .dlink").catch(() => null);
+      check("the diagram named under the line opens its panel",
+            await page.evaluate(() => !document.getElementById("dpanel").hidden));
+      await page.click("#dclose");
+    } else await page.click("#showread");
+    // reading mode: a tap on the diagram opens its panel
     await diag.click();
     const panel = await page.evaluate((id) => {
       const p = document.getElementById("dpanel");
@@ -270,7 +297,6 @@ async function openChapterOf(page, p) {
     out.screenshots.push("reader_1280.png");
     // on a page that is left out, ticking the diagram uses the page again ("Use this page"
     // belongs to reading mode, with the other controls of what the program reads)
-    await page.click("#showread");
     await page.uncheck("#usepage");
     const offState = await page.evaluate(() => ({ diag: document.getElementById("usediag").checked,
       note: document.getElementById("dpageoff").textContent }));
@@ -432,6 +458,8 @@ async function openChapterOf(page, p) {
     await page.evaluate((p) => { location.hash = "#page=" + p; }, PAGE);
     await page.waitForFunction((p) => window.readerState.page === p, PAGE);
     await page.click("#mzoom");                     // the page fitted again, its diagram in reach
+    // (in reading mode: when reading, the tap goes to the diagram's line; see above)
+    await page.evaluate(() => { if (!document.body.classList.contains("reading")) document.getElementById("showread").click(); });
     await page.evaluate(() => document.querySelector("#ov .diag").click());
     await page.waitForTimeout(200);
     const dph = await page.evaluate(() => {

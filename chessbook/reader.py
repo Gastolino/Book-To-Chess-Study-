@@ -1304,13 +1304,16 @@ function variation(v){
 function lineMeta(L){
   // one sentence: where the line starts, from which position, and how it ends
   let from = "";
+  let diag = "";
   if (L.diagram) {
     const [p, d] = diagramInfo(L.diagram);
-    from = d && !d.label && p === L.page ? "the unnumbered diagram" : diagramLabel(L.diagram);
+    diag = d && !d.label && p === L.page ? "the unnumbered diagram" : diagramLabel(L.diagram);
   } else if (L.start_fen && L.start_fen.split(" ")[0] === "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR")
     from = "the initial position";
   else if (L.start_fen) from = "a set position";
-  let s = "The line starts" + (from ? " from " + esc(from) : "") + " on " + esc(pageName(L.page));
+  // the diagram's name opens its panel (its reading, Use this diagram, Correct the position)
+  let s = "The line starts" + (diag ? " from <a href='#' class=dlink data-diagram='" + esc(L.diagram) + "'>" +
+    esc(diag) + "</a>" : from ? " from " + esc(from) : "") + " on " + esc(pageName(L.page));
   const parts = [];
   if (L.end_page !== L.page) parts.push("runs to " + esc(pageName(L.end_page)));
   if (L.result) parts.push("ends <span class=n>" + esc(L.result) + "</span>");
@@ -1337,6 +1340,8 @@ function renderTree(){
   // a title the program made up ("Page 12") is an explanation, not the book's
   $("lsec").classList.toggle("generic", !L.header);
   $("linemeta").innerHTML = lineMeta(L);
+  for (const a of $("linemeta").querySelectorAll(".dlink"))
+    a.addEventListener("click", (e) => { e.preventDefault(); showDiagram(a.dataset.diagram); });
 }
 function fitTree(){
   // on wide screens the move list gives way to the comment, but keeps at least three rows, and it
@@ -1536,6 +1541,19 @@ function defaultView(){
 }
 
 /* ---------------------------------------------------------------- diagrams */
+// A tap on a diagram on the page: when reading, the line the book starts from it, at its starting
+// position (the arrows then step through the line), or the move it shows the position after; in
+// reading mode, and for a diagram no line reaches, the diagram's own panel (its reading, Use this
+// diagram, Correct the position).
+function openDiagram(id){
+  const [, d] = diagramInfo(id);
+  if (d && !reading()) {
+    const lid = (d.lines || []).find(l => D.lines[l]);
+    if (lid) { selectNode(D.lines[lid].root, {fromPage: true}); return; }
+    if (d.after_node && D.nodes[d.after_node]) { selectNode(d.after_node, {fromPage: true}); return; }
+  }
+  showDiagram(id);
+}
 function showDiagram(id){
   const [p, d] = diagramInfo(id);
   if (!d) return;
@@ -1716,7 +1734,7 @@ function init(){
       if (i >= 0) { openItem(i); return; }
     }
     if (b.dataset.node) { selectNode(b.dataset.node, {fromPage: true}); openIfFailed(b.dataset.node); return; }
-    if (b.dataset.diagram) { showDiagram(b.dataset.diagram); return; }
+    if (b.dataset.diagram) { openDiagram(b.dataset.diagram); return; }
     if (b.dataset.mark) {
       const m = D.pages[S.page].marks[parseInt(b.dataset.mark, 10)];
       $("info").innerHTML = "<p class=comment>“<span class=n>" + shownHtml(m.raw) + "</span>”</p>" +
