@@ -711,6 +711,26 @@ def test_a_move_of_a_section_that_is_not_legal_is_left_out_with_the_reason(misse
     assert len([m for p in fixed["pages"] for m in p["marks"] if m.get("corrected") == "added"]) == 1
 
 
+def test_a_printed_piece_move_read_as_a_pawn_move_is_unsure(missed):
+    """region.read(): "Qe4" printed after 8.Nc3, where it is Black's move, reads
+    only as the pawn move 8...e4 by dropping the queen the text prints; that
+    reading is offered as unsure. From the position before 8.Nc3, where it is
+    White's move, the same text reads as 8.Qe4 without doubt."""
+    from chessbook import region
+    from chessbook.assemble import _Decoder
+    from chessbook.movetext import GlyphModel
+    tmp, pdf, book, _ = missed
+    g = line_titled(book, "Smith - Jones")
+    nc3 = book["nodes"][main_line(book, g)[-1]]
+    ke6 = book["nodes"][nc3["parent"]]
+    dec = _Decoder(GlyphModel(seed=True), book.get("letters"))
+    after = region.read(dec, nc3["fen"], "try Qe4 here.")
+    assert after and all(c["unsure"] >= 1 for c in after), after
+    assert region.read(dec, ke6["fen"], "try Qe4 here.")[0] == {"san": ["Qe4"], "cost": 0.0, "unsure": 0}
+    # a clean reading still counts as sure
+    assert region.read(dec, nc3["fen"], "Nb4")[0]["unsure"] == 0
+
+
 def test_sections_survive_a_rebuild_and_apply_live(missed):
     """The corrections file keeps a section, and the browser app's worker
     applies it to the assembled book with the result of a fresh build;

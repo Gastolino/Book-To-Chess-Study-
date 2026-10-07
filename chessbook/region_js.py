@@ -42,6 +42,24 @@ cursor:move;touch-action:none}
 .rgh.ne::before{left:-1px;bottom:-1px}
 .rgh.sw::before{right:-1px;top:-1px}
 .rgh.se::before{left:-1px;top:-1px}
+/* Nothing over the page reaches past its edges: the page's overlay clips what stands outside it (a
+   handle's reach), so that a section at the edge neither widens the page's scroll nor moves it
+   sideways. At an edge of the page the handles stand inside the corners instead (regionPaint). */
+.ov{overflow:hidden;overflow:clip}
+.rgsel.atl .rgh.nw,.rgsel.atl .rgh.sw{right:auto;left:0;margin-left:0;margin-right:0}
+.rgsel.atr .rgh.ne,.rgsel.atr .rgh.se{left:auto;right:0;margin-left:0;margin-right:0}
+.rgsel.att .rgh.nw,.rgsel.att .rgh.ne{bottom:auto;top:0;margin-top:0;margin-bottom:0}
+.rgsel.atb .rgh.sw,.rgsel.atb .rgh.se{top:auto;bottom:0;margin-top:0;margin-bottom:0}
+.rgsel.atl .rgh.nw::before,.rgsel.atl .rgh.sw::before{right:auto;left:-1px}
+.rgsel.atr .rgh.ne::before,.rgsel.atr .rgh.se::before{left:auto;right:-1px}
+.rgsel.att .rgh.nw::before,.rgsel.att .rgh.ne::before{bottom:auto;top:-1px}
+.rgsel.atb .rgh.sw::before,.rgsel.atb .rgh.se::before{top:auto;bottom:-1px}
+/* the legal moves to tap: a few rows that scroll on a wide screen, one row that scrolls sideways on
+   a phone, where the sheet has little room above the bar */
+.rglist{display:grid;gap:4px}
+.rglist[hidden]{display:none}
+.rglist .choices{max-height:5.6em;overflow:auto}
+@media (max-width:700px){.rglist .choices{flex-wrap:nowrap;overflow:auto hidden;max-height:none;white-space:nowrap}}
 .rgread{display:grid;gap:4px}
 .rgread .said{overflow-wrap:anywhere}
 .fix input#rgsan{width:100%;max-width:24em}
@@ -59,7 +77,10 @@ cursor:move;touch-action:none}
    instead of in the panel below the page, out of sight */
 @media (min-width:701px) and (max-width:1100px) and (orientation:portrait){
 #fix:not([hidden]){position:fixed;left:0;right:0;z-index:9;max-height:62vh;overflow:auto;background:var(--bg);
-border-top:1px solid var(--line);padding:12px 24px}}
+border-top:1px solid var(--line);padding:12px 24px}
+/* (the diagram editor's board as on a phone, a third of the height, so that the pieces and the
+   buttons under it show in the sheet with it) */
+.fixboard svg{max-width:min(100%,32vh);margin:0 auto}}
 """
 
 REGION_JS = r"""
@@ -113,13 +134,24 @@ function regionPaint(){
   const P = D.pages[S.page], r = RG.sel.rect;
   box.style.left = pct(r[0], P.w); box.style.top = pct(r[1], P.h);
   box.style.width = pct(r[2] - r[0], P.w); box.style.height = pct(r[3] - r[1], P.h);
+  // a side of the section near the page's edge: its handles stand inside the corners there, where
+  // the page's overlay does not cut them off
+  const k = $("pagebox").getBoundingClientRect().width / P.w, near = 16;
+  box.classList.toggle("atl", r[0] * k < near);
+  box.classList.toggle("atr", (P.w - r[2]) * k < near);
+  box.classList.toggle("att", r[1] * k < near);
+  box.classList.toggle("atb", (P.h - r[3]) * k < near);
 }
 function setRegionTool(on){
   if (!on) { regionCancel(); say(""); return; }
   if (RV.edit && !regionOpen()) closeFix();
   RG.draw = true;
   regionButtons();
-  say("Drag across the moves that the program missed, or tap a word of them. A second tap on the button ends it.");
+  // (on a phone the bar at the foot of the screen has no room for the button, and the top bar
+  // scrolls away with the page: the pencil there reads a section with a tap)
+  say("Drag across the moves that the program missed, or tap a word of them. A second tap on the button ends it." +
+    ($("mregion") && !$("mregion").offsetParent && $("mpen") && $("mpen").offsetParent ?
+      " Further down the page, the pencil in the bar below reads a section with a tap where no move is read." : ""));
 }
 function regionCancel(){
   RG.draw = false; RG.drag = null; RG.sel = null; RG.edit = null; RG.read = null;
@@ -153,16 +185,32 @@ function regionDown(e){
   if (!(RG.draw || (regionOpen() && e.pointerType === "mouse"))) return;
   if (t.closest(".eye,.ribbon,.bmnote,.symmenu")) return;
   RG.drag = {kind: "new", x, y, id: e.pointerId, moved: false, cx: e.clientX, cy: e.clientY,
-    on: !!t.closest(".mark,.diag")};
+    on: !!t.closest(".mark,.diag"), armed: RG.draw};
   // (the gesture is the section's: whatever turns the page by a swipe does not see it)
   if (RG.draw) e.stopPropagation();
 }
 function regionMove(e){
   const d = RG.drag;
   if (!d || e.pointerId !== d.id) return;
+  if (d.kind === "pan") {
+    // a finger that went up or down scrolls the page, as it would without the tool (the tool holds
+    // the page's own scrolling while it is on, so it scrolls the page itself)
+    window.scrollBy(0, d.py - e.clientY);
+    $("pagescroll").scrollLeft += d.px - e.clientX;
+    d.px = e.clientX; d.py = e.clientY;
+    e.preventDefault();
+    return;
+  }
   if (!d.moved) {
     // (a new section needs a drag, not the slip of a tap; a handle follows the pointer at once)
     if (d.kind === "new" && Math.hypot(e.clientX - d.cx, e.clientY - d.cy) < 6) return;
+    // by touch, a first movement up or down is a scroll: moves run along the lines of the page, so
+    // a section is drawn across them
+    if (d.kind === "new" && e.pointerType !== "mouse" && Math.abs(e.clientY - d.cy) > 2.5 * Math.abs(e.clientX - d.cx)) {
+      Object.assign(d, {kind: "pan", px: e.clientX, py: e.clientY});
+      regionMove(e);
+      return;
+    }
     d.moved = true;
     if (d.kind === "new") {
       try { $("pagebox").setPointerCapture(e.pointerId); } catch (err) { /* the pointer is gone */ }
@@ -195,16 +243,43 @@ function regionUp(e, cancel){
   if (d.moved || d.kind !== "new") e.stopPropagation();
   try { $("pagebox").releasePointerCapture(e.pointerId); } catch (err) { /* not captured */ }
   if (cancel) { regionPaint(); return; }
+  // (a scroll leaves the tool as it was, and its click goes nowhere)
+  if (d.kind === "pan") { RG.swallow = performance.now(); return; }
   if (d.kind === "new" && !d.moved) {
-    // a tap on a move box: its own click does the rest (it chooses the move); elsewhere a tap takes the word under it
-    if (d.on) return;
+    // a tap on a move box: its own click does the rest (it chooses the move); elsewhere a tap takes
+    // the word under it while the tool waits for a section (with the sheet open, a click of the
+    // mouse elsewhere changes nothing, as a tap does not: only a drag draws the section again)
+    if (d.on || !d.armed) return;
     RG.swallow = performance.now();
     regionAt(d.x, d.y);
     return;
   }
-  if (!d.moved) return;
+  if (!d.moved) {
+    // a tap on the section or its handles that moved nothing: the move printed under it, or beside
+    // it under a handle's reach, is chosen, as a tap on that move would choose it
+    RG.swallow = performance.now();
+    const hit = markUnder(e.clientX, e.clientY);
+    if (hit) selectNode(hit, {fromPage: true});
+    return;
+  }
   RG.swallow = performance.now();
+  const w = RG.sel ? RG.sel.rect[2] - RG.sel.rect[0] : 0, h = RG.sel ? RG.sel.rect[3] - RG.sel.rect[1] : 0;
+  if (d.kind === "new" && RG.sel && w < 12 && h > 2.5 * w) {
+    // a tall sliver narrower than a printed move is no section: the tool waits for a drag across the moves
+    RG.sel = null;
+    regionPaint();
+    say("A drag across the moves, from one corner of the section to the other, marks it.");
+    return;
+  }
   regionSelected();
+}
+function markUnder(x, y){
+  // the move whose box lies under a point of the window, beneath the section drawn over the page
+  const box = $("rgsel");
+  if (box) box.style.pointerEvents = "none";
+  const el = document.elementsFromPoint(x, y).find(t => t.matches && t.matches("#ov .mark[data-node]"));
+  if (box) box.style.pointerEvents = "";
+  return el ? el.dataset.node : null;
 }
 function regionClick(e){
   // (the capture phase of the page's clicks) the click after a drag or a tap that made a section
@@ -212,7 +287,7 @@ function regionClick(e){
   if (e.target.closest("#rgsel")) { e.stopPropagation(); return; }
   // the pencil: a tap where no move or diagram box stands reads a section there
   const blank = e.target === $("ov") || e.target === $("pageimg") || e.target === $("pagebox");
-  if (blank && PEN.on && reading() && !PEN.connect) {
+  if (blank && PEN.on && reading() && !PEN.connect && !regionOpen()) {
     e.stopPropagation();
     const [x, y] = pagePoint(e.clientX, e.clientY);
     regionAt(x, y);
@@ -281,6 +356,7 @@ function regionSheet(){
   h += "<div class=typed><label class='lab small' for=rgsan>The moves printed there</label><input type=text id=rgsan " +
     "autocomplete=off autocapitalize=off spellcheck=false placeholder='such as 8…Nb4 9.Qe4' aria-describedby=rgcheck></div>";
   h += "<p class='fixmsg small' id=rgcheck role=status></p>";
+  h += "<div class=rglist id=rglist hidden></div>";
   h += "<div class=rgwhere id=rgwhere></div>";
   h += "<div class=fixacts><button class=tb id=rgok disabled>" + (RG.edit ? "Save the change" : "Add these moves") + "</button>" +
     "<button class=tb id=rgagain>Select again</button>" + (RG.edit ? "<button class=tb id=rgremove>Remove these moves</button>" : "") +
@@ -300,9 +376,25 @@ function regionSheet(){
   $("rgcancel").addEventListener("click", () => { regionCancel(); say(""); });
   if ($("rgremove")) $("rgremove").addEventListener("click", regionRemove);
   $("rgread").addEventListener("click", (e) => {
+    const o = e.target.closest("button[data-other]");
+    if (o && RG.read && RG.read.other) {
+      const alt = RG.read.other;
+      RG.where = alt.side;
+      $("rgsan").value = regionLabels(alt.san, alt.fen);
+      regionWhere(); regionCheck(); regionRead();
+      return;
+    }
     const t = e.target.closest("button[data-cand]");
     if (!t || !RG.read || !RG.read.candidates) return;
     $("rgsan").value = regionLabels(RG.read.candidates[parseInt(t.dataset.cand, 10)].san);
+    regionCheck();
+  });
+  $("rglist").addEventListener("click", (e) => {
+    const t = e.target.closest("button[data-legal]");
+    if (!t) return;
+    // the move tapped takes the place of a move half typed, or comes after the moves typed
+    const p = regionParse();
+    $("rgsan").value = regionLabels(p.moves.map(m => m[1]).concat([t.dataset.legal]));
     regionCheck();
   });
   $("rgwhere").addEventListener("click", (e) => {
@@ -351,7 +443,20 @@ function regionSpot(id, where){
   return a ? {key: a.key, before: a.before, prefix: a.san, fen: n.fen} : null;
 }
 function regionFen(){ const s = RG.anchor ? regionSpot(RG.anchor, RG.where) : null; return s ? s.fen : null; }
-function endsMain(id){ const n = D.nodes[id]; return !!n && n.main && !cont(id); }
+function editedMove(id){
+  // whether node id is one of the moves of the section whose sheet is open to change it
+  const n = D.nodes[id], e = RG.edit && RG.edit.entry;
+  return !!(e && n && n.region && n.added === RG.edit.key && n.region.page === e.page &&
+    n.region.rect.map(R1).join(",") === e.rect.map(R1).join(","));
+}
+function endsMain(id){
+  // whether the main line ends at node id (the moves of the section being changed aside: a section
+  // that continues the main line still does so when it is changed)
+  const n = D.nodes[id];
+  if (!n || !n.main) return false;
+  const c = cont(id);
+  return !c || editedMove(c);
+}
 function regionWhere(){
   const box = $("rgwhere");
   if (!box) return;
@@ -402,7 +507,7 @@ function regionParse(){
     t = t.replace(/^\d+\s*\.+/, "");
     // move numbers on their own, and the result of a game, are no moves
     if (!t || /^\d+$/.test(t) || /^(?:1-0|0-1|1\/2-1\/2|½-½|\*)$/.test(t)) continue;
-    if (!fen) { out.bad = t; out.why = "Choose the move that these moves follow first."; return out; }
+    if (!fen) { out.wait = true; return out; }
     const legal = CJ.legalMoves(fen), m = matchSan(t, legal);
     if (!m) { out.bad = t; out.why = CJ.whyNot(fen, sanKey(t)) || t + " is not a legal move here."; return out; }
     const f = fen.split(" ");
@@ -412,25 +517,74 @@ function regionParse(){
   }
   return out;
 }
+const movesText = (ms) => ms.map((m, i) => (i === 0 || m[0].slice(-1) === "." ? m[0] : "") + m[1]).join(" ");
+function regionAhead(p){
+  // the typed moves that the line plays itself from the place chosen (a section drawn across the
+  // last move the program read and the missed ones after it): the moves go on after the last of
+  // them. {anchor: that move, skip: the line's own moves, rest: the moves to add}, or null
+  const n = RG.anchor ? D.nodes[RG.anchor] : null;
+  if (!n || !p.moves.length) return null;
+  let at = RG.where === "before" ? n.parent : RG.anchor, k = 0;
+  while (at != null && k < p.moves.length) {
+    const kid = D.nodes[at].children.find(c => D.nodes[c].uci === p.moves[k][2] && !editedMove(c));
+    if (!kid) break;
+    at = kid; k++;
+  }
+  return k ? {anchor: at, skip: p.moves.slice(0, k), rest: p.moves.slice(k)} : null;
+}
 function regionCheck(){
   const box = $("rgcheck");
   if (!box) return;
-  const p = regionParse(), spot = RG.anchor ? regionSpot(RG.anchor, RG.where) : null;
-  const list = p.moves.map((m, i) => (i === 0 || m[0].slice(-1) === "." ? m[0] : "") + m[1]).join(" ");
-  let text = "", kind = "";
-  if (p.bad) {
+  const p = regionParse(), ahead = p.bad ? null : regionAhead(p);
+  const spot = ahead ? regionSpot(ahead.anchor, "after") : RG.anchor ? regionSpot(RG.anchor, RG.where) : null;
+  const list = movesText(p.moves);
+  let text = "", kind = "", none = false;
+  if (p.wait) {
+    // (no position to check the moves against yet: nothing is wrong with them)
+    text = "Choose the move that these moves follow first: a tap on it, on the page or in the move list.";
+  } else if (p.bad) {
     text = (p.moves.length ? "After " + list + ", " : "") + p.bad + " is not legal. " + p.why;
     kind = "bad";
+  } else if (ahead && !ahead.rest.length) {
+    text = "The line plays " + list + " itself. Choose the move after which the missed moves stand, or type them.";
+    kind = "bad"; none = true;
+  } else if (ahead) {
+    const rest = movesText(ahead.rest);
+    text = "The line plays " + movesText(ahead.skip) + " itself, so " + (ahead.rest.length === 1 ? "the move " + rest +
+      " goes" : "the moves " + rest + " go") + " after " + moveText(ahead.anchor, true) + (ahead.rest.length === 1 ?
+      ", where it is legal." : ", where they are legal.");
+    kind = "good";
   } else if (p.moves.length) {
     text = (p.moves.length === 1 ? "The move " + list + " is" : "The moves " + list + " are") + " legal here.";
     kind = "good";
   }
   box.textContent = text;
   box.className = "fixmsg small" + (kind ? " " + kind : "");
-  $("rgok").disabled = !!p.bad || !p.moves.length || !spot;
+  $("rgok").disabled = !!p.bad || !!p.wait || none || !p.moves.length || !spot;
+  regionList(p);
   if (p.moves.length) preview(p.fen, p.moves[p.moves.length - 1][2], "The board shows the position after the moves you read.");
   else if (spot) preview(spot.fen, null, "The board shows the position that the moves start from.");
   else { S.preview = null; renderBoard(); }
+  // (on a wide screen the sheet under the board keeps its field and buttons in view as it grows)
+  keepChooserInView();
+}
+
+function regionList(p){
+  // the moves legal next, from the move chosen and the moves typed so far, as options to tap (a
+  // missed move is then picked as on the pencil's move sheet), while the program offers no reading
+  // without doubt
+  const box = $("rglist");
+  if (!box) return;
+  const r = RG.read || {};
+  const fen = p.wait ? null : p.fen;
+  if (!fen || (r.candidates && r.candidates.some(c => !c.unsure)) || r.waiting) { box.innerHTML = ""; box.hidden = true; return; }
+  const a = p.bad ? sanKey(p.bad, true) : "";
+  const hits = CJ.legalMoves(fen).filter(m => !a || sanKey(m[0], true).indexOf(a) === 0);
+  box.hidden = false;
+  box.innerHTML = "<p class='lab small'>" + (p.moves.length ? "The moves legal next" : "The moves legal here") + "</p>" +
+    "<div class=choices aria-label='Legal moves'>" + hits.map(m => "<button data-legal='" + esc(m[0]) + "'>" +
+    esc(m[0]) + "</button>").join("") + (hits.length ? "" : "<span class=sub>No legal move begins like this.</span>") +
+    "</div>";
 }
 
 /* the program's reading of the section (the app's worker) */
@@ -442,8 +596,14 @@ function regionRead(){
   renderRead();
   // without a move to start from, the words alone
   if (!fen) parent.postMessage({words: {id, page: RG.sel.page, rect: RG.sel.rect, near: 0}}, "*");
-  else parent.postMessage({region: {id, page: RG.sel.page, rect: RG.sel.rect, at: fen,
-    side: RG.where}}, "*");
+  else {
+    // the other place the moves may go (before the move rather than after it, or the other way), whose
+    // reading the program offers when nothing reads without doubt at this one
+    const other = RG.anchor && D.nodes[RG.anchor].parent != null ?
+      regionSpot(RG.anchor, RG.where === "after" ? "before" : "after") : null;
+    parent.postMessage({region: {id, page: RG.sel.page, rect: RG.sel.rect, at: fen, side: RG.where,
+      other: other ? other.fen : null}}, "*");
+  }
 }
 function renderRead(){
   const box = $("rgread");
@@ -451,22 +611,32 @@ function renderRead(){
   const r = RG.read || {};
   let h = "<p class='lab small'>What the program reads there</p>";
   if (r.local) h += "<p class='small muted'>The reader opened from a file cannot read the text of the page; the browser " +
-    "app can. Type the moves printed in the section.</p>";
+    "app can. Type the moves printed in the section, or tap them among the legal moves.</p>";
   else if (r.waiting) h += "<p class='small muted'>Reading the section.</p>";
   else if (r.failed) h += "<p class='small muted'>The program could not read the section: " + esc(r.failed) +
     " Type the moves printed there.</p>";
-  else if (!r.text) h += "<p class='small muted'>The page's text holds no words in this section. Type the moves printed there.</p>";
+  else if (!r.text) h += "<p class='small muted'>The page's text holds no words in this section. Type the moves printed " +
+    "there, or tap them among the legal moves.</p>";
   else {
     h += "<p class='said'>“<span class=n>" + shownHtml(r.text) + "</span>”</p>";
     if (!r.candidates) h += "<p class='small muted'>Choose the move that these moves follow, and the program reads them " +
       "from there.</p>";
     else if (!r.candidates.length) h += "<p class='small muted'>The program reads no move there that is legal at the " +
-      "move chosen. Type the moves printed there.</p>";
+      "move chosen. Type the moves printed there, or tap them among the legal moves.</p>";
     else h += "<div class=choices id=rgcands aria-label='The readings of the section'>" + r.candidates.map((c, i) =>
       "<button data-cand='" + i + "'>" + esc(regionLabels(c.san, r.fen)) + (c.unsure ? "<span class=sub>unsure</span>" : "") +
       "</button>").join("") + "</div>";
+    if (r.other && RG.anchor && D.nodes[RG.anchor]) {
+      // the section reads without doubt from the other place: a printed "Qe4" is White's move
+      const side = r.other.fen.split(" ")[1] === "w" ? "White" : "Black", there = r.other.side + " " + moveText(RG.anchor, true);
+      h += "<p class=small><span class=n>" + esc(regionLabels(r.other.san, r.other.fen)) + "</span>, " + side +
+        (r.other.san.length > 1 ? "'s moves first" : "'s move") + ", reads without doubt " + esc(there) + ". " +
+        "<button class=tb data-other='" + esc(r.other.side) + "'>Put the moves " + esc(there) + "</button></p>";
+    }
   }
   box.innerHTML = h;
+  regionList(regionParse());
+  keepChooserInView();
 }
 function regionMessage(e){
   if (e.source !== window.parent || e.source === window) return;
@@ -512,8 +682,17 @@ function dropEntry(key, entry){
   storeAdded(key, list);
 }
 function regionConfirm(){
-  const p = regionParse(), spot = RG.anchor ? regionSpot(RG.anchor, RG.where) : null;
-  if (p.bad || !p.moves.length || !spot) return;
+  const p = regionParse();
+  if (p.bad || p.wait || !p.moves.length) return;
+  // the moves that the line plays itself are its own: the rest go on after the last of them
+  const ahead = regionAhead(p);
+  if (ahead) {
+    if (!ahead.rest.length) return;
+    RG.anchor = ahead.anchor; RG.where = "after";
+    p.moves = ahead.rest;
+  }
+  const spot = RG.anchor ? regionSpot(RG.anchor, RG.where) : null;
+  if (!spot) return;
   const sans = p.moves.map(m => m[1]), e = regionEntry(spot, sans);
   if (RG.edit) dropEntry(RG.edit.key, RG.edit.entry);
   const list = (FIX.get("added", spot.key) || []).map(x => Object.assign({}, x));
@@ -522,7 +701,7 @@ function regionConfirm(){
   const base = RG.where === "before" ? D.nodes[RG.anchor].parent : RG.anchor;
   const at = D.nodes[RG.anchor];
   const where = (RG.where === "before" ? "before " : "after ") + (at.parent == null ? "the start of the line" : moveText(RG.anchor, true));
-  const said = "You added " + p.moves.map((m, i) => (i === 0 || m[0].slice(-1) === "." ? m[0] : "") + m[1]).join(" ") +
+  const said = "You added " + movesText(p.moves) +
     " " + (at.parent == null ? "at the start of the line" : where) + (e.main ? ", where the main line goes on with them" : "") + ". ";
   BM.want = {line: at.line, steps: pathOf(base).concat([{san: sans[0]}])};
   RG.edit = null;
@@ -536,12 +715,16 @@ function regionConfirm(){
 }
 function regionRemove(){
   if (!RG.edit) return;
+  // the move the section's moves went with is chosen once they are gone (in the app when the book
+  // holds the change), as when a variation added on the board is removed: the board keeps its place
+  const a = RG.anchor && D.nodes[RG.anchor] ? RG.anchor : null;
+  const base = a && RG.where === "before" ? D.nodes[a].parent : a;
+  if (base != null && D.nodes[base]) BM.want = {line: D.nodes[base].line, steps: pathOf(base)};
   dropEntry(RG.edit.key, RG.edit.entry);
-  const at = nodeByKey(RG.edit.key);
   RG.edit = null;
   regionCancel();
   afterFix();
-  if (at && D.nodes[at] && !inApp()) selectNode(at, {scrollPage: false});
+  if (!inApp()) boardMoveApplied();
   say("The moves you read are removed. " + applyWords());
 }
 function regionEntryOf(id){
@@ -587,6 +770,9 @@ function openRegionNode(id){
 /* the reader opened from a file: the sections the book does not hold yet are shown at once */
 function localRegions(){
   if (inApp()) return false;
+  // (the moves take their names afresh, in the order of the stored entries, so that a move keeps
+  // its name from one opening of the reader to the next, and an address such as #node=rg2 holds)
+  RG.seq = 0;
   let changed = false;
   for (const id of RG.local) {
     const n = D.nodes[id];
@@ -675,6 +861,7 @@ function initRegion(){
   new MutationObserver(() => { if (!reading() && (RG.draw || regionOpen())) regionCancel(); })
     .observe(document.body, {attributes: true, attributeFilter: ["class"]});
   regionButtons();
-  regionRefresh();
+  // (the sections the book does not hold yet are on the pages already: init() played them before
+  // it read the address, so that an address naming one of their moves finds it)
 }
 """

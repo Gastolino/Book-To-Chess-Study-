@@ -209,6 +209,33 @@ def test_a_variation_added_on_the_board_reaches_the_open_chapter(tmp_path, monke
     assert driver.STATE["book"]["stats"]["corrected"]["added_moves"] == 0
 
 
+def test_the_driver_names_the_other_place_of_a_move_of_the_other_side(tmp_path, monkeypatch):
+    """read_region() on "Qe4", printed in a note after 7...Ke6 of the game that
+    ends with 8.Nc3: after 8.Nc3, where it is Black's move, the text reads only
+    as the pawn move 8...e4 (unsure, as it drops the queen); before 8.Nc3,
+    the other place, it reads as 8.Qe4 without doubt, and the answer names
+    that place."""
+    import json
+    import pymupdf
+    driver = _driver(tmp_path, monkeypatch)
+    from test_assemble import make_book
+    from test_corrections import MISSED
+    pdf = make_book(tmp_path / "missed.pdf", note7=MISSED)
+    driver.process(str(pdf), lambda *_: None)
+    with pymupdf.open(pdf) as doc:
+        q = next([round(v, 1) for v in w[:4]] for w in doc[3].get_text("words") if w[4] == "Qe4")
+    rect = [q[0] - 1, q[1] - 1, q[2] + 1, q[3] + 1]
+    book = driver.STATE["book"]
+    nc3_id, nc3 = next((k, n) for k, n in book["nodes"].items() if n["san"] == "Nc3" and n["main"]
+                       and not any(book["nodes"][c]["main"] for c in n["children"]))
+    ke6 = book["nodes"][nc3["parent"]]
+    out = json.loads(driver.read_region(4, json.dumps(rect), nc3_id, "after", ke6["fen"]))
+    assert out["text"] == "Qe4" and all(c["unsure"] for c in out["candidates"])
+    assert out["other"] == {"side": "before", "fen": ke6["fen"], "san": ["Qe4"]}
+    # without the other place, nothing is named
+    assert json.loads(driver.read_region(4, json.dumps(rect), nc3_id, "after"))["other"] is None
+
+
 def test_the_driver_reads_a_section_of_a_page(tmp_path, monkeypatch):
     """The reader's "Read a section": words() gives the words of the text layer
     around a tap (the selection snaps to the one under it), and read_region()
@@ -257,7 +284,11 @@ def test_the_driver_reads_a_section_of_a_page(tmp_path, monkeypatch):
     assert before["fen"] == e5["fen"] and before["candidates"] == out["candidates"]
     # a section of prose reads as no move
     prose = json.loads(driver.read_region(4, json.dumps(box["attack."]), e5_id, "after"))
-    assert prose["text"] == "attack." and prose["candidates"] == []
+    assert prose["text"] == "attack." and prose["candidates"] == [] and prose["other"] is None
+    # read with the other place offered (before 1...e5, White to move): the moves read without doubt
+    # where they were chosen, so the other place is not named
+    both = json.loads(driver.read_region(4, json.dumps(rect), e5_id, "after", book["nodes"][e5["parent"]]["fen"]))
+    assert both["candidates"] == out["candidates"] and both["other"] is None
     with pytest.raises(ValueError):
         driver.read_region(4, json.dumps(rect), "n999999", "after")
     # a section the reader read after the game's last move (8.tLlc3) and attached to it: the patch

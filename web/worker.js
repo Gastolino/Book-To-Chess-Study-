@@ -174,7 +174,8 @@ onmessage = async (event) => {
       // a section of a page the program missed, read with the book's decoder (which needs the
       // state that applies corrections, and so the board libraries)
       await boardsP;
-      const result = JSON.parse(driver.read_region(msg.page, JSON.stringify(msg.rect), msg.at, msg.side || "after"));
+      const result = JSON.parse(driver.read_region(msg.page, JSON.stringify(msg.rect), msg.at, msg.side || "after",
+                                                   msg.other || null));
       postMessage({ type: "region", id: msg.id, result });
     } else if (msg.type === "index") {
       postMessage({ type: "page", name: "index.html", hash: msg.hash || "", html: driver.index() });

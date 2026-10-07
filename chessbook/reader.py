@@ -1364,8 +1364,9 @@ function revealMark(el){
     // above an open editor the space is small: the page moves at once
     window.scrollBy({top: cy - free * 0.45, behavior: bottomCover() ? "auto" : "smooth"});
   }
+  // (only an enlarged page scrolls sideways: the fitted page never does)
   const ps = $("pagescroll");
-  if (ps && ps.scrollWidth > ps.clientWidth) {
+  if (ps && ps.classList.contains("zoom") && ps.scrollWidth > ps.clientWidth) {
     const p = ps.getBoundingClientRect();
     const cx = r.left + r.width / 2;
     if (cx < p.left + p.width * 0.2 || cx > p.right - p.width * 0.2) {
@@ -2292,6 +2293,9 @@ function init(){
   let rd = false;
   try { rd = localStorage.getItem("chessbook-reading") === "1"; } catch (e) { rd = false; }
   setReading(rd);
+  // the moves of the sections read on the pages that the book does not hold yet (the reader opened
+  // from a file), before the address is read, so that it may name one of them
+  localRegions();
   let start = D.chapter.start;
   while (!(start in D.pages) && start <= D.chapter.end) start++;
   showPage(start);

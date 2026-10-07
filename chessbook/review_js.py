@@ -492,8 +492,12 @@ function placeSheet(){
   const box = $("fix"), bar = $("mbar");
   if (SMALL.matches && !box.hidden) {
     box.style.bottom = bar.offsetHeight + "px";
-    // leave room above the editor for the page, so that the item stays in view
-    box.style.maxHeight = Math.max(220, window.innerHeight - bar.offsetHeight - 200) + "px";
+    // leave room above the editor for the page, so that the item stays in view: on a tablet held
+    // upright the diagram editor takes half the window at most, so that the diagram it corrects,
+    // taller than a move, stands whole above it
+    const room = TABLET.matches && RV.edit && RV.edit.kind === "diagram" ? Math.round(window.innerHeight * 0.5) :
+      window.innerHeight - bar.offsetHeight - 200;
+    box.style.maxHeight = Math.max(220, room) + "px";
     document.body.style.paddingBottom = (bar.offsetHeight + box.offsetHeight) + "px";
   } else { box.style.bottom = ""; box.style.maxHeight = ""; document.body.style.paddingBottom = ""; }
 }

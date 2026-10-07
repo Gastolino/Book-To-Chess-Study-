@@ -539,21 +539,33 @@ def _position_at(at, side):
     return n["fen"]
 
 
-def read_region(page, rect_json, at, side="after"):
+def read_region(page, rect_json, at, side="after", other=None):
     """What the program reads in a section of PDF page `page` (rect_json: the
     rectangle [x0, y0, x1, y1] in PDF points): the text printed there and the
     move sequences it reads as, decoded with the book's own decoder from the
     position after (or before) the move at (a FEN, a node id or a token
-    key), legal there, best first. Returns JSON {"text", "words", "fen",
-    "candidates": [{"san", "cost", "unsure"}], "seconds"}."""
+    key), legal there, best first. other is the position of the other place
+    the moves may go (before the move rather than after it, or after rather
+    than before), when there is one: when nothing reads without doubt from
+    the chosen place but a reading does from the other, "other" names that
+    place and its best reading (a printed "Qe4" is White's move, so the
+    moves go before Black's move rather than after it). Returns JSON
+    {"text", "words", "fen", "candidates": [{"san", "cost", "unsure"}],
+    "other": {"side", "fen", "san"} or null, "seconds"}."""
     t0 = time.perf_counter()
     rect = [float(v) for v in json.loads(rect_json)]
     doc = _doc()
     found = [w for w in region.words(doc, int(page), rect) if w["inside"]]
     text = " ".join(w["text"] for w in found)
     fen = _position_at(str(at), side)
-    cands = region.read(_region_decoder(), fen, text) if text else []
-    return json.dumps({"text": text, "words": found, "fen": fen, "candidates": cands,
+    dec = _region_decoder() if text else None
+    cands = region.read(dec, fen, text) if text else []
+    alt = None
+    if text and other and not any(c["unsure"] == 0 for c in cands):
+        sure = [c for c in region.read(dec, str(other), text) if c["unsure"] == 0]
+        if sure:
+            alt = {"side": "before" if side == "after" else "after", "fen": str(other), "san": sure[0]["san"]}
+    return json.dumps({"text": text, "words": found, "fen": fen, "candidates": cands, "other": alt,
                        "seconds": round(time.perf_counter() - t0, 3)})
 
 

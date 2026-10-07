@@ -153,6 +153,20 @@ function check(name, cond, detail) {
     r = await section(page);
     check("a drag inside the section moves it", near(r, [307, 66, 329, 83], 1.2), r);
     check("the section stays open after it moves", (await state(page)).open);
+    // a click of the mouse elsewhere on the page, with the sheet open, leaves the section as it is
+    const away = await at(page, 100, 300);
+    await page.mouse.click(away[0], away[1]);
+    r = await section(page);
+    check("with the sheet open a click elsewhere on the page keeps the section", near(r, [307, 66, 329, 83], 1.2) &&
+      (await state(page)).open, r);
+    const inView = await page.evaluate(() => { const b = document.getElementById("rgok").getBoundingClientRect(),
+      f = document.getElementById("rgsan").getBoundingClientRect(); return { ok: b.bottom, field: f.top, h: window.innerHeight }; });
+    check("the sheet shows its field and its buttons in the window", inView.ok <= inView.h && inView.field >= 0, inView);
+    // the legal moves to tap: a tap puts the move in the field
+    await page.click("#rglist button[data-legal='Nb4']");
+    check("a tap on a legal move of the list puts it in the field", await page.inputValue("#rgsan") === "8…Nb4" &&
+      /The move 8…Nb4 is legal here\./.test((await state(page)).check), await page.inputValue("#rgsan"));
+    await page.fill("#rgsan", "");
     await page.screenshot({ path: path.join(screens, "region_sheet_1280_light.png") });
     out.screenshots.push(path.join(screens, "region_sheet_1280_light.png"));
 
@@ -190,9 +204,12 @@ function check(name, cond, detail) {
     check("the page shows a box for the move", box && /current/.test(box.cls), box);
     await both(page, "region_added_1280");
 
-    // kept after a reload
+    // kept after a reload, with the move chosen as it was (the address names it)
     await page.reload();
     await page.waitForFunction(() => window.READER && window.readerState);
+    s = await state(page);
+    check("after a reload the move read from the section is still chosen, on its page", s.san === "Nb4" && s.page === 4 &&
+      s.corrected === "added", s);
     await goNode(page, I.nc3);
     moves = await treeMoves(page);
     nb4 = moves.find(m => /Nb4/.test(m.text));
@@ -210,11 +227,23 @@ function check(name, cond, detail) {
     s = await state(page);
     check("the pencil's tap on the box opens the section", s.open && /Change the moves you read/.test(s.fixText) &&
       await page.inputValue("#rgsan") === "8…Nb4" && near(await section(page), [307, 66, 329, 83], 1.2), s.fixText);
+    // the section continues the main line: its sheet says so, and a save keeps it there
+    check("the sheet of a section that continues the main line offers it, chosen",
+      await page.evaluate(() => { const b = document.querySelector("#rgwhere button[data-how=main]");
+        return !!b && b.getAttribute("aria-pressed") === "true"; }), s.fixText);
+    await page.click("#rgok");
+    s = await state(page);
+    moves = await treeMoves(page);
+    check("saved unchanged, the section still continues the main line", s.added[I.nc3key] &&
+      s.added[I.nc3key][0].main === true && moves.some(m => /Nb4/.test(m.text) && !m.inVar), { added: s.added, moves });
+    const markId2 = await page.evaluate(() => READER.pages[4].marks.find(x => x.corrected === "added").node);
+    await page.click(".mark[data-node='" + markId2 + "']");
     await page.click("#rgremove");
     s = await state(page);
     moves = await treeMoves(page);
     check("Remove these moves removes them", !s.added[I.nc3key] && !moves.some(m => /Nb4/.test(m.text)) &&
       !(await page.evaluate(() => READER.pages[4].marks.some(m => m.corrected === "added"))), { s, moves });
+    check("after Remove the move the section went with is chosen", s.san === "Nc3" && s.id === I.nc3, s);
 
     // with the pencil on, a tap where no box stands starts a section there; Before adds alternatives
     await goNode(page, I.nc3);
@@ -242,6 +271,53 @@ function check(name, cond, detail) {
     moves = await treeMoves(page);
     const qe4 = moves.find(m => /Qe4/.test(m.text));
     check("the move list shows the alternative as a variation", qe4 && qe4.inVar, moves);
+    // with no move chosen a typed move is not called illegal: the sheet asks for the move first
+    await fresh(page, "#page=4");
+    await page.click("#regionbtn");
+    [x0, y0] = await at(page, 305, 64); [x1, y1] = await at(page, 327, 81);
+    await page.mouse.move(x0, y0); await page.mouse.down(); await page.mouse.move(x1, y1, { steps: 5 }); await page.mouse.up();
+    await page.fill("#rgsan", "8.Qe4");
+    s = await state(page);
+    check("with no move chosen the sheet asks for it, and calls no move illegal", s.open &&
+      /Choose the move that these moves follow first/.test(s.check) && !/not legal/.test(s.check) &&
+      !(await page.evaluate(() => document.getElementById("rgcheck").classList.contains("bad"))), s.check);
+    // a tap on a move box beside the section, under the reach of a handle, chooses that move
+    const qf3 = await page.evaluate(() => Object.keys(READER.nodes).find(k => READER.nodes[k].san === "Qf3+" && READER.nodes[k].main));
+    const qf3At = await page.evaluate((id) => { const r = document.querySelector(".mark[data-node='" + id + "']").getBoundingClientRect();
+      const x = r.left + r.width / 2, y = r.top + r.height / 2, el = document.elementFromPoint(x, y);
+      return { x, y, under: el.className || el.id }; }, qf3);
+    await page.mouse.click(qf3At.x, qf3At.y);
+    s = await state(page);
+    check("a tap on a move under a handle's reach chooses that move", s.open && /After 7\.Qf3\+/.test(s.fixText) &&
+      near(await section(page), [305, 64, 327, 81], 1.2), { under: qf3At.under, text: s.fixText });
+    await page.click(".mark[data-node='" + I.ke6 + "']");
+    s = await state(page);
+    check("then the move typed is checked from it", /The move 8\.Qe4 is legal here\./.test(s.check), s.check);
+    // a section drawn across the last move the line holds and the missed ones after it: the line's
+    // own move stays, and the rest go after it
+    await page.fill("#rgsan", "8.Nc3 Nb4 9.Qe4");
+    s = await state(page);
+    check("moves the line plays itself are named, and the rest go after them",
+      /The line plays 8\.Nc3 itself, so the moves 8…Nb4 9\.Qe4 go after 8\.Nc3/.test(s.check) &&
+      !(await page.isDisabled("#rgok")), s.check);
+    await page.click("#rgok");
+    s = await state(page);
+    moves = await treeMoves(page);
+    check("they are stored after the line's own move, and shown", s.added[I.nc3key] &&
+      JSON.stringify(s.added[I.nc3key][0].san) === '["Nb4","Qe4"]' && !s.added[I.ke6key] && s.san === "Nb4" &&
+      moves.some(m => /Qe4/.test(m.text)), { added: s.added, san: s.san });
+    // a section the line plays whole is refused, with the reason
+    await goNode(page, I.ke6);
+    await page.click("#regionbtn");
+    [x0, y0] = await at(page, 230, 300); [x1, y1] = await at(page, 300, 320);
+    await page.mouse.move(x0, y0); await page.mouse.down(); await page.mouse.move(x1, y1, { steps: 5 }); await page.mouse.up();
+    await page.fill("#rgsan", "8.Nc3");
+    s = await state(page);
+    check("a section whose moves the line plays itself is refused with the reason",
+      /The line plays 8\.Nc3 itself\. Choose the move after which the missed moves stand/.test(s.check) &&
+      await page.isDisabled("#rgok"), s.check);
+    await page.click("#rgcancel");
+
     // Escape and Cancel take the section away
     await page.click("#penbtn");
     await page.click("#regionbtn");
@@ -276,6 +352,23 @@ function check(name, cond, detail) {
       !document.body.classList.contains("stickboard") && document.body.classList.contains("rgdraw")));
     await both(pp, "region_draw_390");
     const cdp = await phone.newCDPSession(pp);
+    // a touch that goes up the page scrolls it, as it does without the tool, and draws nothing
+    {
+      const pb = await pp.evaluate(() => { const r = document.getElementById("pagebox").getBoundingClientRect();
+        return [r.left + r.width * 0.3, Math.min(r.bottom, window.innerHeight) - 60]; });
+      const y0 = await pp.evaluate(() => window.scrollY);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: pb[0], y: pb[1] }] });
+      for (let i = 1; i <= 8; i++)
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: pb[0] + i, y: pb[1] - i * 20 }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await pp.waitForTimeout(150);
+      const y1 = await pp.evaluate(() => window.scrollY);
+      check("with the tool on, a touch that goes up the page scrolls it and draws no section",
+        y1 - y0 > 100 && !(await section(pp)) && !(await state(pp)).open &&
+        await pp.evaluate(() => document.body.classList.contains("rgdraw")), { y0, y1 });
+      await pp.evaluate(() => window.scrollTo(0, 0));
+      await pp.waitForTimeout(150);
+    }
     const touchDrag = async (a, b) => {
       await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: a[0], y: a[1] }] });
       for (let i = 1; i <= 8; i++)
@@ -311,6 +404,32 @@ function check(name, cond, detail) {
     await pp.tap("#mmoves");
     await pp.waitForTimeout(300);
     await both(pp, "region_added_390");
+    // a section at the page's right edge (the pencil's tap in the margin): the page keeps its place,
+    // and the handles there stand inside the page
+    await pp.evaluate(() => window.scrollTo(0, 0));
+    await pp.waitForTimeout(150);
+    await pp.tap("#mpen");
+    const before = await pp.evaluate(() => ({ left: document.getElementById("pagebox").getBoundingClientRect().left,
+      sl: document.getElementById("pagescroll").scrollLeft }));
+    const margin = await pp.evaluate(() => READER.pages[4].w - 6);
+    // (the window scrolled so that the spot stands above the board at the foot of the window)
+    await pp.evaluate(() => { const b = document.getElementById("pagebox").getBoundingClientRect();
+      window.scrollBy(0, b.top + 300 * b.width / READER.pages[4].w - 140); });
+    await pp.waitForTimeout(150);
+    const edge = await at(pp, margin, 300);
+    await pp.touchscreen.tap(edge[0], edge[1]);
+    await pp.waitForTimeout(300);
+    const after = await pp.evaluate(() => {
+      const b = document.getElementById("pagebox").getBoundingClientRect(), h = document.querySelector("#rgsel .rgh.se");
+      const hr = h ? h.getBoundingClientRect() : null;
+      return { left: b.left, right: b.right, sl: document.getElementById("pagescroll").scrollLeft,
+        sw: document.documentElement.scrollWidth, w: window.innerWidth, open: !document.getElementById("fix").hidden,
+        handle: hr && { left: hr.left, right: hr.right } };
+    });
+    check("a section at the page's right edge leaves the page in its place, its handles inside it",
+      after.open && Math.abs(after.left - before.left) < 0.5 && after.sl === 0 && before.sl === 0 && after.sw <= after.w &&
+      after.handle && after.handle.right <= after.right + 0.5, { before, after });
+    await pp.tap("#rgcancel");
     await phone.close();
 
     // ---------------------------------------------------------------- iPad, upright and sideways
@@ -341,7 +460,26 @@ function check(name, cond, detail) {
       check("on a tablet (" + w + " px) the sheet and the section are both in view", seen.top >= 0 && seen.bottom <= seen.h &&
         seen.sheetTop < seen.h && (w > hh || (seen.fixed === "fixed" && seen.bottom <= seen.sheetTop)), seen);
       await tp.fill("#rgsan", "Nb4");
+      const okSeen = await tp.evaluate(() => document.getElementById("rgok").getBoundingClientRect().bottom <= window.innerHeight);
+      check("on a tablet (" + w + " px) the sheet's Add button is in view", okSeen || w < hh);
       await both(tp, "region_sheet_" + w);
+      if (w < hh) {
+        // upright, the diagram editor stands above the bar with the diagram it corrects whole above it
+        await tp.tap("#rgcancel");
+        await tp.evaluate(() => { location.hash = "#page=6"; });
+        await tp.waitForFunction(() => window.readerState.page === 6);
+        if (!(await tp.evaluate(() => document.body.classList.contains("pencil")))) await tp.tap(await tp.isVisible("#mpen") ? "#mpen" : "#penbtn");
+        await tp.evaluate(() => document.querySelector(".diag[data-diagram='p6-1']").click());
+        await tp.waitForSelector("#fix:not([hidden])");
+        await tp.waitForTimeout(500);
+        const dg = await tp.evaluate(() => { const d = document.querySelector(".diag[data-diagram='p6-1']").getBoundingClientRect(),
+          f = document.getElementById("fix").getBoundingClientRect(); return { top: d.top, bottom: d.bottom, sheet: f.top,
+          kind: /Correct Diagram/.test(document.getElementById("fix").innerText) }; });
+        check("on a tablet upright the diagram editor leaves the diagram whole above it", dg.kind && dg.top >= 0 &&
+          dg.bottom <= dg.sheet + 1, dg);
+        await tp.screenshot({ path: path.join(screens, "region_diagram_820_light.png") });
+        out.screenshots.push(path.join(screens, "region_diagram_820_light.png"));
+      }
       await pad.close();
     }
 

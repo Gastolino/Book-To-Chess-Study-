@@ -92,12 +92,17 @@ def _cost(decs, total):
 
 
 def _readable(decs):
-    """The leading moves of a decoding that read as moves: [(SAN, UCI, cost, status)]."""
+    """The leading moves of a decoding that read as moves: [(SAN, UCI, cost,
+    status)]. A move read against what the text prints (a piece glyph or a
+    capture mark that the reading drops: "Qe4" read as the pawn move e4)
+    counts as unsure ("lost"), whatever its cost: the printed move is most
+    likely another one, of the other side or from another position."""
     out = []
     for d in decs:
         if not d.san:
             break
-        out.append((d.san, d.uci, d.cost, d.status))
+        lost = d.glyph_lost or (d.capture_mark and "x" not in d.san)
+        out.append((d.san, d.uci, d.cost, "lost" if lost and d.status == "ok" else d.status))
     return out
 
 
@@ -105,11 +110,12 @@ def read(dec, fen, text):
     """The move sequences that the section's text reads as from the position
     fen, with the book's own decoder (assemble._Decoder: its glyph model and
     letters, and the piece symbols the reader named): [{"san": [...],
-    "cost", "unsure"}], best first. The best reading comes first; then, for
-    each move that the decoder was unsure of, the reading with another of
-    its candidates there and the moves after it read again. A sequence holds
-    the moves while they are legal, so a later move that reads as nothing
-    ends it."""
+    "cost", "unsure"}], best first. "unsure" counts the moves read with
+    doubt, among them a move that drops a piece glyph or a capture mark that
+    the text prints. The best reading comes first; then, for each move that
+    the decoder was unsure of, the reading with another of its candidates
+    there and the moves after it read again. A sequence holds the moves
+    while they are legal, so a later move that reads as nothing ends it."""
     toks = tokens(text, fen)
     at = [k for k, t in enumerate(toks) if t.kind == "move"]     # the token of each move
     if not at:
@@ -137,7 +143,8 @@ def read(dec, fen, text):
             break
         board.push_uci(best[i][1])
     out, keys = [], set()
-    for c in sorted(found, key=lambda c: (-len(c), _cost(c, total))):
+    # (the readings with fewer unsure moves first, then the longer, then the cheaper)
+    for c in sorted(found, key=lambda c: (sum(1 for x in c if x[3] == "lost"), -len(c), _cost(c, total))):
         key = tuple(x[0] for x in c)
         if key in keys:
             continue

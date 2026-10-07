@@ -661,8 +661,20 @@ async function run(browser, which) {
     cand.replace(/^\d+[.…]+/, "").split(" ")[0] === sect.san, { cand, san: sect.san });
   await shot("09_read_a_section");
   await inFrame(() => document.querySelector("#rgcands button").click());
-  check("a reading of the section fills the moves, checked as legal",
-    /legal here/.test(await inFrame(() => document.getElementById("rgcheck").textContent)));
+  // (the section holds the line's own move: the sheet says so rather than adding it again)
+  const said = await inFrame(() => document.getElementById("rgcheck").textContent);
+  check("a reading of the section fills the moves, and the sheet names the line's own move as such",
+    /The line plays .* itself/.test(said) && await inFrame(() => document.getElementById("rgok").disabled), said);
+  // chosen as the move the section follows, the printed move is the other side's: the program reads
+  // it from the other place, before that move, and offers to put the moves there
+  await inFrame((id) => document.querySelector("#tree .mv[data-node='" + id + "']").click(), sect.id);
+  const other = await waitFrame(() => { const r = document.getElementById("rgread");
+    return r && !/Reading the section/.test(r.textContent) && /What the program reads there/.test(r.textContent) &&
+      document.querySelector("#rgwhere") && /After/.test(document.getElementById("rgwhere").textContent) ? {
+        sure: !!document.querySelector("#rgcands button:not(:has(.sub))"),
+        offer: (document.querySelector("#rgread button[data-other]") || {}).textContent || null } : null; }, null, 120000);
+  if (other.sure) note("the printed move also reads without doubt after itself: the offer of the other place is not checked");
+  else check("a move of the other side read from after it is offered before it", /Put the moves before/.test(other.offer || ""), other);
   await inFrame(() => document.getElementById("rgcancel").click());
   check("Cancel takes the section away", await inFrame(() => !document.getElementById("rgsel") && document.getElementById("fix").hidden));
   if (!wasReading) await inFrame(() => document.getElementById("showread").click());

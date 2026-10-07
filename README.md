@@ -412,18 +412,26 @@ a variation".
 Moves that the book prints but the program found nowhere (no box on the
 page) are read with "Read a section", the dashed rectangle beside the
 pencil in reading mode (and in the bar at the foot of a tablet's screen).
-With it on, a drag across the moves draws a rectangle round them, and a tap
-takes the word under the finger; with the pencil on, a tap on the page where
-no box stands does the same. The rectangle keeps its place on the page when
+With it on, a drag across the moves draws a rectangle round them, a tap
+takes the word under the finger, and a finger that goes up or down the page
+scrolls it; with the pencil on, a tap on the page where no box stands does
+the same (on a phone the pencil in the bar at the foot of the screen is the
+way in further down the page). The rectangle keeps its place on the page when
 the page is enlarged; its corners change its size and a drag inside it moves
-it. The sheet that opens says what the program reads there (in the browser
-app, which reads the page's text with the book's own reading of its piece
-symbols) and offers its readings as buttons, and it takes the moves typed in
-standard notation, checked move by move as they are typed: a move that is
-not legal is named with the reason. The moves go after the chosen move or
-before it, as alternatives to it; after the last move of the main line they
-continue the main line, or form a variation, as you choose. A tap on another
-move, on the page or in the move list, chooses that move instead. The moves
+it, while a tap on it chooses the move printed under it. The sheet that opens
+says what the program reads there (in the browser app, which reads the page's
+text with the book's own reading of its piece symbols) and offers its
+readings as buttons, a reading that drops a piece the text prints marked
+"unsure"; when the moves read without doubt only on the other side of the
+chosen move (a printed "Qe4" is White's move), it says so and offers to put
+them there. While no reading is sure, the moves legal next are buttons to
+tap. The sheet takes the moves typed in standard notation, checked move by
+move as they are typed: a move that is not legal is named with the reason.
+The moves go after the chosen move or before it, as alternatives to it;
+after the last move of the main line they continue the main line, or form a
+variation, as you choose. Moves at the start of the section that the line
+plays itself stay the line's own, and the rest go on after them. A tap on
+another move, on the page or in the move list, chooses that move instead. The moves
 then stand in the move list and in the PGN, each with a box on the page (the
 box of its printed word when the section prints as many moves, else the
 rectangle), and a tap on a box with the pencil opens the section again to
