@@ -18,7 +18,10 @@
 //     right (the sideways scroll at its end, the page's bottom at the bottom of the visible space,
 //     above the board that stays at the foot of the window and the bar);
 //   - the arrows and the keys turn with the same slide;
-//   - with reduced motion the page changes at once, with no slide.
+//   - with reduced motion the page changes at once, with no slide;
+//   - on the iPhone and the desktop, a note above the page that goes with a turn leaves the page
+//     coming in level with the page going out, and a second turn during a slide goes on from where
+//     the page stands.
 // When READER_DIR holds a chapter and the chapter after it, it also turns from the last page of
 // the one into the other on the iPhone, with the page enlarged: the page goes out and the place
 // of the next page comes in, and the next chapter's reader shows that page at its top left; a turn
@@ -178,6 +181,52 @@ async function chooseMove(page) {
   });
 }
 
+// Two turns back by the page arrow, each from a page whose place in the window changes: a note set
+// above the page (a bookmark's) that goes with the turn, and a second turn while the first still
+// slides. The page coming in starts level with the page going out, and the second slide goes on
+// from where the page stands, with no jump back.
+async function quickTurns(page, p0) {
+  await settle(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(100);
+  const lv = await page.evaluate(() => {
+    document.getElementById("bmbtn").click();
+    const note = document.getElementById("pagemsg").textContent;
+    const before = document.getElementById("pagebox").getBoundingClientRect().top;
+    document.getElementById("prevpage").click();
+    const part = document.querySelector(".turnstage .turnpart");
+    return { note, before, out: part ? part.getBoundingClientRect().top : null,
+             inc: document.getElementById("pagebox").getBoundingClientRect().top,
+             msg: document.getElementById("pagemsg").textContent, page: window.readerState.page };
+  });
+  check("a note above the page goes with the turn, and the page coming in starts level with the page going out",
+        /Bookmark set/.test(lv.note) && !lv.msg && lv.page === p0 - 1 && lv.out !== null &&
+        Math.abs(lv.out - lv.inc) < 1 && Math.abs(lv.out - lv.before) < 1, lv);
+  await settle(page);
+  await page.waitForTimeout(250);
+  const after = await page.evaluate(() => ({ margin: document.getElementById("pagescroll").style.marginTop,
+    anims: document.getAnimations().filter((a) => a.playState === "running").length }));
+  check("after the slide nothing is held over the page", !after.margin && after.anims === 0, after);
+  const r = await page.evaluate(async () => {
+    const box = document.getElementById("pagebox"), p = window.readerState.page;
+    document.getElementById("prevpage").click();
+    // (well into the slide)
+    await new Promise((done) => { const t0 = performance.now(); const f = () => {
+      if (document.getAnimations().some((a) => a.effect && a.effect.target === box && a.currentTime > 70) ||
+          performance.now() - t0 > 2000) done(); else requestAnimationFrame(f); }; f(); });
+    const at = box.getBoundingClientRect().left;
+    document.getElementById("prevpage").click();
+    // (where each copied page stands: its part on the stage is clipped to the page's place)
+    const parts = [...document.querySelectorAll(".turnstage .turnpart")].map((q) => q.querySelector(".pagebox").getBoundingClientRect().left);
+    return { from: p, page: window.readerState.page, at, parts, rest: document.getElementById("pagescroll").getBoundingClientRect().left };
+  });
+  check("a second turn while the first slides goes on from where the page stands",
+        r.page === r.from - 2 && r.parts.length === 2 && Math.abs(r.at - r.rest) > 20 && Math.abs(r.parts[1] - r.at) <= 2, r);
+  await settle(page);
+  const end = await page.evaluate(STATE);
+  check("the second slide ends on its page", end.page === r.from - 2 && end.transform === "none" && !end.stage, end);
+}
+
 async function byTouch(browser, m, ch) {
   const ctx = await browser.newContext(m.opts);
   const page = await open(ctx, ch.file, PAGE);
@@ -258,6 +307,7 @@ async function byTouch(browser, m, ch) {
   check("with reduced motion the page changes at once", s.after.page === PAGE + 2 && !s.after.stage && !s.after.turning &&
         s.after.anims === 0 && s.after.transform === "none", s.after);
   await page.emulateMedia({ reducedMotion: "no-preference" });
+  if (m.name === "iphone13") await quickTurns(page, PAGE + 2);
   await ctx.close();
 }
 
@@ -306,6 +356,7 @@ async function byKeys(browser, m, ch) {
   check("with reduced motion the arrow keys change the page at once", s.page === PAGE + 2 && !s.stage && !s.turning &&
         s.anims === 0 && s.transform === "none", s);
   await page.emulateMedia({ reducedMotion: "no-preference" });
+  await quickTurns(page, PAGE + 2);
   await ctx.close();
 }
 

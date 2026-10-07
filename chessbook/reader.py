@@ -1032,6 +1032,11 @@ function stageAt(clip){
   document.body.append(st);
   return st;
 }
+function sameClip(st, clip){
+  const r = st.getBoundingClientRect();
+  return Math.abs(r.left - clip.left) < 1 && Math.abs(r.top - clip.top) < 1 && Math.abs(r.width - (clip.right - clip.left)) < 1 &&
+    Math.abs(r.height - (clip.bottom - clip.top)) < 1;
+}
 function putOn(st, clip, part){
   const s = part.el.style;
   s.left = (part.left - clip.left) + "px"; s.top = (part.top - clip.top) + "px";
@@ -1059,6 +1064,41 @@ function endTurn(){
   if (t.stage) dropStage(t.stage);
   $("pagebox").style.transform = "";
   $("pagescroll").classList.remove("turning");
+  unhold();
+}
+// A turn while the last one still slides: each part stops where it stands (the page going out on
+// its stage, the page coming in as far as it has come), so that the next slide goes on from there
+// with no jump back. Returns the stage and its parts, which the next slide moves on.
+function settle(){
+  const t = turning;
+  if (!t) return null;
+  turning = null;
+  for (const a of t.anims) {
+    try { a.commitStyles(); } catch (e) { /* an element no longer shown keeps no style */ }
+    a.cancel();
+  }
+  $("pagescroll").classList.remove("turning");
+  return t.stage;
+}
+// What stands above the page may change with it (a note that goes with the page going out, the
+// note of the page coming in). The window scrolls by as much, so that the page coming in starts
+// level with the page going out and the reading place does not move; what the window cannot take
+// up (at the top of the window) is held as a margin over the page until the slide ends, and then
+// given back with a short glide rather than a jump.
+function holdLevel(top){
+  const ps = $("pagescroll"), box = $("pagebox");
+  const d = box.getBoundingClientRect().top - top;
+  if (Math.abs(d) < 0.5) return;
+  window.scrollTo({top: window.scrollY + d, left: window.scrollX, behavior: "auto"});
+  const rest = top - box.getBoundingClientRect().top;
+  if (Math.abs(rest) >= 0.5) ps.style.marginTop = ((parseFloat(ps.style.marginTop) || 0) + rest) + "px";
+}
+function unhold(){
+  const ps = $("pagescroll"), h = parseFloat(ps.style.marginTop) || 0;
+  if (!h) return;
+  ps.style.marginTop = "";
+  if (!REDUCED.matches) ps.animate([{transform: "translateY(" + h + "px)"}, {transform: "none"}],
+    {duration: 180, easing: TURN_EASE});
 }
 // a swipe too short to turn the page: the page goes back to its place
 function springBack(dx){
@@ -1096,28 +1136,34 @@ function stayHere(){
 function turnPage(dir, dx){
   dx = dx || 0;
   if (leaving) return;
-  endTurn();
   const p = S.page + dir, box = $("pagebox"), ps = $("pagescroll");
   // a page past the chapter's first or last page: the reader of the chapter that holds it
   const away = p >= 1 && p <= D.pageCount && !(p in D.pages) ? chapterFor(p) : null;
-  if (p < 1 || p > D.pageCount || (away ? !away.file || away.empty : !(p in D.pages))) { springBack(dx); return; }
+  if (p < 1 || p > D.pageCount || (away ? !away.file || away.empty : !(p in D.pages))) { endTurn(); springBack(dx); return; }
   const zoom = ps.classList.contains("zoom");
+  // (a slide that still runs stops where it stands, and the page is copied there)
+  let prev = REDUCED.matches ? (endTurn(), null) : settle();
   const out = REDUCED.matches ? null : snapshot();
   box.style.transform = "";
   if (away) sheetFor(p); else goPage(p);
+  if (out && !zoom) holdLevel(out.top);
   land(dir, zoom);
   let leave = null;
   if (away) {
-    // that reader is told of the turn in its address (page=, turn=, z= for an enlarged page, and
-    // y=, the sheet's top in the window, or its foot after a turn back on an enlarged page);
-    // should it not show, this page comes back
-    const r = box.getBoundingClientRect(), y = Math.round(zoom && dir < 0 ? r.bottom : r.top);
-    leave = () => openFile(away.file + "#page=" + p + "&turn=" + dir + (zoom ? "&z=1" : "") + "&y=" + y);
+    // that reader is told of the turn in its address (page=, turn=, and z= for an enlarged page,
+    // which lands there by the same rule as here: its top left, or its bottom right above the
+    // board and the bar); a page fitted to the width also gets y=, the sheet's top in the window
+    // when that reader opens, after the slide (the app's top bar may have gone meanwhile), so that
+    // it shows where its place was. Should that reader not show, this page comes back.
+    leave = () => openFile(away.file + "#page=" + p + "&turn=" + dir +
+      (zoom ? "&z=1" : "&y=" + Math.round(box.getBoundingClientRect().top)));
     leaving = {timer: setTimeout(stayHere, 30000)};
   }
   const clip = out && pageClip();
-  if (!clip) { if (leave) leave(); return; }
-  const st = stageAt(clip);
+  // the stage of the slide that stopped carries on when it covers the same place
+  if (prev && !(clip && sameClip(prev, clip))) { dropStage(prev); prev = null; }
+  if (!clip) { unhold(); if (leave) leave(); return; }
+  const st = prev || stageAt(clip), before = prev ? Array.from(prev.children) : [];
   putOn(st, clip, out);
   // the page coming in starts just beyond the edge of the part going out
   const from = dir > 0 ? out.right + TURN_GAP - clip.left : out.left - TURN_GAP - clip.right;
@@ -1130,6 +1176,11 @@ function turnPage(dir, dx){
     // a picture not decoded in the time slides in as its place, and fades in when it comes
     if (box.classList.contains("waiting") && !(img.complete && img.naturalWidth)) box.dataset.wait = "picture";
     t.anims = slide(out.el, box, from, clip.right - clip.left);
+    // the parts of the slide that stopped go on out with the strip, from where they stand
+    for (const el of before) {
+      const at = el.style.transform || "translateX(0)";
+      t.anims.push(el.animate([{transform: at}, {transform: at + " translateX(" + -from + "px)"}], t.anims[0].effect.getTiming()));
+    }
     t.anims[1].onfinish = () => {
       if (turning !== t) return;
       endTurn();
@@ -2174,7 +2225,9 @@ function init(){
     const drop = () => { if (t0 && t0.kind === "turn") springBack(t0.dx); t0 = null; };
     box.addEventListener("touchstart", (e) => {
       if (e.touches.length !== 1 || leaving) { drop(); return; }
-      endTurn();
+      // (a page that springs back is let go at once; a slide that turns the page runs on, and a
+      // swipe meanwhile turns on from where it stands)
+      if (turning && !turning.stage) endTurn();
       const t = e.touches[0];
       t0 = {x: t.clientX, y: t.clientY, at: Date.now(), left: box.scrollLeft, kind: null, dx: 0, track: []};
     }, {passive: true});

@@ -22,9 +22,12 @@
 //     disk keeps; on the phone and the upright iPad the bar goes away as the page scrolls down,
 //     stays away while it scrolls up part of the way and comes back at the top; held sideways it
 //     stays, and an upright iPad turned sideways brings it back;
-//   - turns the pages: a swipe on the enlarged last page of a chapter slides the page out and the
-//     place of the next page in, and the next chapter's reader shows that page enlarged, at its top
-//     left;
+//   - turns the pages (on the phone and the upright iPad): a swipe on the enlarged last page of a
+//     chapter, read down so that the top bar has gone, slides the page out and the place of the
+//     next page in, and the next chapter's reader shows that page enlarged, at its top left, with
+//     the bar still away; a swipe back from there with the bar shown lands on the chapter before's
+//     last page at its bottom right, just above the board or the bar, and the bar does not come
+//     back and go again as the chapters change;
 //     typing a page number goes to that page in whatever chapter holds it; the pictures come
 //     ten pages at a time, and a page whose picture has not come shows a light placeholder of
 //     its size that fills in when it comes;
@@ -336,6 +339,8 @@ async function run(browser, which) {
   // ---------------------------------------------------------------- one book, page after page
   const ch = await inFrame(() => window.READER.chapter);
   if (ch.end < first.count) {
+    // (on the compact layouts, where the top bar goes away: the phone, and the tablet held upright)
+    if (which !== "iphone13") { await page.setViewportSize({ width: 820, height: 1180 }); await page.waitForTimeout(500); }
     await inFrame((p) => { location.hash = "#page=" + p; }, ch.end);
     await waitFrame((p) => window.readerState.page === p, ch.end);
     // the page enlarged and at its right edge, so that a swipe to the left turns it
@@ -345,6 +350,12 @@ async function run(browser, which) {
       const ps = document.getElementById("pagescroll");
       ps.scrollLeft = ps.scrollWidth;
     });
+    // read down the page, so that the top bar goes away
+    await inFrame(() => window.scrollBy(0, 150));
+    await page.waitForTimeout(150);
+    await inFrame(() => window.scrollBy(0, 250));
+    await page.waitForTimeout(500);
+    const awayBefore = await barAt();
     // a swipe from right to left on the last page of the chapter
     const turned = await inFrame(() => {
       const box = document.getElementById("pagescroll"), r = box.getBoundingClientRect();
@@ -370,11 +381,56 @@ async function run(browser, which) {
     });
     check("the next chapter's reader shows the page enlarged where the turn left it, at its top left",
           at.zoom && at.sl === 0 && Math.abs(at.top) <= 1.5 && /turn=1/.test(at.hash), at);
+    const awayAfter = await barAt();
+    check("a turn into the next chapter keeps the top bar away, and the page at the top of the screen",
+          awayBefore.away && awayAfter.away && Math.abs(awayAfter.view) <= 1, { awayBefore, awayAfter, at });
     await shot("flow_chapter_turn");
+    // back into the chapter before, with the top bar shown: the page lands at its bottom right,
+    // its foot just above the board or the bar at the foot of the screen, and the bar, once it
+    // goes as the page scrolls down to that place, does not come back and go again
+    // (after the reader has settled on its landing: until then it lands again when its window
+    // changes size, as the bar coming back would make it)
+    await page.waitForTimeout(1600);
+    await inFrame(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(500);
+    const shownBack = await barAt();
+    await page.evaluate(() => {
+      window.__bar = [];
+      const tick = () => { window.__bar.push(TOPBAR.away()); if (window.__bar.length < 600) requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    });
+    await inFrame(() => {
+      const box = document.getElementById("pagescroll"), r = box.getBoundingClientRect();
+      const y = r.top + Math.min(r.height / 2, 200);
+      const touch = (x) => new Touch({ identifier: 1, target: box, clientX: x, clientY: y });
+      box.dispatchEvent(new TouchEvent("touchstart", { touches: [touch(r.left + 20)], changedTouches: [touch(r.left + 20)], bubbles: true }));
+      box.dispatchEvent(new TouchEvent("touchend", { touches: [], changedTouches: [touch(r.right - 20)], bubbles: true }));
+    });
+    await waitFrame((c) => window.READER && window.READER.chapter.file === c.file && window.readerState.page === c.end, ch, 300000);
+    await waitFrame(() => !document.getElementById("pagebox").classList.contains("waiting"), null, 300000);
+    await page.waitForTimeout(800);
+    const back = await inFrame(() => {
+      const ps = document.getElementById("pagescroll"), r = document.getElementById("pagebox").getBoundingClientRect();
+      const bar = document.getElementById("mbar"), stuck = document.body.classList.contains("stickboard");
+      const foot = stuck ? document.getElementById("boardblock").getBoundingClientRect().top :
+        getComputedStyle(bar).display !== "none" ? bar.getBoundingClientRect().top : window.innerHeight;
+      return { zoom: ps.classList.contains("zoom"), sl: ps.scrollLeft, max: ps.scrollWidth - ps.clientWidth,
+               bottom: r.bottom, foot, hash: location.hash };
+    });
+    const flips = await page.evaluate(() => {
+      const a = window.__bar, first = a.indexOf(true);
+      return { first, back: first < 0 ? 0 : a.slice(first).filter((v, i, x) => i > 0 && v !== x[i - 1]).length };
+    });
+    check("a turn back into the chapter before lands its last page enlarged at its bottom right, above the board and the bar",
+          !shownBack.away && back.zoom && back.max > 0 && Math.abs(back.sl - back.max) <= 1 &&
+          Math.abs(back.bottom - back.foot) <= 1.5 && /turn=-1/.test(back.hash), { shownBack, back });
+    check("the top bar does not come back and go again as the chapters change", flips.back === 0, flips);
+    await shot("flow_chapter_turn_back");
     await inFrame(() => {
       const bar = document.getElementById("mbar");
       (getComputedStyle(bar).display !== "none" ? document.getElementById("mzoom") : document.getElementById("zoom")).click();
     });
+    if (which !== "iphone13") { await page.setViewportSize(opts.viewport); await page.waitForTimeout(500); }
   } else note("one chapter only: no swipe across chapters");
   // a page number typed: the page, in whatever chapter holds it, with a placeholder until its picture comes
   await page.evaluate(() => {

@@ -395,7 +395,10 @@ const APP_STYLE = "<style>.where .book{display:none}</style>";
 // short while), so that turning from one chapter to the next shows no empty page between them.
 let swapping = null;
 function show(name, hash, htmlText) {
-  TOPBAR.show();
+  // a new page shows at its top with the bar; a turn of the page into the next (or the previous)
+  // chapter keeps the bar as it is, since the reading goes on where the turn lands, which is not
+  // the top (the bar coming back there would push the page down after the turn)
+  if (!/[#&]turn=/.test(hash || "")) TOPBAR.show();
   const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</head>", APP_STYLE + "</head>")
     .replace("</body>", NAV + "</body>");
   const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
