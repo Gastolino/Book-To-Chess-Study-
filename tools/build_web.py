@@ -37,7 +37,7 @@ PYMUPDF_WHEEL = "pymupdf-1.28.2-cp313-abi3-pyemscripten_2025_0_wasm32.whl"
 
 SHELL = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Chess Book Reader</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
@@ -48,7 +48,10 @@ SHELL = """<!doctype html>
 <meta name="apple-mobile-web-app-title" content="Chess books">
 <style>__CSS__
 html,body{height:100%}
-body{margin:0;display:flex;flex-direction:column}
+/* the page keeps clear of the iPhone's home indicator, notch and rounded corners (the reader's
+   frame cannot: a frame is told no safe area), so the reader's bar sits above the indicator */
+body{margin:0;display:flex;flex-direction:column;box-sizing:border-box;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
 #start{max-width:620px;margin:0 auto;padding:72px 16px 32px;width:100%;box-sizing:border-box}
 #start h1{font-size:26px;margin-bottom:10px}
 #start p{margin:0 0 10px;color:var(--muted)}
@@ -105,6 +108,7 @@ iframe.view{flex:1;border:0;width:100%}
 #top button{font:inherit;color:var(--fg);background:none;border:0;padding:0;cursor:pointer}
 #top button:hover{text-decoration:underline}
 #top .gap{flex:0 0 0}
+#top{transition:margin-top .2s ease}
 #top button[hidden]{display:none}
 /* the library (web/library.js): the Cloudflare site's, or the one in this browser */
 body.library #start{max-width:760px;padding-top:40px}
@@ -207,7 +211,9 @@ CFG.pace = parseInt(new URLSearchParams(location.search).get("pace") || "0", 10)
 const NAV = String.raw`<script>window.CHESSBOOK_APP=true;
 document.addEventListener("click",function(e){var a=e.target.closest("a[href]");
 if(!a)return;var h=a.getAttribute("href"),m=h.match(/^(index\\.html|ch\\d+\\.html)(#.*)?$/);
-if(m){e.preventDefault();parent.postMessage({open:m[1],hash:m[2]||""},"*");}},true);<${"/"}script>`;
+if(m){e.preventDefault();parent.postMessage({open:m[1],hash:m[2]||""},"*");}},true);
+var sy=0;window.addEventListener("scroll",function(){if(sy)return;sy=requestAnimationFrame(function(){sy=0;
+parent.postMessage({scrollY:window.scrollY},"*");});},{passive:true});<${"/"}script>`;
 
 // Where the reader was, so that the app comes back there after the system
 // closed it (an iPhone or iPad drops a page left in the background; the page
@@ -299,6 +305,7 @@ function status(text, error) {
   const el = inReader ? $("note") : $("status");
   el.textContent = text;
   el.classList.toggle("error", !!error);
+  if (error && window.TOPBAR) TOPBAR.show();       // a failure is never out of sight
 }
 // One sign of work: the book and the bar on the start page, the small book and the line along the
 // top bar's foot in the reader. It shows while a request is on its way (working), while the book
@@ -364,6 +371,7 @@ const FLAG = "<script>window.CHESSBOOK_APP=true;window.CHESSBOOK_ENGINE=" + JSON
 // short while), so that turning from one chapter to the next shows no empty page between them.
 let swapping = null;
 function show(name, hash, htmlText) {
+  TOPBAR.show();
   const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</body>", NAV + "</body>");
   const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
   const old = $("view");
@@ -726,7 +734,39 @@ function patched(m) {
     toView({ progress: "Your piece choice is applied to the whole book." });
   } else status("");
 }
+// On a phone the top bar goes away while the reader scrolls down the page, and comes back as
+// soon as it scrolls up (or reaches the top); the reader's frame takes the room meanwhile. A
+// failure in the bar keeps it shown. Wider screens keep it: their reader has a panel beside the
+// page, sized to the window.
+const TOPBAR = (() => {
+  let lastY = 0, away = false;
+  const phone = window.matchMedia("(max-width: 700px)");
+  function set(a) {
+    if (a === away) return;
+    away = a;
+    document.body.classList.toggle("topaway", a);
+    $("top").style.marginTop = a ? -$("top").offsetHeight + "px" : "";
+  }
+  return {
+    scrolled(y) {
+      const d = y - lastY;
+      if (!phone.matches) { set(false); lastY = y; return; }
+      if (y <= 0) set(false);
+      else if (Math.abs(d) < 8) return;           // a small move changes nothing
+      else if (d > 0 && y > 60 && !$("note").classList.contains("error")) set(true);
+      else if (d < 0) set(false);
+      lastY = y;
+    },
+    show() { set(false); lastY = 0; },
+    away: () => away,
+  };
+})();
+window.TOPBAR = TOPBAR;
 window.addEventListener("message", (e) => {
+  if (e.data && typeof e.data.scrollY === "number") {
+    if (e.source === $("view").contentWindow) TOPBAR.scrolled(e.data.scrollY);
+    return;
+  }
   if (e.data && e.data.pictures) {
     // the reader shows a page: the pictures of its window and of the windows next to it
     PICS.want(e.data.pictures, e.source);
