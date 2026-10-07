@@ -149,6 +149,28 @@ async function run(browser, which) {
   await both("flow_topbar_busy", { x: 0, y: 0, width: opts.viewport.width, height: Math.ceil(topH) + 2 });
   await page.evaluate(() => { document.getElementById("note").textContent = ""; document.getElementById("tip").hidden = true; });
 
+  // ---------------------------------------------------------------- the top bar while scrolling
+  const barAt = () => page.evaluate(() => ({ top: document.getElementById("top").getBoundingClientRect().bottom,
+                                             view: document.getElementById("view").getBoundingClientRect().top,
+                                             away: TOPBAR.away() }));
+  await inFrame(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(300);
+  const shown0 = await barAt();
+  await inFrame(() => window.scrollBy(0, 150));
+  await page.waitForTimeout(150);
+  await inFrame(() => window.scrollBy(0, 250));
+  await page.waitForTimeout(500);
+  const gone = await barAt();
+  check("the top bar goes away as the page scrolls down, and the reader takes its room",
+        gone.away && gone.top <= 1 && Math.abs(gone.view) <= 1 && shown0.view > 20, { shown0, gone });
+  await both("flow_topbar_away");
+  await inFrame(() => window.scrollBy(0, -40));
+  await page.waitForTimeout(500);
+  const back = await barAt();
+  check("it comes back as soon as the page scrolls up", !back.away && Math.abs(back.view - shown0.view) <= 1, { back, shown0 });
+  await inFrame(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(300);
+
   // ---------------------------------------------------------------- one book, page after page
   const ch = await inFrame(() => window.READER.chapter);
   if (ch.end < first.count) {
