@@ -161,13 +161,17 @@ async function run(browser, which) {
   await inFrame(() => window.scrollBy(0, 250));
   await page.waitForTimeout(500);
   const gone = await barAt();
-  check("the top bar goes away as the page scrolls down, and the reader takes its room",
-        gone.away && gone.top <= 1 && Math.abs(gone.view) <= 1 && shown0.view > 20, { shown0, gone });
-  await both("flow_topbar_away");
-  await inFrame(() => window.scrollBy(0, -40));
-  await page.waitForTimeout(500);
-  const back = await barAt();
-  check("it comes back as soon as the page scrolls up", !back.away && Math.abs(back.view - shown0.view) <= 1, { back, shown0 });
+  if (which === "iphone13") {
+    check("the top bar goes away as the page scrolls down, and the reader takes its room",
+          gone.away && gone.top <= 1 && Math.abs(gone.view) <= 1 && shown0.view > 20, { shown0, gone });
+    await both("flow_topbar_away");
+    await inFrame(() => window.scrollBy(0, -40));
+    await page.waitForTimeout(500);
+    const back = await barAt();
+    check("it comes back as soon as the page scrolls up", !back.away && Math.abs(back.view - shown0.view) <= 1, { back, shown0 });
+  } else {
+    check("on a wider screen the top bar stays", !gone.away && Math.abs(gone.view - shown0.view) <= 1, { shown0, gone });
+  }
   await inFrame(() => window.scrollTo(0, 0));
   await page.waitForTimeout(300);
 
