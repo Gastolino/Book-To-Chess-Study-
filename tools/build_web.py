@@ -90,8 +90,10 @@ body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
 #bar.on.det b,#topbar.on.det b{display:block}
 @keyframes run{from{left:-30%}to{left:100%}}
 @media (prefers-reduced-motion:reduce){#bar i,#topbar i{animation-duration:4s}}
-#busy{display:inline-flex;align-items:center;justify-content:center;width:26px;height:18px;
-  margin:-2px -4px -2px 0;visibility:hidden;align-self:center;padding:0}
+/* (a finger's room to tap, 30 by 28, in the line's own room: the margins give back what the
+   button takes beyond the book) */
+#busy{display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;
+  margin:-7px -6px -7px -2px;visibility:hidden;align-self:center;padding:0}
 #busy.on{visibility:visible}
 #busy .bookicon{width:24px;height:auto}
 #view{flex:1;border:0;width:100%;display:none}
@@ -118,6 +120,8 @@ iframe.view{flex:1;border:0;width:100%}
 #top button:hover{text-decoration:underline}
 #top{transition:margin-top .2s ease}
 #top button[hidden]{display:none}
+/* the bar's words to tap take a finger's height, 28 px, in the room of their line */
+#top #another,#top #backbtn,#top #again{padding:5px 0;margin:-5px 0}
 /* the library (web/library.js): the Cloudflare site's, or the one in this browser */
 body.library #start{max-width:760px;padding-top:40px}
 #lib{margin-top:24px}
@@ -317,6 +321,11 @@ function status(text, error) {
   el.classList.toggle("error", !!error);
   if (error && window.TOPBAR) TOPBAR.show();       // a failure is never out of sight
 }
+// Words of work under way: on the start page in its status line; in the reader they are the words
+// of the work, which a tap on the small book shows, so that the bar keeps its one line.
+function progress(text) {
+  if ($("top").style.display === "flex") workSay(text); else status(text);
+}
 // One sign of work: the book and the bar on the start page, the small book and the line along the
 // top bar's foot in the reader. It shows while a request is on its way (working), while the book
 // is read (loading), while pictures of pages are drawn and while the reading is saved. The words
@@ -447,7 +456,7 @@ worker.onmessage = (e) => {
   // the library's own messages (the stored reading, the cover) end here
   if (LIB.message(m)) return;
   if (m.type === "progress") {
-    status(m.text);
+    if ($("top").style.display !== "flex") status(m.text);
     // the steps of starting: Python, then the libraries
     workSay(m.text, !ready ? (/^Starting Python/.test(m.text) ? 0.15 : /^Loading the PDF/.test(m.text) ? 0.45 : null)
                          : undefined);
@@ -764,13 +773,13 @@ function patched(m) {
     // a chapter stays pending until all its pages are done, ten pages at a time
     const text = "Applying your piece choice to the other chapters: " + (moreDone + 1) + " of " +
       (moreDone + more.length) + ".";
-    status(text); toView({ progress: text });
+    progress(text); toView({ progress: text });
     if (!moreBusy) {
       moreBusy = true;
       worker.postMessage({ type: "correct-more", chapters: [more[0]], chapter: openChapter });
     }
   } else if (m.more || had) {
-    status("Your piece choice is applied to the whole book.");
+    progress("Your piece choice is applied to the whole book.");
     toView({ progress: "Your piece choice is applied to the whole book." });
   } else status("");
 }
@@ -789,7 +798,20 @@ const TOPBAR = (() => {
     away = a;
     document.body.classList.toggle("topaway", a);
     $("top").style.marginTop = a ? -$("top").offsetHeight + "px" : "";
+    // the slip under the bar goes with it, rather than float alone over the page
+    if (a) { clearTimeout(tipTimer); $("tip").hidden = true; }
   }
+  // A line that comes under the bar or goes from it while the bar is away (a note, Read again)
+  // changes its height: the bar stays wholly out of sight, and the reader's frame keeps its place.
+  // (at once, without the slide of the bar's margin, which would show the bar's foot meanwhile)
+  if (window.ResizeObserver) new ResizeObserver(() => {
+    const top = $("top"), m = -top.offsetHeight + "px";
+    if (!away || top.style.marginTop === m) return;
+    top.style.transition = "none";
+    top.style.marginTop = m;
+    void top.offsetHeight;
+    top.style.transition = "";
+  }).observe($("top"));
   // a tablet turned sideways leaves the compact layout: the bar comes back at once, without
   // waiting for the next scroll
   phone.addEventListener && phone.addEventListener("change", () => { if (!phone.matches) set(false); });
@@ -858,7 +880,7 @@ window.addEventListener("message", (e) => {
   if (e.data && e.data.bookmarksChanged) return;
   if (!e.data || !e.data.open) return;
   working(true);
-  status(e.data.open === "index.html" ? "Opening the contents." :
+  progress(e.data.open === "index.html" ? "Opening the contents." :
     "Opening chapter " + parseInt(e.data.open.slice(2), 10) +
     ". The first opening of a chapter takes a few seconds.");
   wantOpen = e.data.open;

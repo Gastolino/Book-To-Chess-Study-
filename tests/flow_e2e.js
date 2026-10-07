@@ -266,6 +266,8 @@ async function run(browser, which) {
              order: t.left < t.right && t.right <= b.left && b.right <= l.left,
              line: Math.abs(mid(t) - mid(l)) <= 3 && Math.abs(mid(b) - mid(l)) <= 4,
              oneLine: name.scrollHeight <= name.clientHeight + 1 && getComputedStyle(name).whiteSpace === "nowrap",
+             // the buttons to tap, a finger's size (24 px at least each way)
+             taps: [b, l].map((x) => [Math.round(x.width), Math.round(x.height)]),
              loading, words: took.textContent,
              wordsShown: took.getClientRects().length > 0 || (took.textContent !== "" && el("top").innerText.includes(took.textContent)) };
   });
@@ -278,6 +280,8 @@ async function run(browser, which) {
     await inFrame(() => window.scrollTo(0, 0));
     await page.waitForTimeout(300);
     const shown0 = await barAt();
+    // the slip under the bar (a tap on the small book) goes with the bar
+    await page.evaluate(() => tip("The words of the work."));
     await inFrame(() => window.scrollBy(0, 150));
     await page.waitForTimeout(150);
     await inFrame(() => window.scrollBy(0, 250));
@@ -289,6 +293,20 @@ async function run(browser, which) {
     }
     check("the top bar goes away as the page scrolls down, and the reader takes its room",
           gone.away && gone.top <= 1 && Math.abs(gone.view) <= 1 && shown0.view > 20, { shown0, gone, tag });
+    check("the slip under the bar goes away with it", await page.evaluate(() => document.getElementById("tip").hidden));
+    // a line that comes under the bar while it is away (a note, Read again), or goes, leaves the
+    // bar out of sight and the reader where it was
+    await page.evaluate(() => status("A note under the bar."));
+    await page.waitForTimeout(100);
+    const noted = await barAt();
+    await page.evaluate(() => { document.getElementById("again").hidden = false; });
+    await page.waitForTimeout(100);
+    const again = await barAt();
+    await page.evaluate(() => { document.getElementById("again").hidden = true; status(""); });
+    await page.waitForTimeout(100);
+    const cleared = await barAt();
+    check("while the bar is away, a line that comes under it or goes leaves it out of sight and the reader in its place",
+          [noted, again, cleared].every((b) => b.away && b.top <= 1 && Math.abs(b.view) <= 1), { noted, again, cleared, tag });
     await both("flow_topbar_away_" + tag);
     await inFrame(() => window.scrollBy(0, -40));
     await page.waitForTimeout(500);
@@ -315,6 +333,8 @@ async function run(browser, which) {
       bar.title.length > 0 && bar.title === bar.known && bar.order && bar.line && bar.left <= 17 && bar.right <= 17 &&
       bar.oneLine && bar.h < 50, Object.assign({ tag }, bar));
     check("the words of the work do not show in the top bar", (!bar.loading || bar.words.length > 0) && !bar.wordsShown,
+      Object.assign({ tag }, bar));
+    check("the small book and Library are a finger's size to tap", bar.taps.every(([w, h]) => w >= 24 && h >= 24),
       Object.assign({ tag }, bar));
     await both("flow_topbar_line_" + tag, { x: 0, y: 0, width: size.width, height: Math.ceil(bar.h) + 2 });
     await scrolling(size.width <= 700 || size.height > size.width, tag);
@@ -445,6 +465,11 @@ async function run(browser, which) {
   await page.evaluate((n) => PICS.book(null, n), first.count);
   const label = await inFrame((p) => { const f = window.READER.folios[p - 1]; return f != null ? String(f) : String(p); }, far);
   await inFrame((v) => { const i = document.getElementById("pagenum"); i.value = v; i.dispatchEvent(new Event("change")); }, label);
+  // the words of the opening are the small book's, not a line in the bar
+  const opening = await page.evaluate(() => ({ note: document.getElementById("note").textContent,
+    h: document.getElementById("top").getBoundingClientRect().height, words: workWords }));
+  check("opening another chapter adds no line to the top bar; the small book has the words", !/Opening/.test(opening.note) &&
+    opening.h < 50, opening);
   const held = await waitFrame((p) => window.READER && window.readerState.page === p &&
     { waiting: document.getElementById("pagebox").classList.contains("waiting"),
       h: document.getElementById("pagebox").getBoundingClientRect().height,

@@ -68,6 +68,20 @@ def test_the_top_bar_comes_back_only_at_the_top(tmp_path):
     assert "d < 0" not in topbar
 
 
+def test_the_top_bar_keeps_its_state_through_a_turn_and_a_new_line(tmp_path):
+    """A page turn into another chapter keeps the top bar as it is (the reader
+    lands where the reading goes on, not at its top); while the bar is away, a
+    line that comes under it or goes changes its offset with it, and the slip
+    under it goes with it; the words of work under way go to the small book."""
+    page = build(tmp_path)
+    show = re.search(r"\nfunction show\(name, hash, htmlText\) \{(.*?)\n\}", page, re.S).group(1)
+    assert 'if (!/[#&]turn=/.test(hash || "")) TOPBAR.show();' in show
+    topbar = re.search(r"const TOPBAR = \(\(\) => \{(.*?)\n\}\)\(\);", page, re.S).group(1)
+    assert "new ResizeObserver(" in topbar and "if (a) { clearTimeout(tipTimer); $(\"tip\").hidden = true; }" in topbar
+    assert 'progress(e.data.open === "index.html" ? "Opening the contents." :' in page
+    assert "progress(text); toView({ progress: text });" in page
+
+
 def test_the_page_keeps_clear_of_the_home_indicator(tmp_path):
     # the reader's frame is told no safe area: the app's page pads itself, so that the bar at the
     # foot of the reader sits above the iPhone's home indicator
