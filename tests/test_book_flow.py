@@ -3,8 +3,12 @@ open book with two chequered pages whose page turns) on the start page and in
 the reader's top bar; a new book opens at its first page while it is read;
 the pages run on from chapter to chapter, drawn ten at a time, with a
 placeholder until a picture comes; a stored reading that other reading code
-made opens all the same and offers Read again. On an iPhone 13 and an iPad
-held sideways.
+made opens all the same and offers Read again. The top bar holds one line,
+the book's name, the small book and Library, and on a phone or an upright
+tablet goes away as the page scrolls down until the page is back at its top;
+the reader's own bar leaves the book's name to it, while the reader written
+to disk keeps it. On an iPhone 13 and an iPad held sideways (and upright for
+the top bar).
 
 The test needs a local Pyodide distribution and the PyMuPDF and python-chess
 wheels for Pyodide (CHESSBOOK_PYODIDE, CHESSBOOK_WHEELS, as
@@ -83,10 +87,18 @@ def test_book_flow_end_to_end(tmp_path):
                     "--local", str(PYODIDE), "--pymupdf", str(_wheel("pymupdf-*.whl")),
                     "--chess", str(_wheel("chess-*.whl"))], check=True)
     book = os.environ.get("CHESSBOOK_FLOW_BOOK")
+    static = []
     if not book:
+        from chessbook import reader
+        from chessbook.assemble import build_book
         from test_assemble import make_book
         from test_corrections import GARBLED, NOTE
         book = str(make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, second=True))
+        # the same book's reader written to disk, whose bar keeps the book's name
+        out = tmp_path / "output" / "garbled" / "reader"
+        reader.build_reader(build_book(Path(book), output_dir=tmp_path / "output", books_dir=tmp_path / "books"),
+                            Path(book), out)
+        static = [str(out)]
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), functools.partial(_Handler, directory=str(site)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -95,7 +107,7 @@ def test_book_flow_end_to_end(tmp_path):
         env = dict(os.environ, NODE_PATH=NODE_PATH)
         proc = subprocess.run([NODE, str(ROOT / "tests" / "flow_e2e.js"),
                                f"http://127.0.0.1:{server.server_address[1]}/", book,
-                               str(tmp_path / "work"), str(screens)],
+                               str(tmp_path / "work"), str(screens), *static],
                               capture_output=True, text=True, env=env, timeout=3600)
     finally:
         server.shutdown()
@@ -111,13 +123,27 @@ def test_book_flow_end_to_end(tmp_path):
             "a new book opens at its first page",
             "on a chapter's last page a swipe slides the page out and the place of the next page in",
             "the next chapter's reader shows the page enlarged where the turn left it, at its top left",
-            "while the book is read, the small book shows at the top right of the top bar",
+            "while the book is read, the small book shows at the right of the top bar, just left of Library",
             "the small book appears and goes without moving the reader",
+            "a tap on the small book says what the program does, under the bar, moving nothing",
+            "the top bar is one line: the book's name, the small book, then Library in the right-hand corner",
+            "the words of the work do not show in the top bar",
+            "in the app the reader's bar shows the chapter without the book's name",
+            "the top bar goes away as the page scrolls down, and the reader takes its room",
+            "it stays away while the page scrolls up part of the way",
+            "it comes back when the page is scrolled all the way to the top",
+            "on a wider screen the top bar stays",
             "the small book is gone when the work is done",
             "the pictures come ten pages at a time",
             "the chapter files of the app hold no pictures",
             "a reading of other reading code opens without being read again, and offers Read again",
             "Read again reads the book and opens it where the reader was"} <= names
     assert {c["mode"] for c in res["checks"]} >= {"iphone13", "ipad"}
+    # the top bar's line on the phone, and on the iPad held sideways and upright
+    line = [c for c in res["checks"] if c["name"].startswith("the top bar is one line")]
+    assert {(c["mode"], c["detail"]["tag"]) for c in line} == {("iphone13", "390x844"), ("ipad", "1180x820"),
+                                                               ("ipad", "820x1180")}
+    if static:
+        assert "the reader opened from disk names the book in its bar" in names
     print(json.dumps(res["timings"], indent=1))
     print("\n".join(res["notes"]))

@@ -168,12 +168,22 @@ async function run(browser, which) {
     pageCount: window.READER.pageCount, pages: Object.keys(window.READER.pages).map(Number) }));
   check("a new book opens at its first page in the reader", first0.page === 1, first0);
   check("the book opens while it is still read", await loading(), took0);
-  check("the top bar says how far the reading has come", /^Reading/.test(took0), took0);
   check("the thin line under the top bar moves while the book is read",
     await page.evaluate(() => document.getElementById("topbar").classList.contains("on")));
   check("the small book at the top right shows that the program is at work",
     await page.evaluate(() => { const b = document.getElementById("busy"); return b.classList.contains("on") &&
       getComputedStyle(b).visibility === "visible" && b.querySelectorAll(".leaf").length === 1; }));
+  // the words of the work stay out of the bar, which names the book: a tap on the small book shows them
+  // (the words may change between the tap and the look: either is fine)
+  const words0 = await tookText();
+  await page.click("#busy");
+  const told = await page.evaluate(() => ({ tip: document.getElementById("tip").hidden ? "" : document.getElementById("tip").textContent,
+    words: document.getElementById("took").textContent, name: document.getElementById("booktitle").textContent,
+    inBar: document.getElementById("took").getClientRects().length > 0 }));
+  check("a tap on the small book says how far the reading has come",
+    /^Reading/.test(took0) && told.words.length > 0 && (told.tip.startsWith(told.words) || (words0 && told.tip.startsWith(words0))) &&
+    !told.inBar && told.name.length > 0, Object.assign({ took0, words0 }, told));
+  await page.click("#tip");
   if (first0.chapter.index === 0)
     check("the front matter's pages are read by default: page 1 is ticked", first0.use, first0);
   check("the page counter counts the whole book", /^of \d+$/.test(first0.total), first0);
@@ -341,7 +351,7 @@ async function run(browser, which) {
     await backToContents();
   } else if (await page.evaluate(() => openChapter !== "index.html")) await backToContents();
   const took = await tookText(), secs0 = await page.evaluate(() => document.body.dataset.seconds);
-  check("once the book is read the top bar's status line is empty", took === "" && /^\d+$/.test(secs0 || ""), { took, secs0 });
+  check("once the book is read the small book has no words of the work to show", took === "" && /^\d+$/.test(secs0 || ""), { took, secs0 });
   await shot("02_contents");
   const chapters = await inFrame(() => [...document.querySelectorAll("li.chapter")].map((li) => {
     const a = li.querySelector("a.read");

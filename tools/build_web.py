@@ -94,14 +94,18 @@ body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
 #busy .bookicon{width:24px;height:auto}
 #view{flex:1;border:0;width:100%;display:none}
 iframe.view{flex:1;border:0;width:100%}
-#top{display:none;flex-wrap:wrap;align-items:baseline;gap:4px 20px;padding:10px 16px;
+#top{display:none;flex-wrap:wrap;align-items:baseline;gap:4px 16px;padding:10px 16px;
   border-bottom:1px solid var(--line);font-size:13px;color:var(--muted);position:relative}
-/* the status takes the room the buttons leave, on one line: long words end in an ellipsis
-   (a tap on the small book shows them whole), so that the bar keeps its height */
-#took{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#note{flex-basis:100%}
-/* the whole words of the work, for a few seconds after a tap on the small book: over the page,
-   under the bar, so that nothing moves */
+/* One line: the book's name takes the room that the small book and Library leave in the
+   right-hand corner, and a long name ends in an ellipsis, so that the bar keeps its height. The
+   words of the work do not show in the bar (#took keeps them): a tap on the small book shows them. */
+#booktitle{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Under the line, only when one of them has something to say: the notes, the way back from the
+   contents and Read again, so that none of them crowds the book's name on a phone. */
+#sub{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 20px}
+#sub:not(:has(> :not([hidden]):not(:empty))){display:none}
+/* the whole words of the work, for a few seconds after a tap on the small book (and where the
+   app came back to): over the page, under the bar, so that nothing moves */
 #tip{position:absolute;top:100%;left:0;right:0;z-index:5;padding:8px 16px;background:var(--bg);
   border-bottom:1px solid var(--line);color:var(--fg)}
 #tip[hidden]{display:none}
@@ -110,7 +114,6 @@ iframe.view{flex:1;border:0;width:100%}
 #topbar{position:absolute;left:0;right:0;bottom:-1px;height:1px;overflow:hidden}
 #top button{font:inherit;color:var(--fg);background:none;border:0;padding:0;cursor:pointer}
 #top button:hover{text-decoration:underline}
-#top .gap{flex:0 0 0}
 #top{transition:margin-top .2s ease}
 #top button[hidden]{display:none}
 /* the library (web/library.js): the Cloudflare site's, or the one in this browser */
@@ -155,11 +158,12 @@ body.library #drop .small{max-width:46em}
 }
 </style></head>
 <body>
-<div id="top"><span id="took"></span><button id="backbtn" type="button" hidden></button><span class="gap"></span>
-<button id="again" type="button" hidden>Read again</button>
-<button id="another" type="button">Open another book</button>
+<div id="top"><span id="booktitle"></span>
 <button id="busy" type="button" aria-label="What the program is doing" title="What the program is doing">__BOOK_SMALL__</button>
-<span id="note" role="status"></span><span id="tip" role="status" hidden></span><div id="topbar"><i></i><b></b></div></div>
+<button id="another" type="button">Open another book</button>
+<div id="sub"><span id="note" role="status"></span><button id="backbtn" type="button" hidden></button>
+<button id="again" type="button" hidden>Read again</button></div>
+<span id="took" hidden></span><span id="tip" role="status" hidden></span><div id="topbar"><i></i><b></b></div></div>
 <main id="start">
 <h1>Chess Book Reader</h1>
 <div id="intro">
@@ -202,8 +206,9 @@ const SW = ("serviceWorker" in navigator && /^https?:$/.test(location.protocol))
   : Promise.resolve();
 const worker = new Worker("worker.js");
 let ready = false, busy = false, current = null, lastFile = null, lastName = "";
-// While the worker reads the book, the reader can already read it: the top bar
-// says how far the reading has come, and the thin line under it moves.
+// While the worker reads the book, the reader can already read it: the thin line
+// along the top bar's foot moves, and a tap on the small book says how far the
+// reading has come.
 let loading = false;
 // ?pace=MS slows the reading down by MS milliseconds a step (for tests)
 CFG.pace = parseInt(new URLSearchParams(location.search).get("pace") || "0", 10) || 0;
@@ -357,25 +362,40 @@ function workNow() {
   if (!parts.length && workingNow) parts.push(workWords);
   return parts.filter(Boolean).join(" ").replace(/([^.])( Drawing| Saving)/g, "$1.$2");
 }
-// a tap shows them whole for a few seconds, in a slip under the bar (#tip) that moves nothing
-let busyTimer = 0;
-$("busy").addEventListener("click", () => {
-  const tip = $("tip");
-  tip.textContent = workNow() || "The program has nothing to do now.";
-  tip.hidden = false;
-  clearTimeout(busyTimer);
-  busyTimer = setTimeout(() => { tip.hidden = true; }, 4000);
-});
+// Words shown whole for a few seconds, in a slip under the bar (#tip) that moves nothing: the
+// words of the work after a tap on the small book, and where the app came back to. A tap on the
+// slip puts it away at once, so that it never stands between the reader and the page's tools.
+let tipTimer = 0;
+function tip(text) {
+  const el = $("tip");
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => { el.hidden = true; }, 4000);
+}
+$("busy").addEventListener("click", () => tip(workNow() || "The program has nothing to do now."));
+$("tip").addEventListener("click", () => { clearTimeout(tipTimer); $("tip").hidden = true; });
+// The book's name in the top bar: the title the library knows, or the one the reading found, or
+// the file's name in words; the whole name shows on a pointer's hover when the bar cuts it short.
+function bookTitle(text) {
+  $("booktitle").textContent = text || "";
+  $("booktitle").title = text || "";
+}
 // The flag goes first in the head, so that the page's own script sees it
 // while it starts (the stored corrections it sends, the words it chooses).
 const FLAG = "<script>window.CHESSBOOK_APP=true;window.CHESSBOOK_ENGINE=" + JSON.stringify(CFG.engine) + ";<" + "/script>";
+// The app's top bar names the book, so the reader's own bar shows the chapter alone (a reader
+// opened from disk keeps the book's name there). The rule goes after the page's own style, which
+// it overrides.
+const APP_STYLE = "<style>.where .book{display:none}</style>";
 // A page of the reader shows in a fresh frame. While a reader shows, the next one loads in a
 // hidden frame of the same size and takes its place once it has shown its page (or after a
 // short while), so that turning from one chapter to the next shows no empty page between them.
 let swapping = null;
 function show(name, hash, htmlText) {
   TOPBAR.show();
-  const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</body>", NAV + "</body>");
+  const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</head>", APP_STYLE + "</head>")
+    .replace("</body>", NAV + "</body>");
   const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
   const old = $("view");
   const fresh = document.createElement("iframe");
@@ -448,7 +468,10 @@ worker.onmessage = (e) => {
     bookChapters = m.chapters || [];
     PICS.book(LIB.on && LIB.current && !LIB.current.ephemeral ? LIB.current.id : null, m.pages);
     prepared = {};
-    // the line shows work only: a book opened from the library has none, and the body's data-book
+    // the top bar names the book (the library has taken the reading's title by now)
+    bookTitle(LIB.on && LIB.current ? LIB.titleOf(LIB.current.book)
+                                    : m.title || lastName.replace(/\\.pdf$/i, "").replace(/_+/g, " ").trim());
+    // the words of the work: a book opened from the library has none, and the body's data-book
     // says how it came (for the tests)
     $("took").textContent = m.restored ? "" : "Reading the book";
     document.body.dataset.book = m.restored ? "opened" : "reading";
@@ -505,6 +528,7 @@ worker.onmessage = (e) => {
     if (m.name !== "index.html") hideBack();
     openChapter = m.name;
     show(m.name, m.hash, m.html);
+    if (resumeTip) { tip(resumeTip); resumeTip = ""; }
   } else if (m.type === "error") {
     if (m.during === "words" || m.during === "region") {
       // the reader says why the section was not read, and the reader may type its moves
@@ -568,7 +592,7 @@ function prepare(w) {
   prepared[name] = "";
   worker.postMessage({ type: "chapter", name, prepare: true });
 }
-// "Back to page 31" in the top bar while the contents show
+// "Back to page 31" under the top bar's line while the contents show
 let backPlace = null;
 function showBack() {
   let v = null;
@@ -692,9 +716,9 @@ const PICS = (() => {
   };
 })();
 // The app comes back to where the reader was (SESSION): resuming holds the
-// record while the book opens; resumeNote is said in the top bar once the
-// chapter shows.
-let resuming = null, resumeNote = "", resumeWords = "";
+// record while the book opens; resumeNote is said under the top bar's line once
+// the chapter shows, and resumeTip in the slip under the bar for a few seconds.
+let resuming = null, resumeNote = "", resumeWords = "", resumeTip = "";
 function resumeStart(r) {
   resuming = r;
   document.body.classList.add("resuming");
@@ -702,7 +726,7 @@ function resumeStart(r) {
   $("resume").hidden = false;
 }
 // the contents page of the resumed book showed: the chapter follows (the
-// library posts it); the top bar says where the app came back to
+// library posts it); the slip under the top bar says where the app came back to
 function resumed(m) {
   const r = resuming;
   resuming = null;
@@ -710,9 +734,9 @@ function resumed(m) {
   $("resume").hidden = true;
   if (m.title) SESSION.title(m.title);
   const words = backTo(SESSION.record() || r);
-  if (m.restored) $("took").textContent = words;
+  if (m.restored) { $("took").textContent = words; resumeTip = words + "."; }
   else {
-    // the book is read again: the top bar's progress line carries the words meanwhile
+    // the book is read again: the words of the work start with them meanwhile
     resumeWords = words;
     $("took").textContent = words + ". Reading the book";
     resumeNote = words + (LIB.on ? ". The book is read again, because the app was closed before its reading was finished."
@@ -746,10 +770,13 @@ function patched(m) {
   } else status("");
 }
 // On a phone, and a tablet held upright (the reader's compact layout), the top bar goes away
-// while the reader scrolls down the page, and comes back as soon as it scrolls up (or reaches
-// the top); the reader's frame takes the room meanwhile. A failure in the bar keeps it shown.
-// Wider screens keep it: their reader has a panel beside the page, sized to the window.
+// while the reader scrolls down the page, and comes back only when the page is scrolled all the
+// way to the top, or a new page shows at its top: a scroll up part of the way, to read a line
+// again, leaves the reader's frame the room. A failure in the bar keeps it shown. Wider screens
+// keep it: their reader has a panel beside the page, sized to the window.
 const TOPBAR = (() => {
+  // the top: within a few pixels of it, where a flick up may come to rest
+  const TOP = 4;
   let lastY = 0, away = false;
   const phone = window.matchMedia("(max-width: 700px), (max-width: 1100px) and (orientation: portrait)");
   function set(a) {
@@ -758,14 +785,16 @@ const TOPBAR = (() => {
     document.body.classList.toggle("topaway", a);
     $("top").style.marginTop = a ? -$("top").offsetHeight + "px" : "";
   }
+  // a tablet turned sideways leaves the compact layout: the bar comes back at once, without
+  // waiting for the next scroll
+  phone.addEventListener && phone.addEventListener("change", () => { if (!phone.matches) set(false); });
   return {
     scrolled(y) {
       const d = y - lastY;
       if (!phone.matches) { set(false); lastY = y; return; }
-      if (y <= 0) set(false);
+      if (y <= TOP) set(false);
       else if (Math.abs(d) < 8) return;           // a small move changes nothing
       else if (d > 0 && y > 60 && !$("note").classList.contains("error")) set(true);
-      else if (d < 0) set(false);
       lastY = y;
     },
     show() { set(false); lastY = 0; },

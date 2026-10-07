@@ -15,7 +15,8 @@
 //   - closes the page the way an iPhone does (the page hidden, then pagehide)
 //     and loads it again: the app skips the library, says "Back to <title>,
 //     page N" with a Library link, and opens the book from the stored reading
-//     at the same chapter, page, move and scroll, without reading it again;
+//     at the same chapter, page, move and scroll, without reading it again,
+//     the slip under the top bar saying where it came back to;
 //   - makes the record a day old and loads the page again: the library shows;
 //   - adds a second book with the reading slowed down (?pace=MS), opens a
 //     chapter while the book is still read, closes and loads the page again:
@@ -171,17 +172,24 @@ async function evictAndReload(d) {
   await d.page.waitForTimeout(600);
   await d.page.reload();
 }
-// Wait for the reader at the place after the page loads again; returns what it shows.
+// Wait for the reader at the place after the page loads again; returns what it shows, with the
+// words of the slip under the top bar (tip), which says for a few seconds where the app came back
+// to once the chapter shows (null when it said nothing).
 async function backAt(d, want, timeout) {
   const t = now();
   await d.page.waitForFunction(() => /^Back to /.test(document.getElementById("took").textContent) ||
     /^Back to /.test(document.getElementById("note").textContent), null, { timeout: timeout || 600000 });
+  const tipSeen = d.page.waitForFunction(() => { const el = document.getElementById("tip");
+    return !el.hidden && /^Back to /.test(el.textContent) && el.textContent; }, null, { timeout: timeout || 300000 })
+    .then((h) => h.jsonValue()).catch(() => null);
   const at = await d.waitFrame((p) => window.READER && window.READER.chapter.file === p.chapter &&
     window.readerState.page === p.page && (p.node === null || window.readerState.nodeId === p.node) &&
     Object.assign({ view: window.readerView() }, window.readerState), want, timeout || 300000);
+  // the slip shows as the chapter shows, before the reader reaches the place
+  const tip = await Promise.race([tipSeen, new Promise((r) => setTimeout(() => r(null), 5000))]);
   const took = await d.page.evaluate(() => document.getElementById("took").textContent);
   const noteText = await d.page.evaluate(() => document.getElementById("note").textContent);
-  return { seconds: now() - t, at, took, note: noteText };
+  return { seconds: now() - t, at, took, tip, note: noteText };
 }
 
 async function run() {
@@ -221,7 +229,8 @@ async function run() {
         document.getElementById("resume").querySelector("button").textContent === "Library"), resumeLine);
     const back = await backAt(d, { chapter: settled.chapter, page: settled.place.page, node: settled.place.node });
     timing("back in the chapter after the page loaded again (s)", now() - t0);
-    check("the top bar says where the app came back to", back.took === "Back to " + title + ", page " + rec.label, back.took);
+    check("the slip under the top bar says where the app came back to", back.tip === "Back to " + title + ", page " + rec.label + ".",
+          { tip: back.tip, took: back.took });
     const sent = await d.sent();
     check("the book opened from the stored reading, not read again", sent.includes("restore") && !sent.includes("process"), sent);
     check("the reader is at the same scroll, in the page and in the move list",
@@ -335,13 +344,14 @@ async function run() {
       await s.page.waitForFunction(() => !document.getElementById("resume").hidden, null, { timeout: 60000 });
       await s.shot("resume_start_" + name + ".png");
       const bk = await backAt(s, { chapter: st.chapter, page: st.place.page, node: st.place.node });
-      check("the top bar says where the app came back to", bk.took === "Back to " + t + ", page " + (await s.session()).label, bk.took);
+      check("the slip under the top bar says where the app came back to",
+            bk.tip === "Back to " + t + ", page " + (await s.session()).label + ".", { tip: bk.tip, took: bk.took });
       check("the reader is at the same scroll", Math.abs(bk.at.view.y - st.view.y) <= 2, { back: bk.at.view, want: st.view });
       await s.page.waitForTimeout(500);
       await s.shot("resume_" + name + ".png");
       const wide = await s.page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       check("the page does not scroll sideways", wide <= 0, wide);
-      note(name + ": " + bk.took + " (book " + b.id.slice(0, 8) + ")");
+      note(name + ": " + bk.tip + " (book " + b.id.slice(0, 8) + ")");
       await s.close();
     }
     mode = "";

@@ -30,11 +30,42 @@ def test_chapter_links_reach_the_app(tmp_path):
     assert '<${"/"}script>' in nav.group(1)
 
 
-def test_top_bar_shows_no_file_name(tmp_path):
-    # the reader gives the book's title in words; the top bar holds the status only
+def test_top_bar_names_the_book_on_one_line(tmp_path):
+    """The top bar is one line: the book's title (never its file name), then the
+    small book, then Library in the corner. The words of the work stay out of it
+    (#took keeps them for a tap on the small book), and the notes, the way back
+    from the contents and Read again go under the line."""
     page = build(tmp_path)
-    assert 'id="bookname"' not in page and "textContent = file.name" not in page
-    assert "flex-wrap:wrap" in page
+    assert "textContent = file.name" not in page
+    top = re.search(r'<div id="top">(.*?)<main id="start">', page, re.S).group(1)
+    at = [top.index(x) for x in ('id="booktitle"', 'id="busy"', 'id="another"', 'id="sub"')]
+    assert at == sorted(at)
+    sub = re.search(r'<div id="sub">(.*?)</div>', top, re.S).group(1)
+    assert all(f'id="{x}"' in sub for x in ("note", "backbtn", "again"))
+    assert '<span id="took" hidden></span>' in top
+    assert "#booktitle{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" in page
+    # the title the library knows, or the reading's
+    assert "bookTitle(LIB.on && LIB.current ? LIB.titleOf(LIB.current.book)" in page
+
+
+def test_the_reader_in_the_app_leaves_the_book_name_to_the_top_bar(tmp_path):
+    """The app adds a rule after the reader page's own style that hides the
+    book's name in the reader's bar; the reader written to disk keeps it."""
+    from chessbook import reader
+    page = build(tmp_path)
+    assert 'const APP_STYLE = "<style>.where .book{display:none}</style>";' in page
+    assert '.replace("</head>", APP_STYLE + "</head>")' in page
+    html = reader.CHAPTER_HTML
+    assert 'class="book"' in html and html.index("<style>") < html.index("</head>")
+
+
+def test_the_top_bar_comes_back_only_at_the_top(tmp_path):
+    """On a phone the top bar goes away as the page scrolls down and comes back
+    only within a few pixels of the top, not on every scroll up."""
+    page = build(tmp_path)
+    topbar = re.search(r"const TOPBAR = \(\(\) => \{(.*?)\n\}\)\(\);", page, re.S).group(1)
+    assert "const TOP = 4;" in topbar and "if (y <= TOP) set(false);" in topbar
+    assert "d < 0" not in topbar
 
 
 def test_the_page_keeps_clear_of_the_home_indicator(tmp_path):
