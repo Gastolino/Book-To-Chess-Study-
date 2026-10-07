@@ -68,9 +68,10 @@ async function device(name, opts, profile, noLibrary) {
   if (noLibrary) await ctx.addInitScript(() => { Object.defineProperty(window, "indexedDB", { value: undefined }); });
   const page = ctx.pages()[0] || await ctx.newPage();
   page.on("console", (m) => {
-    // (the manifest's icon is fetched while the page is closed and loaded again: that fetch is cut short)
+    // (the manifest and its icon are fetched while the page is closed and loaded again: a fetch cut
+    // short reads as an empty manifest; tests/test_device_library.py checks the manifest itself)
     if (m.type() === "error" && !/Failed to load resource: the server responded with a status of 404/.test(m.text()) &&
-        !/icon from the Manifest/.test(m.text()))
+        !/^Manifest: Line: 1, column: 1, Syntax error\.$/.test(m.text()) && !/icon from the Manifest/.test(m.text()))
       out.errors.push("[" + name + "] " + m.text());
   });
   page.on("pageerror", (e) => out.errors.push("[" + name + "] " + String(e)));

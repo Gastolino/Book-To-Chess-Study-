@@ -178,15 +178,19 @@ class Job:
 
     def _wanted(self):
         """The chapter whose first reading is wanted now: the open one, or
-        before the first pass begins, the first chapter of the book."""
+        before the first pass begins, the chapter after it (the reader goes
+        on from where it is: the first chapter of the book when the front
+        matter or nothing is open)."""
         if self.plain is None or self.changed:
             return None
+        here = 0
         if self.open is not None:
             k = self.chapter_index(self.open)
             if self._real(k) and not self.has_reading(k):
                 return k
+            here = k
         if self.ctx.get("pass_no", 0) == 0:
-            for k in range(1, len(self.chapters())):
+            for k in range(max(here + 1, 1), len(self.chapters())):
                 if self._real(k):
                     return None if self.has_reading(k) else k
         return None

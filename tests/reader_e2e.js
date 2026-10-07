@@ -390,7 +390,7 @@ async function openChapterOf(page, p) {
     await page.evaluate((y) => window.scrollTo(0, y), yTap);
     await page.screenshot({ path: path.join(screens, "reader_390.png") });
     out.screenshots.push("reader_390.png");
-    await page.click("#mfwd");
+    await page.click("#bfwd");
     await page.screenshot({ path: path.join(screens, "reader_390_board.png") });
     out.screenshots.push("reader_390_board.png");
     await page.click("#mmoves");
@@ -402,6 +402,29 @@ async function openChapterOf(page, p) {
     });
     check("Moves shows the board in its place below the page, the line's moves under it",
           Math.abs(moves.top) <= 1 && moves.line >= moves.bottom - 1 && moves.tree < moves.h, moves);
+    // the bar: no move arrows (the board has its own), and a magnifier that enlarges the page
+    const bar = await page.evaluate(() => {
+      const z = document.getElementById("mzoom").getBoundingClientRect();
+      return { arrows: !!document.querySelector("#mbar #mback, #mbar #mfwd"), x: z.left, right: z.right, w: z.width,
+               pressed: document.getElementById("mzoom").getAttribute("aria-pressed") };
+    });
+    check("the phone bar holds a magnifier and no move arrows",
+          !bar.arrows && bar.x >= 0 && bar.right <= 390 && bar.w >= 24 && bar.pressed === "false", bar);
+    await page.click("#mzoom");
+    const zoomed = await page.evaluate(() => ({
+      zoom: document.getElementById("pagescroll").classList.contains("zoom"),
+      pressed: document.getElementById("mzoom").getAttribute("aria-pressed"),
+      label: document.getElementById("zoom").textContent,
+      wide: document.getElementById("pagebox").getBoundingClientRect().width / document.getElementById("pagescroll").clientWidth }));
+    check("the magnifier enlarges the page", zoomed.zoom && zoomed.pressed === "true" && zoomed.label === "Fit page" &&
+          zoomed.wide > 1.9, zoomed);
+    await page.screenshot({ path: path.join(screens, "reader_390_zoom.png") });
+    out.screenshots.push("reader_390_zoom.png");
+    await page.click("#mzoom");
+    check("a second tap fits the page again", await page.evaluate(() =>
+      !document.getElementById("pagescroll").classList.contains("zoom") &&
+      document.getElementById("mzoom").getAttribute("aria-pressed") === "false" &&
+      document.getElementById("zoom").textContent === "Enlarge page"));
 
     // an iPhone 13 with its toolbars (390 x 664 visible): the board sticks to the foot of the
     // window while the page scrolls by, lets go at the end of the page picture and sticks again
@@ -477,7 +500,7 @@ async function openChapterOf(page, p) {
       // stepping through the line keeps the current move on the page above the board
       await pp.evaluate(() => window.scrollTo(0, 0));
       for (let i = 0; i < 6; i++) {
-        await pp.tap("#mfwd");
+        await pp.tap("#bfwd");
         await pp.waitForTimeout(450);
         const m = await pp.evaluate(() => {
           const el = document.querySelector("#ov .mark.current");

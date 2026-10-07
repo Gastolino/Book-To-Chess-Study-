@@ -476,7 +476,7 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mtxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
-#mboard[aria-pressed="true"]{color:var(--accent)}
+#mboard[aria-pressed="true"],#mzoom[aria-pressed="true"]{color:var(--accent)}
 /* The board follows the page picture (the script moves it there from the panel) and, while
    "Board" is on, stays at the foot of the window just above the bar as the page scrolls by
    (position: sticky, so the browser moves it, smoothly); at the end of the page picture it
@@ -726,12 +726,23 @@ function readerView(){
     p: panel ? Math.round(panel.scrollTop) : 0, t: tree ? Math.round(tree.scrollTop) : 0};
 }
 window.readerView = readerView;
+// The page enlarged to twice the width (it then scrolls sideways), or fitted: the button under
+// the page and the magnifier in the phone's bar.
+function setZoom(on){
+  $("pagescroll").classList.toggle("zoom", on);
+  $("zoom").textContent = on ? "Fit page" : "Enlarge page";
+  const m = $("mzoom");
+  if (m) {
+    m.setAttribute("aria-pressed", String(on));
+    m.setAttribute("aria-label", on ? "Fit the page to the screen" : "Enlarge the page");
+  }
+}
 function applyView(v){
   if (!v) return;
   if (!!v.f !== S.flip) { S.flip = !!v.f; renderBoard(); }
   if (v.m === 0 || v.m === 1) { S.mini = !!v.m; renderMini(); }
   const ps = $("pagescroll");
-  if (v.z && ps && !ps.classList.contains("zoom")) { ps.classList.add("zoom"); $("zoom").textContent = "Fit page"; }
+  if (v.z && ps && !ps.classList.contains("zoom")) setZoom(true);
   if (ps) ps.scrollLeft = v.x || 0;
   if ($("panel")) $("panel").scrollTop = v.p || 0;
   if ($("tree")) $("tree").scrollTop = v.t || 0;
@@ -1733,8 +1744,6 @@ function init(){
   $("bfwd").addEventListener("click", () => step(1));
   $("bend").addEventListener("click", () => toEnd(1));
   $("bflip").addEventListener("click", () => { S.flip = !S.flip; renderBoard(); viewChanged(); });
-  $("mback").addEventListener("click", () => step(-1));
-  $("mfwd").addEventListener("click", () => step(1));
   $("mboard").addEventListener("click", () => {
     S.mini = !(S.mini === null ? !!(S.node || S.diagram) : S.mini); renderMini(); viewChanged();
   });
@@ -1786,11 +1795,8 @@ function init(){
   $("showread").addEventListener("click", () => {
     setReading(!reading()); renderInfo(); layoutPanel(false);
   });
-  $("zoom").addEventListener("click", () => {
-    const z = $("pagescroll").classList.toggle("zoom");
-    $("zoom").textContent = z ? "Fit page" : "Enlarge page";
-    viewChanged();
-  });
+  $("zoom").addEventListener("click", () => { setZoom(!$("pagescroll").classList.contains("zoom")); viewChanged(); });
+  $("mzoom").addEventListener("click", () => { setZoom(!$("pagescroll").classList.contains("zoom")); viewChanged(); });
   window.addEventListener("scroll", viewChanged, {passive: true});
   for (const id of ["pagescroll", "panel", "tree"]) $(id).addEventListener("scroll", viewChanged, {passive: true});
   $("usepage").addEventListener("change", (e) => {
@@ -1971,8 +1977,7 @@ __PGNBTN__
 <span class="mbtns"><button class="ib" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
 <button class="ib" id="mcpu" aria-pressed="false" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
 <button class="ib" id="mbm" aria-pressed="false" aria-label="Bookmark this page">__ICON_BOOKMARK__</button>
-<button class="ib" id="mback" aria-label="Previous move">__ICON_BACK__</button>
-<button class="ib" id="mfwd" aria-label="Next move">__ICON_FWD__</button>
+<button class="ib" id="mzoom" aria-pressed="false" aria-label="Enlarge the page">__ICON_ZOOM__</button>
 <button class="tb" id="mboard" aria-pressed="false">Board</button>
 <button class="tb" id="mmoves">Moves</button></span></div>
 </div>
@@ -2149,6 +2154,7 @@ def chapter_html(book, ch, images, pgn_text, pgn_info, engine=False):
         "__ICON_START__": style.icon("start"),
         "__ICON_BACK__": style.icon("back"),
         "__ICON_FWD__": style.icon("forward"),
+        "__ICON_ZOOM__": style.icon("zoom"),
         "__ICON_END__": style.icon("end"),
         "__ICON_FLIP__": style.icon("flip"),
         "__ICON_PENCIL__": style.icon("pencil"),

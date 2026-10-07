@@ -152,6 +152,8 @@ ICONS = {
     "start": "<path d='M5.5 5v10M14.5 5l-5 5 5 5'/>",
     "back": "<path d='M12.5 5l-5 5 5 5'/>",
     "forward": "<path d='M7.5 5l5 5-5 5'/>",
+    # a magnifying glass with a plus: the page enlarged
+    "zoom": "<circle cx='8.5' cy='8.5' r='5.5'/><path d='M12.5 12.5l4.5 4.5M8.5 6v5M6 8.5h5'/>",
     "end": "<path d='M14.5 5v10M5.5 5l5 5-5 5'/>",
     "flip": "<path d='M7 15.5v-11M4 7.5l3-3 3 3M13 4.5v11M10 12.5l3 3 3-3'/>",
     "chevron": "<path d='M7.5 5l5 5-5 5'/>",
