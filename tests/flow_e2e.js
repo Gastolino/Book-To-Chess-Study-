@@ -3,16 +3,24 @@
 // time, and a stored reading that other reading code made.
 //
 // Usage:
-//   NODE_PATH=/opt/node22/lib/node_modules node tests/flow_e2e.js SITE_URL BOOK_PDF WORK_DIR SCREENS_DIR
+//   NODE_PATH=/opt/node22/lib/node_modules node tests/flow_e2e.js SITE_URL BOOK_PDF WORK_DIR SCREENS_DIR [STATIC_DIR]
 //
-// SITE_URL serves a site built with --local. For an iPhone 13 and an iPad held sideways, in a
+// SITE_URL serves a site built with --local; STATIC_DIR, when given, holds the reader of the same
+// book written to disk (reader.build_reader). For an iPhone 13 and an iPad held sideways, in a
 // browser profile kept on disk, the test:
 //   - loads the site (slowed down with ?pace=MS) and finds, while the app starts, the open book
 //     with two pages of a 3 by 4 chequer and a turning page above a thin bar, the words under it;
 //     with reduced motion the page does not turn;
 //   - adds BOOK_PDF: the book opens at its first page in the reader while it is read, with the
-//     small book at the top right of the top bar, which leaves the page where it is when it shows
-//     and goes; a tap on it says what the program does; it is gone when the work is done;
+//     small book at the right of the top bar, just left of Library, which leaves the page where
+//     it is when it shows and goes; a tap on it says what the program does, in a slip under the
+//     bar that a tap puts away; it is gone when the work is done;
+//   - finds the top bar on one line (on the phone, and on the iPad held sideways and upright): the
+//     book's name, the small book, then Library in the right-hand corner, without the words of the
+//     work; the reader's own bar shows the chapter without the book's name, which the reader on
+//     disk keeps; on the phone and the upright iPad the bar goes away as the page scrolls down,
+//     stays away while it scrolls up part of the way and comes back at the top; held sideways it
+//     stays, and an upright iPad turned sideways brings it back;
 //   - turns the pages: a swipe on the last page of a chapter shows the first page of the next;
 //     typing a page number goes to that page in whatever chapter holds it; the pictures come
 //     ten pages at a time, and a page whose picture has not come shows a light placeholder of
@@ -21,13 +29,14 @@
 //     it all the same, with "An improved reading is available." and Read again, and is not read
 //     again until Read again is pressed, which reads it and opens it where the reader was.
 // Screenshots (light and dark) of the start page at work, the book just opened, the top bar's
-// small book and a placeholder filling in go to SCREENS_DIR. Prints one JSON object {ok,
+// small book, the top bar's line at each size and away, the bar of the reader on disk and a
+// placeholder filling in go to SCREENS_DIR. Prints one JSON object {ok,
 // checks, errors, timings, screenshots, notes}; the exit code is 1 when a check fails.
 const { chromium, devices } = require("playwright");
 const path = require("path");
 const fs = require("fs");
 
-const [siteUrl, bookPdf, work, screens] = process.argv.slice(2);
+const [siteUrl, bookPdf, work, screens, staticDir] = process.argv.slice(2);
 const out = { ok: false, checks: [], errors: [], timings: {}, screenshots: [], notes: [] };
 let mode = "";
 function check(name, cond, detail) {
@@ -120,11 +129,14 @@ async function run(browser, which) {
   await waitFrame(() => !document.getElementById("pagebox").classList.contains("waiting"), null, 300000);
   const busy = await page.evaluate(() => {
     const b = document.getElementById("busy"), r = b.getBoundingClientRect();
-    return { on: b.classList.contains("on"), vis: getComputedStyle(b).visibility, w: r.width, right: window.innerWidth - r.right,
+    const lib = document.getElementById("another").getBoundingClientRect();
+    return { on: b.classList.contains("on"), vis: getComputedStyle(b).visibility, w: r.width,
+             gap: lib.left - r.right, libRight: window.innerWidth - lib.right,
              leaf: b.querySelectorAll(".leaf").length, loading };
   });
-  check("while the book is read, the small book shows at the top right of the top bar",
-    busy.on && busy.vis === "visible" && busy.leaf === 1 && busy.w <= 30 && busy.right <= 24, busy);
+  check("while the book is read, the small book shows at the right of the top bar, just left of Library",
+    busy.on && busy.vis === "visible" && busy.leaf === 1 && busy.w <= 30 && busy.gap >= 0 && busy.gap <= 20 &&
+    busy.libRight <= 17, busy);
   // the small book takes its room whether it shows or not: the page does not move
   const shift = await page.evaluate(async () => {
     const b = document.getElementById("busy"), v = () => document.getElementById("view").getBoundingClientRect().top;
@@ -136,42 +148,125 @@ async function run(browser, which) {
   const h0 = await page.evaluate(() => document.getElementById("top").getBoundingClientRect().height);
   await page.click("#busy");
   const said = await page.evaluate(() => {
-    const tip = document.getElementById("tip"), took = document.getElementById("took");
-    return { tip: tip.hidden ? "" : tip.textContent, note: document.getElementById("note").textContent,
-             h: document.getElementById("top").getBoundingClientRect().height,
-             oneLine: took.scrollHeight <= took.clientHeight + 1 && getComputedStyle(took).whiteSpace === "nowrap" };
+    const tip = document.getElementById("tip"), top = document.getElementById("top").getBoundingClientRect();
+    return { tip: tip.hidden ? "" : tip.textContent, words: document.getElementById("took").textContent, loading,
+             note: document.getElementById("note").textContent, h: top.height,
+             under: tip.getBoundingClientRect().top >= top.bottom - 2 };
   });
-  check("a tap on the small book says what the program does, under the bar, moving nothing; the status keeps one line",
-    said.tip.length > 0 && said.note === "" && Math.abs(said.h - h0) < 1 && said.oneLine, { said, h0 });
+  check("a tap on the small book says what the program does, under the bar, moving nothing",
+    said.tip.length > 0 && (!said.loading || said.tip.startsWith(said.words)) && said.note === "" && said.under &&
+    Math.abs(said.h - h0) < 1, { said, h0 });
   await inFrame(() => document.getElementById("pageimg").decode().catch(() => null));
   await both("flow_book_opened");
   const topH = await page.evaluate(() => document.getElementById("top").getBoundingClientRect().height);
   await both("flow_topbar_busy", { x: 0, y: 0, width: opts.viewport.width, height: Math.ceil(topH) + 2 });
-  await page.evaluate(() => { document.getElementById("note").textContent = ""; document.getElementById("tip").hidden = true; });
+  await page.click("#tip");
+  check("a tap on the slip puts it away", await page.evaluate(() => document.getElementById("tip").hidden));
+  await page.evaluate(() => { document.getElementById("note").textContent = ""; });
 
-  // ---------------------------------------------------------------- the top bar while scrolling
+  // ---------------------------------------------------------------- the reader's own bar names the chapter only
+  const own = await inFrame(() => {
+    const b = document.querySelector(".where .book"), h = document.querySelector(".where h1");
+    return { book: b ? b.textContent : null, shown: !!b && b.getClientRects().length > 0,
+             chapter: h ? h.textContent : "", chapterShown: !!h && h.getClientRects().length > 0 };
+  });
+  check("in the app the reader's bar shows the chapter without the book's name",
+    !!own.book && !own.shown && own.chapter.length > 0 && own.chapterShown, own);
+  if (staticDir) {
+    // the same book's reader opened from disk keeps the name beside the chapter
+    const sp = await ctx.newPage();
+    const file = fs.readdirSync(staticDir).filter((f) => /^ch\d+\.html$/.test(f)).sort()[0];
+    await sp.goto("file://" + path.resolve(staticDir, file));
+    const st = await sp.evaluate(() => {
+      const b = document.querySelector(".where .book");
+      return { book: b ? b.textContent : null, shown: !!b && b.getClientRects().length > 0 && getComputedStyle(b).visibility === "visible" };
+    });
+    check("the reader opened from disk names the book in its bar", st.shown && st.book === own.book, { st, own });
+    const p = path.join(screens, "flow_static_reader_bar_" + which + ".png");
+    await sp.screenshot({ path: p, clip: { x: 0, y: 0, width: opts.viewport.width, height: 160 } });
+    out.screenshots.push(p);
+    await sp.close();
+  } else note("no reader on disk to compare with");
+
+  // ---------------------------------------------------------------- the top bar: one line, and away while the page scrolls
+  // the book's name on the left (one line, cut short with an ellipsis), the small book, then Library
+  // in the right-hand corner; the words of the work are not in the bar
+  const barLine = () => page.evaluate(() => {
+    const el = (id) => document.getElementById(id), r = (id) => el(id).getBoundingClientRect();
+    const t = r("booktitle"), b = r("busy"), l = r("another"), mid = (x) => (x.top + x.bottom) / 2;
+    const name = el("booktitle"), took = el("took");
+    return { title: name.textContent, known: LIB.on && LIB.current ? LIB.titleOf(LIB.current.book) : null,
+             left: Math.round(t.left), right: Math.round(window.innerWidth - l.right), h: r("top").height,
+             order: t.left < t.right && t.right <= b.left && b.right <= l.left,
+             line: Math.abs(mid(t) - mid(l)) <= 3 && Math.abs(mid(b) - mid(l)) <= 4,
+             oneLine: name.scrollHeight <= name.clientHeight + 1 && getComputedStyle(name).whiteSpace === "nowrap",
+             loading, words: took.textContent,
+             wordsShown: took.getClientRects().length > 0 || (took.textContent !== "" && el("top").innerText.includes(took.textContent)) };
+  });
   const barAt = () => page.evaluate(() => ({ top: document.getElementById("top").getBoundingClientRect().bottom,
                                              view: document.getElementById("view").getBoundingClientRect().top,
+                                             y: document.getElementById("view").contentWindow.scrollY,
                                              away: TOPBAR.away() }));
-  await inFrame(() => window.scrollTo(0, 0));
-  await page.waitForTimeout(300);
-  const shown0 = await barAt();
-  await inFrame(() => window.scrollBy(0, 150));
-  await page.waitForTimeout(150);
-  await inFrame(() => window.scrollBy(0, 250));
-  await page.waitForTimeout(500);
-  const gone = await barAt();
-  if (which === "iphone13") {
+  // compact: a phone, or a tablet held upright, where the bar goes away
+  const scrolling = async (compact, tag) => {
+    await inFrame(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(300);
+    const shown0 = await barAt();
+    await inFrame(() => window.scrollBy(0, 150));
+    await page.waitForTimeout(150);
+    await inFrame(() => window.scrollBy(0, 250));
+    await page.waitForTimeout(500);
+    const gone = await barAt();
+    if (!compact) {
+      check("on a wider screen the top bar stays", !gone.away && Math.abs(gone.view - shown0.view) <= 1, { shown0, gone, tag });
+      return;
+    }
     check("the top bar goes away as the page scrolls down, and the reader takes its room",
-          gone.away && gone.top <= 1 && Math.abs(gone.view) <= 1 && shown0.view > 20, { shown0, gone });
-    await both("flow_topbar_away");
+          gone.away && gone.top <= 1 && Math.abs(gone.view) <= 1 && shown0.view > 20, { shown0, gone, tag });
+    await both("flow_topbar_away_" + tag);
     await inFrame(() => window.scrollBy(0, -40));
     await page.waitForTimeout(500);
+    const up1 = await barAt();
+    await inFrame(() => window.scrollBy(0, -200));
+    await page.waitForTimeout(500);
+    const up2 = await barAt();
+    check("it stays away while the page scrolls up part of the way",
+          up1.away && up2.away && up2.y > 60 && up2.y < gone.y && Math.abs(up2.view) <= 1, { gone, up1, up2, tag });
+    await inFrame(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(500);
     const back = await barAt();
-    check("it comes back as soon as the page scrolls up", !back.away && Math.abs(back.view - shown0.view) <= 1, { back, shown0 });
-  } else {
-    check("on a wider screen the top bar stays", !gone.away && Math.abs(gone.view - shown0.view) <= 1, { shown0, gone });
+    check("it comes back when the page is scrolled all the way to the top",
+          !back.away && Math.abs(back.view - shown0.view) <= 1, { back, shown0, tag });
+  };
+  // the phone's whole screen (390 by 844); the iPad held sideways, then upright
+  const sizes = which === "iphone13" ? [{ width: 390, height: 844 }] : [{ width: 1180, height: 820 }, { width: 820, height: 1180 }];
+  for (const size of sizes) {
+    const tag = size.width + "x" + size.height;
+    await page.setViewportSize(size);
+    await page.waitForTimeout(500);
+    const bar = await barLine();
+    check("the top bar is one line: the book's name, the small book, then Library in the right-hand corner",
+      bar.title.length > 0 && bar.title === bar.known && bar.order && bar.line && bar.left <= 17 && bar.right <= 17 &&
+      bar.oneLine && bar.h < 50, Object.assign({ tag }, bar));
+    check("the words of the work do not show in the top bar", (!bar.loading || bar.words.length > 0) && !bar.wordsShown,
+      Object.assign({ tag }, bar));
+    await both("flow_topbar_line_" + tag, { x: 0, y: 0, width: size.width, height: Math.ceil(bar.h) + 2 });
+    await scrolling(size.width <= 700 || size.height > size.width, tag);
   }
+  if (which !== "iphone13") {
+    // an upright tablet turned sideways while the bar is away: the bar comes back at once
+    await inFrame(() => window.scrollBy(0, 150));
+    await page.waitForTimeout(150);
+    await inFrame(() => window.scrollBy(0, 250));
+    await page.waitForTimeout(500);
+    const away = await barAt();
+    await page.setViewportSize({ width: 1180, height: 820 });
+    await page.waitForTimeout(500);
+    const turned = await barAt();
+    check("an upright tablet turned sideways brings the top bar back", away.away && !turned.away && turned.view > 20, { away, turned });
+  }
+  await page.setViewportSize(opts.viewport);
+  await page.waitForTimeout(500);
   await inFrame(() => window.scrollTo(0, 0));
   await page.waitForTimeout(300);
 

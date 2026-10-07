@@ -113,7 +113,7 @@ def test_resume_end_to_end(tmp_path):
     names = {c["name"] for c in res["checks"]}
     assert {"the session record holds the book, chapter, page, move and view",
             "the start page says where the app goes back to, with a Library link",
-            "the top bar says where the app came back to",
+            "the slip under the top bar says where the app came back to",
             "the book opened from the stored reading, not read again",
             "the reader is at the same scroll, in the page and in the move list",
             "a record older than a day shows the library",

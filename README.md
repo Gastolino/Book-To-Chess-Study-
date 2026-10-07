@@ -115,6 +115,14 @@ and move last read, and a bookmark opens it at the bookmark. The contents
 in the reader's top bar; **Back to page 31** at the top, or the browser's
 back, returns to the page.
 
+The app's top bar holds one line: the book's name, the small book that shows
+while the program works, and **Library** in the right-hand corner. A note,
+**Back to page 31** and **Read again** take a line under it when they are
+there. The reader's own bar under it names the chapter. On a phone, and on
+an iPad held upright, the top bar slides away as the page scrolls down, so
+that the page has the room, and slides back only when the page is scrolled
+all the way to its top; scrolling up part of the way leaves it away.
+
 The front matter is read like the rest of the book: its pages are ticked in
 the contents, and the moves of an introduction (its games and diagrams) are
 read. Its table of contents gives no moves: a sequence that the program
@@ -197,10 +205,12 @@ note of where the reader was (the book, the chapter, the page, the move and
 how far the page and the move list were scrolled), written a moment after
 each change and at once when the app goes to the background. When the app
 starts again within a day, it skips the library page and opens that book at
-that place from its stored reading, with one line in the top bar ("Back to
-The Soviet Chess Primer, page 31") and the **Library** link beside it. A
-book whose reading was not finished when the system closed the app is read
-again, from the same page, and the line says so. The place last read is
+that place from its stored reading. While it opens, one line says where it
+goes back to ("Back to The Soviet Chess Primer, page 31"), with the
+**Library** link beside it, and a slip under the top bar says it again for a
+few seconds once the page shows. A book whose reading was not finished when
+the system closed the app is read again, from the same page, and a line
+under the top bar says so. The place last read is
 written to the library at once as well when the app goes to the background,
 so nothing is lost. **Library** forgets the note. On a site where the
 browser keeps no library (a private window), the start page says that the
@@ -254,9 +264,9 @@ gives "The Alekhine Defence").
 
 The book can be read while it is processed. As soon as the program knows the
 book's chapters (a few seconds), the book opens at its first page, and every
-page can be turned and swiped. The top bar says how far the
-reading has come ("Reading the moves: chapter 3 of 11") above a thin moving
-line. The moves then appear chapter by chapter, the first chapters first; a
+page can be turned and swiped. A thin line moves along the foot of the top
+bar, and a tap on the small book beside **Library** says how far the reading
+has come ("Reading the moves: chapter 3 of 11"). The moves then appear chapter by chapter, the first chapters first; a
 chapter that the reader opens is read before the others. These first readings
 use what the program has learnt so far, and reading mode ("Show reading") says
 so. When the program has read the whole book (its glyph passes, the figurines

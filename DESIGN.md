@@ -95,6 +95,13 @@ shows or not. Still, on the page background, it is the app's icon.
 
 ## Layout
 
+In the app, a top bar of one line stands over the reader: the book's name on
+the left in the secondary colour, cut short with an ellipsis, then the small
+book and Library in the right-hand corner, over a hairline. Notes and the way
+back from the contents take a line under it only when they are there, and the
+reader's own bar under it names the chapter alone. On narrow screens the top
+bar slides away while the page scrolls down and comes back at the page's top.
+
 The book page sits on the left and the board panel on the right, divided by a
 hairline. The panel holds, from top to bottom: the board, the line's title,
 the move list, and the comment on the current move, each separated by a
