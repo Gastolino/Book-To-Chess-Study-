@@ -490,10 +490,6 @@ max-height:calc(100vh - var(--barh,50px) - 96px)}
 .boardblock .boardrow{justify-content:center}
 .boardblock .boardrow > .boardwrap,.boardblock .dpanel canvas.pic,.boardblock .dpanel .boardwrap{
 max-width:min(100%,55vh)}
-.boardblock .dpanel{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
-.boardblock .dpanel > *{grid-column:1/-1}
-.boardblock .dpanel > .boardwrap{grid-column:1}
-.boardblock .dpanel > .boardwrap + .pic{grid-column:2}
 .boardblock .controls{margin-bottom:0}
 .boardblock .dpanel code{overflow-wrap:anywhere}
 /* while a correction is open a smaller board stays beside the bar's controls */
@@ -1106,6 +1102,7 @@ function diagramInfo(id){
   return [null, null];
 }
 function cropInto(canvas, id){
+  if (!canvas) return false;
   const [p, d] = diagramInfo(id);
   if (!d) return false;
   const P = D.pages[p];
@@ -1555,9 +1552,10 @@ function showDiagram(id){
   $("board").innerHTML = "";  // the diagram view takes the board's place
   const box = $("dpanel");
   const R = d.reading || null;
-  // the position read from the picture, drawn as the book draws it, above the picture itself
+  // the position read from the picture, drawn as the book draws it (the picture itself is on the
+  // page above); the picture only when no position was read from it
   let h = d.fen ? "<div class=boardwrap>" + boardSvg(d.fen, !!(R && R.flipped), null, R && R.doubtful) +
-    "</div>" + PIC : PIC;
+    "</div>" : PIC;
   h += "<div class=dhead><h3>" + esc((d.label ? "Diagram " + d.label : "Unnumbered diagram") + ", " +
     pageName(p)) + "</h3><button class=tb id=dclose>Close</button></div>";
   const lines = [];
