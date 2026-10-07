@@ -46,6 +46,8 @@ def test_the_page_keeps_clear_of_the_home_indicator(tmp_path):
     for side in ("top", "right", "bottom", "left"):
         assert f"env(safe-area-inset-{side})" in body
     assert "box-sizing:border-box" in body
+    # the bar is lifted a little above the home indicator, less than the whole safe area
+    assert "max(0px, calc(env(safe-area-inset-bottom) - 14px))" in body
 
 
 def test_read_again_passes_the_stored_corrections(tmp_path):

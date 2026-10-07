@@ -253,16 +253,19 @@ function check(name, cond, detail) {
     check("a variation at the start of a line is stored before its first move",
       JSON.stringify(s.fix.added) === JSON.stringify({ [I.rd8key]: [{ san: ["a8=N"], before: true }] }), s.fix.added);
 
-    // the board of the diagram view takes the line's first move
+    // a tap on the diagram sets up its line at the start, and the board takes the line's first move
     await fresh(page, "#page=5");
     await page.click(".diag[data-diagram='p5-1']");
-    await page.waitForSelector("#dpanel:not([hidden]) .boardwrap svg.board");
-    await drag(page, "#dpanel .boardwrap svg.board", "d1", "d8");
+    await page.waitForSelector("#dpanel[hidden]", { state: "attached" });
+    await page.waitForSelector("#board svg.board");
+    await drag(page, "#board svg.board", "d1", "d8");
     s = await state(page);
-    check("the diagram's board steps to the line's first move", s.id === I.rd8 && !s.open, s);
+    check("from the diagram's line at its start, the board steps to the line's first move", s.id === I.rd8 && !s.open, s);
 
-    // the diagram corrector still takes taps on its squares
+    // in reading mode the tap opens the diagram's panel, whose corrector still takes taps on its squares
+    await page.click("#showread");
     await page.click(".diag[data-diagram='p5-1']");
+    await page.waitForSelector("#dpanel:not([hidden]) .boardwrap svg.board");
     await page.click("#dfix");
     await page.waitForSelector("#fixboard svg");
     await page.click("#fixboard [data-sq='e4']");

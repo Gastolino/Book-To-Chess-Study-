@@ -48,10 +48,13 @@ SHELL = """<!doctype html>
 <meta name="apple-mobile-web-app-title" content="Chess books">
 <style>__CSS__
 html,body{height:100%}
-/* the page keeps clear of the iPhone's home indicator, notch and rounded corners (the reader's
-   frame cannot: a frame is told no safe area), so the reader's bar sits above the indicator */
+/* the page keeps clear of the iPhone's notch and rounded corners, and lifts the reader's bar
+   just above the home indicator (the reader's frame cannot: a frame is told no safe area). The
+   lift is the safe area less 14 px (20 px on an iPhone X and later, against Apple's 34): the
+   bar's buttons stay out of the indicator's swipe, and the bar grows only a little */
 body{margin:0;display:flex;flex-direction:column;box-sizing:border-box;
-  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  padding:env(safe-area-inset-top) env(safe-area-inset-right)
+    max(0px, calc(env(safe-area-inset-bottom) - 14px)) env(safe-area-inset-left)}
 #start{max-width:620px;margin:0 auto;padding:72px 16px 32px;width:100%;box-sizing:border-box}
 #start h1{font-size:26px;margin-bottom:10px}
 #start p{margin:0 0 10px;color:var(--muted)}

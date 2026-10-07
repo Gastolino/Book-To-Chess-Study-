@@ -245,16 +245,49 @@ async function openChapterOf(page, p) {
     const diag = await page.$("#ov .diag");
     check("page " + PAGE + " has a diagram box", diag);
     const did = await diag.getAttribute("data-diagram");
+    // reading: a tap on the diagram sets up the position the book starts a line from, at the line's
+    // start, so that the arrows step through the line; or the move after which the diagram stands
+    const want = await page.evaluate((id) => {
+      const d = Object.values(window.READER.pages).flatMap((pg) => pg.diagrams).find((x) => x.id === id);
+      const lid = (d.lines || []).find((l) => window.READER.lines[l]);
+      return lid ? window.READER.lines[lid].root : (d.after_node && window.READER.nodes[d.after_node] ? d.after_node : null);
+    }, did);
+    check("not in reading mode to begin with", !(await page.evaluate(() => document.body.classList.contains("reading"))));
     await diag.click();
-    const panel = await page.evaluate(() => {
+    if (want) {
+      const tapped = await page.evaluate(() => ({ node: window.readerState.nodeId,
+        panel: !document.getElementById("dpanel").hidden, board: !!document.querySelector("#board svg"),
+        start: !!document.querySelector("#tree .mv.start.cur") }));
+      check("a tap on a diagram sets up the line it starts at its starting position, with no panel",
+            tapped.node === want && !tapped.panel && tapped.board, { tapped, want });
+      await page.click("#bfwd");
+      const next = await page.evaluate(() => window.readerState.nodeId);
+      check("the arrow then plays the line's first move", next && next !== want &&
+            (await page.evaluate((w) => window.READER.nodes[w].children, want)).indexOf(next) >= 0, { next, want });
+      // the line's description names the diagram, and opens its panel (in reading mode)
+      await page.click("#showread");
+      await page.click("#linemeta .dlink").catch(() => null);
+      check("the diagram named under the line opens its panel",
+            await page.evaluate(() => !document.getElementById("dpanel").hidden));
+      await page.click("#dclose");
+    } else await page.click("#showread");
+    // reading mode: a tap on the diagram opens its panel
+    await diag.click();
+    const panel = await page.evaluate((id) => {
       const p = document.getElementById("dpanel");
-      return { hidden: p.hidden, text: p.innerText, canvas: !!p.querySelector("canvas"),
+      const d = Object.values(window.READER.pages).flatMap((pg) => pg.diagrams).find((x) => x.id === id);
+      return { hidden: p.hidden, text: p.innerText, read: !!(d && d.fen),
+               set: !!p.querySelector(".boardwrap svg, .boardwrap canvas"),
                use: !!p.querySelector("#usediag"), board: document.getElementById("board").offsetHeight,
-               pictures: document.querySelectorAll("#panel canvas").length };
-    });
-    check("clicking a diagram opens the diagram panel", !panel.hidden && panel.canvas, panel.hidden);
-    check("the diagram picture replaces the board and appears once",
-          panel.board === 0 && panel.pictures === 1, { board: panel.board, pictures: panel.pictures });
+               pictures: document.querySelectorAll("#panel canvas.pic").length,
+               wide: p.querySelector(".boardwrap") ? p.querySelector(".boardwrap").getBoundingClientRect().width : 0,
+               panelW: p.getBoundingClientRect().width };
+    }, did);
+    check("clicking a diagram opens the diagram panel", !panel.hidden, panel.hidden);
+    check("the diagram panel takes the board's place: the position read from the picture, set up on a board, " +
+          "and not the picture again (the page shows it)",
+          panel.board === 0 && (panel.read ? panel.set && panel.pictures === 0 : panel.pictures === 1),
+          { board: panel.board, pictures: panel.pictures, read: panel.read, set: panel.set });
     check("the panel names the diagram", /Diagram|Unnumbered diagram/.test(panel.text), panel.text.slice(0, 80));
     check("the panel says what board reading made of the diagram", /Stage 3/.test(panel.text));
     check("the panel offers to use or leave out the diagram", panel.use);
@@ -264,7 +297,6 @@ async function openChapterOf(page, p) {
     out.screenshots.push("reader_1280.png");
     // on a page that is left out, ticking the diagram uses the page again ("Use this page"
     // belongs to reading mode, with the other controls of what the program reads)
-    await page.click("#showread");
     await page.uncheck("#usepage");
     const offState = await page.evaluate(() => ({ diag: document.getElementById("usediag").checked,
       note: document.getElementById("dpageoff").textContent }));
@@ -408,6 +440,8 @@ async function openChapterOf(page, p) {
       return { arrows: !!document.querySelector("#mbar #mback, #mbar #mfwd"), x: z.left, right: z.right, w: z.width,
                pressed: document.getElementById("mzoom").getAttribute("aria-pressed") };
     });
+    check("on the phone, Enlarge page under the page gives way to the bar's magnifier",
+          await page.evaluate(() => getComputedStyle(document.getElementById("zoom")).display === "none"));
     check("the phone bar holds a magnifier and no move arrows",
           !bar.arrows && bar.x >= 0 && bar.right <= 390 && bar.w >= 24 && bar.pressed === "false", bar);
     await page.click("#mzoom");
@@ -420,7 +454,27 @@ async function openChapterOf(page, p) {
           zoomed.wide > 1.9, zoomed);
     await page.screenshot({ path: path.join(screens, "reader_390_zoom.png") });
     out.screenshots.push("reader_390_zoom.png");
-    await page.click("#mzoom");
+    // a diagram on the phone: the position read from it, set up on a board as wide as the panel
+    await page.evaluate((p) => { location.hash = "#page=" + p; }, PAGE);
+    await page.waitForFunction((p) => window.readerState.page === p, PAGE);
+    await page.click("#mzoom");                     // the page fitted again, its diagram in reach
+    // (in reading mode: when reading, the tap goes to the diagram's line; see above)
+    await page.evaluate(() => { if (!document.body.classList.contains("reading")) document.getElementById("showread").click(); });
+    await page.evaluate(() => document.querySelector("#ov .diag").click());
+    await page.waitForTimeout(200);
+    const dph = await page.evaluate(() => {
+      const p = document.getElementById("dpanel"), w = p.querySelector(".boardwrap");
+      return { hidden: p.hidden, pictures: p.querySelectorAll("canvas.pic").length,
+               board: w ? w.getBoundingClientRect().width : 0, panel: p.getBoundingClientRect().width,
+               h: window.innerHeight };
+    });
+    // (as wide as the move board: the panel's width, up to 55% of the window's height; it was half
+    // the panel beside the picture)
+    check("on the phone a diagram shows its position on a full-size board, without the picture",
+          !dph.hidden && dph.pictures === 0 && dph.board >= 0.8 * dph.panel, dph);
+    await page.screenshot({ path: path.join(screens, "reader_390_diagram.png") });
+    out.screenshots.push("reader_390_diagram.png");
+    await page.click("#dclose");
     check("a second tap fits the page again", await page.evaluate(() =>
       !document.getElementById("pagescroll").classList.contains("zoom") &&
       document.getElementById("mzoom").getAttribute("aria-pressed") === "false" &&

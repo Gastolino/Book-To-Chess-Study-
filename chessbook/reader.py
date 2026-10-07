@@ -477,6 +477,8 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
 #mboard[aria-pressed="true"],#mzoom[aria-pressed="true"]{color:var(--accent)}
+/* the bar's magnifier enlarges the page: the button under the page is for wider screens */
+#zoom{display:none}
 /* The board follows the page picture (the script moves it there from the panel) and, while
    "Board" is on, stays at the foot of the window just above the bar as the page scrolls by
    (position: sticky, so the browser moves it, smoothly); at the end of the page picture it
@@ -488,10 +490,6 @@ max-height:calc(100vh - var(--barh,50px) - 96px)}
 .boardblock .boardrow{justify-content:center}
 .boardblock .boardrow > .boardwrap,.boardblock .dpanel canvas.pic,.boardblock .dpanel .boardwrap{
 max-width:min(100%,55vh)}
-.boardblock .dpanel{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
-.boardblock .dpanel > *{grid-column:1/-1}
-.boardblock .dpanel > .boardwrap{grid-column:1}
-.boardblock .dpanel > .boardwrap + .pic{grid-column:2}
 .boardblock .controls{margin-bottom:0}
 .boardblock .dpanel code{overflow-wrap:anywhere}
 /* while a correction is open a smaller board stays beside the bar's controls */
@@ -1104,6 +1102,7 @@ function diagramInfo(id){
   return [null, null];
 }
 function cropInto(canvas, id){
+  if (!canvas) return false;
   const [p, d] = diagramInfo(id);
   if (!d) return false;
   const P = D.pages[p];
@@ -1305,13 +1304,16 @@ function variation(v){
 function lineMeta(L){
   // one sentence: where the line starts, from which position, and how it ends
   let from = "";
+  let diag = "";
   if (L.diagram) {
     const [p, d] = diagramInfo(L.diagram);
-    from = d && !d.label && p === L.page ? "the unnumbered diagram" : diagramLabel(L.diagram);
+    diag = d && !d.label && p === L.page ? "the unnumbered diagram" : diagramLabel(L.diagram);
   } else if (L.start_fen && L.start_fen.split(" ")[0] === "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR")
     from = "the initial position";
   else if (L.start_fen) from = "a set position";
-  let s = "The line starts" + (from ? " from " + esc(from) : "") + " on " + esc(pageName(L.page));
+  // the diagram's name opens its panel (its reading, Use this diagram, Correct the position)
+  let s = "The line starts" + (diag ? " from <a href='#' class=dlink data-diagram='" + esc(L.diagram) + "'>" +
+    esc(diag) + "</a>" : from ? " from " + esc(from) : "") + " on " + esc(pageName(L.page));
   const parts = [];
   if (L.end_page !== L.page) parts.push("runs to " + esc(pageName(L.end_page)));
   if (L.result) parts.push("ends <span class=n>" + esc(L.result) + "</span>");
@@ -1338,6 +1340,8 @@ function renderTree(){
   // a title the program made up ("Page 12") is an explanation, not the book's
   $("lsec").classList.toggle("generic", !L.header);
   $("linemeta").innerHTML = lineMeta(L);
+  for (const a of $("linemeta").querySelectorAll(".dlink"))
+    a.addEventListener("click", (e) => { e.preventDefault(); showDiagram(a.dataset.diagram); });
 }
 function fitTree(){
   // on wide screens the move list gives way to the comment, but keeps at least three rows, and it
@@ -1537,6 +1541,19 @@ function defaultView(){
 }
 
 /* ---------------------------------------------------------------- diagrams */
+// A tap on a diagram on the page: when reading, the line the book starts from it, at its starting
+// position (the arrows then step through the line), or the move it shows the position after; in
+// reading mode, and for a diagram no line reaches, the diagram's own panel (its reading, Use this
+// diagram, Correct the position).
+function openDiagram(id){
+  const [, d] = diagramInfo(id);
+  if (d && !reading()) {
+    const lid = (d.lines || []).find(l => D.lines[l]);
+    if (lid) { selectNode(D.lines[lid].root, {fromPage: true}); return; }
+    if (d.after_node && D.nodes[d.after_node]) { selectNode(d.after_node, {fromPage: true}); return; }
+  }
+  showDiagram(id);
+}
 function showDiagram(id){
   const [p, d] = diagramInfo(id);
   if (!d) return;
@@ -1553,9 +1570,10 @@ function showDiagram(id){
   $("board").innerHTML = "";  // the diagram view takes the board's place
   const box = $("dpanel");
   const R = d.reading || null;
-  // the position read from the picture, drawn as the book draws it, above the picture itself
+  // the position read from the picture, drawn as the book draws it (the picture itself is on the
+  // page above); the picture only when no position was read from it
   let h = d.fen ? "<div class=boardwrap>" + boardSvg(d.fen, !!(R && R.flipped), null, R && R.doubtful) +
-    "</div>" + PIC : PIC;
+    "</div>" : PIC;
   h += "<div class=dhead><h3>" + esc((d.label ? "Diagram " + d.label : "Unnumbered diagram") + ", " +
     pageName(p)) + "</h3><button class=tb id=dclose>Close</button></div>";
   const lines = [];
@@ -1716,7 +1734,7 @@ function init(){
       if (i >= 0) { openItem(i); return; }
     }
     if (b.dataset.node) { selectNode(b.dataset.node, {fromPage: true}); openIfFailed(b.dataset.node); return; }
-    if (b.dataset.diagram) { showDiagram(b.dataset.diagram); return; }
+    if (b.dataset.diagram) { openDiagram(b.dataset.diagram); return; }
     if (b.dataset.mark) {
       const m = D.pages[S.page].marks[parseInt(b.dataset.mark, 10)];
       $("info").innerHTML = "<p class=comment>“<span class=n>" + shownHtml(m.raw) + "</span>”</p>" +
