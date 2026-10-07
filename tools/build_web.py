@@ -72,13 +72,15 @@ body{margin:0;display:flex;flex-direction:column;box-sizing:border-box;
 #resume button:hover{text-decoration:underline}
 #resume[hidden]{display:none}
 body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
-/* The sign that the app is at work: the open book whose page turns (chessbook/style.py), over a
-   thin bar that fills as far as the work has come where the app knows it, and otherwise carries
-   a sliding segment; the words of the work go under it. In the reader, the small book stands at
-   the right of the top bar, over the same thin line along the bar's foot. */
+/* The sign that the app is at work: the revolving book whose pages turn (chessbook/style.py), over
+   a thin bar that fills as far as the work has come where the app knows it, and otherwise carries
+   a sliding segment; the words of the work go under it. A page halfway through its turn reaches a
+   fifth of the book's width beyond its square, so the book keeps that much room above the bar.
+   In the reader, the small book stands at the right of the top bar, over the same thin line along
+   the bar's foot. */
 #loader{display:none;margin-top:28px}
 #loader.on{display:block}
-#loader .bookicon{width:88px;height:auto;margin:0 auto 14px}
+#loader .bookicon{width:80px;height:auto;margin:0 auto 24px}
 #bar{height:2px;background:var(--line);position:relative;overflow:hidden}
 #bar i,#topbar i{position:absolute;left:0;top:0;bottom:0;width:30%;background:var(--accent);
   animation:run 1.4s linear infinite;display:none}
@@ -966,7 +968,7 @@ LIB.start(SESSION.pending()).then((on) => {
 # Added to the Home Screen of an iPhone or iPad, the app opens on its own
 # (without Safari's bars) and keeps its library apart from Safari, which may
 # clear the storage of a site left unused for a week.
-# The icons are the open book with two chequered pages (tools/make_icons.py
+# The icons are the revolving book with four chequered pages (tools/make_icons.py
 # renders them from web/icon.svg).
 MANIFEST = {"name": "Chess Book Reader", "short_name": "Chess books", "start_url": "./", "scope": "./",
             "display": "standalone", "background_color": "#fbfbfa", "theme_color": "#fbfbfa",

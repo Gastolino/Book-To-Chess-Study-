@@ -165,16 +165,18 @@ pictures are kept on each device as well, not on the site.
 ### The sign of work
 
 While the app starts, and while a book is read before its first page shows,
-the start page shows an open book whose two pages are chequered like a
-board, with a page turning over, above a thin bar that fills as far as the
-work has come where the app knows it, and the words of the work under it.
+the start page shows a revolving book: four pages, each chequered like a
+board, fanned about the spine like the blades of a pinwheel, that turn over
+one after the other, each a quarter turn clockwise, so that they swirl round
+the spine. It stands above a thin bar that fills as far as the work has come
+where the app knows it, with the words of the work under it.
 In the reader, the same small book stands at the right of the top bar while
 the program works (reading the moves, drawing pages, saving the reading); a
 tap on it says what it is doing, and it goes when the work is done. With
-reduced motion set on the device, the page does not turn. The book with its
-two chequered pages is also the app's icon (`web/icon.svg`;
-`tools/make_icons.py` draws the icons of the Home Screen, the manifest and
-the browser tab).
+reduced motion set on the device, the pages do not turn and the book stands
+still. The book with its four chequered pages is also the app's icon
+(`web/icon.svg`; `tools/make_icons.py` draws the icons of the Home Screen,
+the manifest and the browser tab).
 
 ### Your library on each device
 

@@ -326,3 +326,43 @@ def test_the_library_uses_the_server_only_when_the_site_answers(tmp_path):
     assert 'fetch("api/books"' in lib
     assert "if (!data || !Array.isArray(data.books)) return null;" in lib
     assert "if (books) store = serverStore;" in lib and "store = deviceStore();" in lib
+
+
+def test_the_icons_are_the_revolving_book_at_their_sizes():
+    """The app's icons (tools/make_icons.py) are the revolving book that
+    chessbook/style.py draws: web/icon.svg is that drawing, still, on the page
+    background, and favicon.svg the same; every PNG is there at its size and is
+    web/icon.svg as it renders now; the book is the same after a quarter turn,
+    with both board colours in it; and the maskable icon keeps it inside the
+    middle 60 % and inside the circle that any mask keeps."""
+    import struct
+    import cv2
+    import numpy as np
+    sys.path.insert(0, str(ROOT / "tools"))
+    import make_icons
+    icons = ROOT / "web" / "icons"
+    svg = (ROOT / "web" / "icon.svg").read_text(encoding="utf-8").strip()
+    assert svg == make_icons.source_svg()
+    assert (icons / "favicon.svg").read_text(encoding="utf-8").strip() == svg
+    sizes = {"icon-32.png": 32, "icon-180.png": 180, "icon-192.png": 192, "icon-512.png": 512,
+             "icon-maskable-512.png": 512}
+    drawn = make_icons.pictures(svg)
+    assert set(drawn) == set(sizes)
+    pics = {}
+    for name, size in sizes.items():
+        data = (icons / name).read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", data[16:24]) == (size, size), name
+        pics[name] = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR).astype(int)
+        # drawn from the SVG as it is now (another PyMuPDF may smooth the edges a little otherwise)
+        now = cv2.imdecode(np.frombuffer(drawn[name], np.uint8), cv2.IMREAD_COLOR).astype(int)
+        assert np.abs(now - pics[name]).mean() < 2, name
+    big = pics["icon-512.png"]
+    assert np.abs(np.rot90(big) - big).mean() < 0.5
+    share = lambda img, rgb: (np.abs(img - np.array(rgb[::-1])).max(axis=2) <= 6).mean()  # noqa: E731
+    assert share(big, (0xbd, 0xba, 0xb2)) > 0.12 and share(big, (0xec, 0xeb, 0xe6)) > 0.12
+    # the maskable icon: what differs from the background lies in the middle 60 %, and within 40 %
+    # of the icon's width from its centre
+    mask = pics["icon-maskable-512.png"]
+    ys, xs = np.nonzero(np.abs(mask - np.array([0xfa, 0xfb, 0xfb])).max(axis=2) > 8)
+    assert xs.min() >= 0.2 * 512 and xs.max() < 0.8 * 512 and ys.min() >= 0.2 * 512 and ys.max() < 0.8 * 512
+    assert np.hypot(xs - 255.5, ys - 255.5).max() <= 0.4 * 512

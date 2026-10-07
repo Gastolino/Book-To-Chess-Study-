@@ -172,7 +172,7 @@ async function run(browser, which) {
     await page.evaluate(() => document.getElementById("topbar").classList.contains("on")));
   check("the small book at the top right shows that the program is at work",
     await page.evaluate(() => { const b = document.getElementById("busy"); return b.classList.contains("on") &&
-      getComputedStyle(b).visibility === "visible" && b.querySelectorAll(".leaf").length === 1; }));
+      getComputedStyle(b).visibility === "visible" && b.querySelectorAll(".leaf").length === 4; }));
   // the words of the work stay out of the bar, which names the book: a tap on the small book shows them
   // (the words may change between the tap and the look: either is fine)
   const words0 = await tookText();
