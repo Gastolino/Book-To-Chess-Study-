@@ -438,11 +438,9 @@ background:var(--muted)}
 .ribbon{position:absolute;top:0;width:4.5%;padding:0;margin:0;border:0;border-radius:0;background:none;
 cursor:pointer;z-index:5;line-height:0}
 .ribbon[hidden]{display:none}
-/* Inverted page: white print on black. The page picture is inverted and each
-   diagram region inverts what lies behind it a second time, so the boards keep
-   their true colours (white pieces stay white). */
-.inverted .pagebox img{filter:invert(1)}
-.inverted .diag{-webkit-backdrop-filter:invert(1);backdrop-filter:invert(1)}
+/* Inverted page: white print on black. The whole page box (the picture and
+   everything drawn over it, boards included) is inverted as one. */
+.inverted .pagebox{-webkit-filter:invert(1);filter:invert(1)}
 #invbtn[aria-pressed="true"]{color:var(--accent)}
 .ribbon svg{display:block;width:100%;height:auto;fill:var(--bookmark)}
 .ribbon:hover svg{opacity:.85}
@@ -2674,13 +2672,16 @@ def build_reader(book, pdf_path, out_dir, chapters=None, progress=None, with_ind
     in out_dir/engine (make_reader.py --engine), so that the chapter readers
     offer analysis. images=False leaves the page pictures out of the chapter
     readers: the browser app sends them, ten pages at a time.
-    Returns {"files": {name: bytes}, "pgn": pgnout report, "sizes": {index: bytes}}."""
+    Returns {"files": {name: bytes}, "pgn": pgnout report (of the chapters
+    built), "sizes": {index: bytes}}."""
     say = progress or (lambda *_: None)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = pymupdf.open(pdf_path)
     pgn_dir = out_dir.parent / "pgn"
-    pgn_report = pgnout.write_pgn(book, pgn_dir)
+    # the PGN files of the chapters built now only: the browser app builds one chapter at a time,
+    # and writing (and checking) every chapter's PGN took most of the time of opening one
+    pgn_report = pgnout.write_pgn(book, pgn_dir, chapters=chapters)
     sizes = {}
     files = {}
     for ch in book["chapters"]:

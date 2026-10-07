@@ -63,6 +63,15 @@ async function run(id, t0) {
     }
     for (const ev of out.events) {
       if (ev.type === "done") ev.seconds = (performance.now() - t0) / 1000;
+      if (ev.type === "checkpoint") {
+        if (id !== job) return;
+        // a finished part of the reading, gzipped, for the library (driver.checkpoint)
+        try {
+          const bytes = await gzip(bytesOf(driver.checkpoint()));
+          postMessage({ type: "partial", bytes, parts: ev.parts, version: driver.VERSION }, [bytes.buffer]);
+        } catch (err) { /* the reading goes on; only a reading cut short misses it */ }
+        continue;
+      }
       postMessage(ev);
     }
     if (out.done) return;
@@ -80,8 +89,17 @@ onmessage = async (event) => {
       const path = "/books/" + msg.name;
       py.FS.writeFile(path, new Uint8Array(msg.bytes));
       const id = ++job;
-      for (const ev of JSON.parse(driver.start(path, msg.selection || null, msg.corrections || null)))
-        postMessage(ev);
+      // the parts of an earlier reading cut short (the library keeps them): not read again
+      let partial = null;
+      if (msg.partial) {
+        try {
+          partial = "/books/partial.bin";
+          py.FS.writeFile(partial, await gzip(msg.partial, "decompress"));
+        } catch (err) { partial = null; }
+      }
+      const notes = JSON.parse(driver.start(path, msg.selection || null, msg.corrections || null, partial));
+      if (partial) py.FS.unlink(partial);
+      for (const ev of notes) postMessage(ev);
       await run(id, t0);
     } else if (msg.type === "restore") {
       // a book of the library, opened from its stored reading (gzip) instead of read;
@@ -102,7 +120,7 @@ onmessage = async (event) => {
       const t0 = performance.now();
       const raw = bytesOf(driver.save_reading());
       const bytes = await gzip(raw);
-      postMessage({ type: "reading", bytes, size: raw.length, version: driver.VERSION,
+      postMessage({ type: "reading", bytes, size: raw.length, version: driver.reading_version(),
                     seconds: (performance.now() - t0) / 1000 }, [bytes.buffer]);
     } else if (msg.type === "cover") {
       const bytes = bytesOf(driver.cover("/books/" + msg.name));

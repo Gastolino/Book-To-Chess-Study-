@@ -128,10 +128,10 @@ async function addBook(d, file) {
   await whenReady(d);
   await d.page.setInputFiles("#file", file);
   await d.page.waitForSelector("#view", { state: "visible", timeout: 1800000 });
-  await d.page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent),
+  await d.page.waitForFunction(() => document.body.dataset.book === "read",
                                null, { timeout: 3600000 });
   const id = await d.page.evaluate(() => LIB.current.id);
-  await d.page.waitForFunction(() => /in your library/.test(document.getElementById("note").textContent), null, { timeout: 600000 });
+  await d.page.waitForFunction(() => document.body.dataset.saved === LIB.current.id, null, { timeout: 600000 });
   return { id, read: now() - t };
 }
 // The chapter files of the open book, in order (the app's list of them).
@@ -289,7 +289,7 @@ async function run() {
     check("closed while the book was read: the chapter opens at the page, and the app says the book is read again",
       /^Back to .*, page .*\. /.test(backR.took) && (await readAgain) &&
       backR.at.page === early.page && (await d.sent()).includes("process"), backR);
-    await d.page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent), null, { timeout: 1800000 });
+    await d.page.waitForFunction(() => document.body.dataset.book === "read", null, { timeout: 1800000 });
     check("the reading arrives in the resumed chapter", await d.waitFrame(() => window.READER.reading !== "pages" && window.readerState.page, null, 300000));
     await d.page.click("#another");
     await d.page.waitForFunction(() => document.body.classList.contains("library"), null, { timeout: 60000 });
@@ -302,7 +302,7 @@ async function run() {
     check("without IndexedDB the start page is not a library", !(await d.page.evaluate(() => document.body.classList.contains("library"))));
     await d.page.setInputFiles("#file", book);
     await d.page.waitForSelector("#view", { state: "visible", timeout: 1800000 });
-    await d.page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent), null, { timeout: 3600000 });
+    await d.page.waitForFunction(() => document.body.dataset.book === "read", null, { timeout: 3600000 });
     const chs = await chapterList(d);
     const s2 = await settle(d, chs[1]);
     const recN = await d.until(async () => { const r = await d.session(); return r && r.chapter === s2.chapter && r.node === s2.place.node ? r : null; },

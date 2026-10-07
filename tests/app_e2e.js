@@ -150,10 +150,10 @@ async function run(browser, which) {
     return now() - t;
   };
   const tookText = () => page.evaluate(() => document.getElementById("took").textContent);
-  const loading = async () => !/read in \d+ seconds/.test(await tookText());
-  // the final book: the top bar says how long the reading took, and an open contents page shows the counts
+  const loading = async () => (await page.evaluate(() => document.body.dataset.book)) !== "read";
+  // the final book: the body's data-book says the reading is done, and an open contents page shows the counts
   const waitFinal = async () => {
-    await page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent),
+    await page.waitForFunction(() => document.body.dataset.book === "read",
       null, { timeout: 3600000 });
     if (await page.evaluate(() => openChapter === "index.html"))
       await waitFrame(() => !window.READER && !!document.querySelector("li.chapter") &&
@@ -340,8 +340,8 @@ async function run(browser, which) {
     await shot("07_final_reading");
     await backToContents();
   } else if (await page.evaluate(() => openChapter !== "index.html")) await backToContents();
-  const took = await tookText();
-  check("the contents page shows how long the reading took", /read in \d+ seconds/.test(took), took);
+  const took = await tookText(), secs0 = await page.evaluate(() => document.body.dataset.seconds);
+  check("once the book is read the top bar's status line is empty", took === "" && /^\d+$/.test(secs0 || ""), { took, secs0 });
   await shot("02_contents");
   const chapters = await inFrame(() => [...document.querySelectorAll("li.chapter")].map((li) => {
     const a = li.querySelector("a.read");

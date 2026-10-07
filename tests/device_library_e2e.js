@@ -26,7 +26,12 @@
 //   - takes pictures of the library with both books (added from their
 //     files) on an iPhone 13 and an iPad in landscape, light and dark;
 //   - removes the book after its confirmation: its files, its record, its
-//     corrections and its place are gone.
+//     corrections and its place are gone;
+//   - in a fresh profile, adds BOOK2 with each step slowed down and leaves
+//     for the library once the parts of its reading (Stage 1, the boards)
+//     are kept: opened again, the reading goes on from them, and once it is
+//     finished they make way for the stored reading; opened once more, the
+//     book draws no thumbnails (they are kept with the reading).
 // Prints one JSON object {ok, checks, errors, timings, screenshots, notes};
 // the exit code is 1 when a check fails.
 const { chromium, devices } = require("playwright");
@@ -113,8 +118,13 @@ async function device(name, opts, profile) {
     const post = worker.postMessage.bind(worker);
     worker.postMessage = (m, t) => { window.__sent.push(m.type); return post(m, t); };
     window.__said = [];
+    window.__got = [];
     const on = worker.onmessage;
-    worker.onmessage = (e) => { if (e.data && e.data.type === "status") window.__said.push(e.data.text); return on(e); };
+    worker.onmessage = (e) => {
+      if (e.data && (e.data.type === "status" || e.data.type === "progress")) window.__said.push(e.data.text);
+      if (e.data) window.__got.push(e.data.type);
+      return on(e);
+    };
   });
   // the library's IndexedDB, read directly
   const stored = () => page.evaluate(() => new Promise((resolve, reject) => {
@@ -125,7 +135,7 @@ async function device(name, opts, profile) {
       const q1 = t.objectStore("books").getAll(), q2 = t.objectStore("files").getAllKeys();
       t.oncomplete = () => {
         const books = q1.result.map((b) => ({ id: b.id, title: b.title, pages: b.pages, size: b.size,
-          reading: b.reading, position: b.position, cover: b.coverBlob ? b.coverBlob.size : 0, opened: b.opened }));
+          reading: b.reading, partial: b.partial || null, position: b.position, cover: b.coverBlob ? b.coverBlob.size : 0, opened: b.opened }));
         db.close();
         resolve({ books, files: q2.result });
       };
@@ -171,7 +181,7 @@ async function addBook(d, file) {
   const first = await d.waitFrame(() => window.READER && window.readerState && window.readerState.page && window.readerState, null, 1800000);
   check("a new book opens at its first page", first.page === 1, first);
   const contents = now() - t;
-  await d.page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent),
+  await d.page.waitForFunction(() => document.body.dataset.book === "read",
                                null, { timeout: 3600000 });
   const read = now() - t;
   const id = await d.page.evaluate(() => LIB.current.id);
@@ -191,7 +201,7 @@ async function openStored(d, id, place) {
   await d.instrument();
   const t = now();
   await d.page.click("#books li.book[data-id='" + id + "'] .open");
-  await d.page.waitForFunction(() => /opened from your library/.test(document.getElementById("took").textContent),
+  await d.page.waitForFunction(() => document.body.dataset.book === "opened",
                                null, { timeout: 600000 });
   const contents = now() - t;
   const at = await d.waitFrame((p) => window.READER && window.READER.chapter.file === p.chapter &&
@@ -423,7 +433,7 @@ async function run() {
     await b.instrument();
     const t = now();
     await addFile(b, file1);
-    await b.page.waitForFunction(() => /opened from your library/.test(document.getElementById("took").textContent),
+    await b.page.waitForFunction(() => document.body.dataset.book === "opened",
                                  null, { timeout: 600000 });
     timing("adding the book file of " + path.basename(book1) + ": until the contents (s)", now() - t);
     const atB = await b.waitFrame((p) => window.READER && window.READER.chapter.file === p.chapter &&
@@ -493,8 +503,11 @@ async function run() {
       /corrections in the file are newer/.test(won.said) && won.fix.corrections.glyphs[sym.sym] === piece, won);
 
     // ---------------------------------------------------------------- removing
-    const keptPics = await b.page.evaluate((id) => LIB.pagesCount(id), one.id);
-    check("the pictures of the pages shown are kept on the device", keptPics > 0, keptPics);
+    // (the pictures are stored as they are drawn: a busy machine stores them a little later)
+    const keptPics = await b.until(() => b.page.evaluate((id) => LIB.pagesCount(id).then((n) => n || null), one.id),
+                                   "the pictures of the pages shown in the device's store", 60000).catch(() => 0);
+    check("the pictures of the pages shown are kept on the device", keptPics > 0,
+          { keptPics, stats: await b.page.evaluate(() => Object.assign({ open: openChapter, id: LIB.current && LIB.current.id }, window.pictureStats)) });
     await b.page.click("#books li.book[data-id='" + one.id + "'] .remove");
     check("removing asks first", await b.page.evaluate((id) =>
       /Remove this book/.test(document.querySelector("#books li.book[data-id='" + id + "'] .confirm").textContent), one.id));
@@ -509,6 +522,53 @@ async function run() {
           picsLeft === 0, { gone, left, picsLeft });
     await b.close();
 
+    // ---------------------------------------------------------------- a reading cut short
+    {
+      const c = await device("cut short", DESK);
+      await openLibrary(c);
+      await c.page.goto(siteUrl + (siteUrl.includes("?") ? "&" : "?") + "pace=1500");
+      await c.page.waitForFunction(() => document.body.classList.contains("library"), null, { timeout: 60000 });
+      await whenReady(c);
+      await c.page.setInputFiles("#file", book2);
+      await c.page.waitForFunction(() => LIB.current && LIB.current.id, null, { timeout: 600000 });
+      const id = await c.page.evaluate(() => LIB.current.id);
+      const kept = await c.until(async () => {
+        const b = (await c.stored()).books.find((x) => x.id === id);
+        return b && b.partial && b.partial.parts.includes("boards") ? b : null;
+      }, "the parts of the reading under way", 900000);
+      check("the parts of the reading are kept while it goes on",
+            !kept.reading && (await c.stored()).files.includes(id + ":partial") &&
+            (await c.page.evaluate(() => document.body.dataset.book)) !== "read", kept);
+      // the reading is lost (as when iOS closes the app); the book is opened again
+      await openLibrary(c);
+      const left = (await c.stored()).books.find((x) => x.id === id);
+      check("the library holds the book with the parts and without a reading", left && !left.reading && left.partial, left);
+      await c.instrument();
+      const t = now();
+      await c.page.click("#books li.book[data-id='" + id + "'] .open");
+      await c.page.waitForFunction(() => document.body.dataset.book === "read", null, { timeout: 1800000 });
+      timing("a reading cut short, finished (s)", now() - t);
+      const said = await c.page.evaluate(() => window.__said);
+      check("the reading goes on from the parts kept",
+            said.some((x) => /taken up where it stopped: the pages and the boards are read already/.test(x)), said);
+      const fin = await c.until(async () => {
+        const s = await c.stored();
+        const b = s.books.find((x) => x.id === id);
+        return b && b.reading && !b.partial && !s.files.includes(id + ":partial") ? b : null;
+      }, "the stored reading in place of the parts", 600000);
+      check("the finished reading replaces the parts", !!fin);
+      // opened once more: from the stored reading, with its thumbnails
+      await openLibrary(c);
+      await c.instrument();
+      await c.page.click("#books li.book[data-id='" + id + "'] .open");
+      await c.page.waitForFunction(() => document.body.dataset.book === "opened", null, { timeout: 600000 });
+      await c.page.waitForFunction(() => window.__got.includes("done"), null, { timeout: 600000 });
+      const got = await c.page.evaluate(() => window.__got);
+      check("a stored book draws no thumbnails again", !got.includes("thumbs"), got);
+      check("and is not saved again", !(await c.page.evaluate(() => window.__sent)).includes("save"));
+      await c.close();
+    }
+
     // ---------------------------------------------------------------- pictures of the library
     for (const [name, opts] of [["iphone13", PHONE], ["ipad_landscape", IPAD]]) {
       for (const scheme of ["light", "dark"]) {
@@ -516,7 +576,7 @@ async function run() {
         await openLibrary(s);
         for (const f of [file2, file1]) {
           await addFile(s, f);
-          await s.page.waitForFunction(() => /opened from your library/.test(document.getElementById("took").textContent),
+          await s.page.waitForFunction(() => document.body.dataset.book === "opened",
                                        null, { timeout: 600000 });
           await s.page.click("#another");
           await s.page.waitForFunction(() => document.body.classList.contains("library"));

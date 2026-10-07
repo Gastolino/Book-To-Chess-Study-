@@ -134,7 +134,10 @@ def test_device_library_end_to_end(tmp_path):
             "a removed book leaves nothing behind",
             "a new book opens at its first page",
             "the pictures of the pages come from the device's store",
-            "the pictures of the pages shown are kept on the device"} <= names
+            "the pictures of the pages shown are kept on the device",
+            "the parts of the reading are kept while it goes on",
+            "the reading goes on from the parts kept", "the finished reading replaces the parts",
+            "a stored book draws no thumbnails again"} <= names
     print(json.dumps(res["timings"], indent=1))
     print(json.dumps(res["storage"], indent=1))
     print("\n".join(res["notes"]))

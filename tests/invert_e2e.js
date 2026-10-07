@@ -5,9 +5,8 @@
 // Usage: NODE_PATH=/opt/node22/lib/node_modules node tests/invert_e2e.js READER_DIR SCREENS_DIR
 //
 // On a desktop window: checks that the invert button sits beside the bookmark
-// icon, that a tap turns the page picture dark with light print, that each
-// diagram keeps its true colours (its pixels match those before the tap),
-// that the choice survives a reload and that a second tap turns it off. Then
+// icon, that a tap turns the page picture dark with light print, that the
+// diagrams are inverted with the rest of the page, that the choice survives a reload and that a second tap turns it off. Then
 // on an iPhone 13 and an iPad held sideways: the button lies within the
 // screen, the tap works, and no sideways scroll appears. Prints one JSON
 // object with the results; the exit code is 1 when a check fails.
@@ -76,7 +75,6 @@ async function look(page, sel) {
     return { mean: sum / (px.length / 4), grid };
   }, png);
 }
-const gridGap = (a, b) => a.grid.reduce((s, v, i) => s + Math.abs(v - b.grid[i]), 0) / a.grid.length;
 const pressed = (page) => page.evaluate(() => ({
   on: document.body.classList.contains("inverted"),
   pressed: document.getElementById("invbtn").getAttribute("aria-pressed"),
@@ -107,9 +105,8 @@ const pressed = (page) => page.evaluate(() => ({
     const pageAfter = await look(page, "#pageimg");
     check("the page picture turns dark with light print", pageAfter.mean < 100, pageAfter.mean);
     const diagAfter = await look(page, "#ov .diag");
-    const gap = gridGap(diagBefore, diagAfter);
-    check("the diagram keeps its true colours", Math.abs(diagAfter.mean - diagBefore.mean) < 12 && gap < 16,
-          { before: diagBefore.mean, after: diagAfter.mean, gap });
+    check("the diagram is inverted with the page", Math.abs(diagAfter.mean - (255 - diagBefore.mean)) < 12,
+          { before: diagBefore.mean, after: diagAfter.mean });
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: path.join(screens, "invert_1280_light.png") });
     out.screenshots.push("invert_1280_light.png");

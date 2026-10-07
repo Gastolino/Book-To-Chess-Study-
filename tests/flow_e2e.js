@@ -200,7 +200,7 @@ async function run(browser, which) {
   check("the chapter files of the app hold no pictures", kept === 0, kept);
 
   // ---------------------------------------------------------------- the work ends
-  await page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent), null, { timeout: 3600000 });
+  await page.waitForFunction(() => document.body.dataset.book === "read", null, { timeout: 3600000 });
   await page.waitForFunction(() => !document.getElementById("busy").classList.contains("on"), null, { timeout: 600000 });
   check("the small book is gone when the work is done", await page.evaluate(() =>
     getComputedStyle(document.getElementById("busy")).visibility === "hidden"));
@@ -208,7 +208,7 @@ async function run(browser, which) {
   // ---------------------------------------------------------------- a reading of other reading code
   if (which === "ipad") {
     const id = await page.evaluate(() => LIB.current.id);
-    await page.waitForFunction(() => /in your library/.test(document.getElementById("note").textContent), null, { timeout: 600000 });
+    await page.waitForFunction(() => document.body.dataset.saved === LIB.current.id, null, { timeout: 600000 });
     const place = await inFrame(() => ({ page: window.readerState.page }));
     // the stored reading's header names other reading code
     await page.evaluate(async (id) => {

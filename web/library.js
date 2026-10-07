@@ -294,6 +294,7 @@ const LIB = (() => {
           s.books.delete(id);
           s.files.delete(id + ":pdf");
           s.files.delete(id + ":reading");
+          s.files.delete(id + ":partial");
         }).then(() => {
           if (covers[id]) { URL.revokeObjectURL(covers[id].url); delete covers[id]; }
         });
@@ -301,9 +302,24 @@ const LIB = (() => {
       pdf: (id) => file(id, "pdf"),
       reading: (id) => file(id, "reading"),
       putReading(id, bytes, version, size) {
+        // the finished reading replaces the parts of an unfinished one
         return change(id, (rec) => {
           rec.reading = { version, size, stored: bytes.byteLength, updated: Date.now() };
-        }, (s) => s.files.put(new Blob([bytes], { type: "application/gzip" }), id + ":reading"));
+          delete rec.partial;
+        }, (s) => {
+          s.files.put(new Blob([bytes], { type: "application/gzip" }), id + ":reading");
+          s.files.delete(id + ":partial");
+        });
+      },
+      // The parts of a reading under way (Stage 1's findings, the board readings), kept until it
+      // is finished: a reading cut short (the app closed, iOS took the memory back) goes on from
+      // them the next time the book opens.
+      partial: (id) => file(id, "partial"),
+      putPartial(id, bytes, version, parts) {
+        return change(id, (rec) => {
+          if (rec.reading) return;
+          rec.partial = { version, parts, stored: bytes.byteLength, updated: Date.now() };
+        }, (s) => s.files.put(new Blob([bytes], { type: "application/gzip" }), id + ":partial"));
       },
       putCover(id, bytes) {
         return change(id, (rec) => {
@@ -1083,7 +1099,7 @@ const LIB = (() => {
     busy = true;
     working(true);
     const name = safeName(b.fileName);
-    api.current = { id: b.id, book: b, name, restored: false, position: null, t0: Date.now(), ephemeral: !!given,
+    api.current = { id: b.id, book: b, name, restored: false, position: null, ephemeral: !!given,
                     at: at || null };
     if (!given) {
       // the record: the book is open from now on (the place follows once the reader shows)
@@ -1129,8 +1145,13 @@ const LIB = (() => {
                            [bytes, reading.buffer]);
         return;
       }
+      // a reading cut short before goes on from the parts it kept (when this code made them)
+      let partial = null;
+      if (!given && b.partial && b.partial.version === api.version && store.partial) {
+        try { partial = await store.partial(b.id); } catch (e) { partial = null; }
+      }
       busy = false;
-      read(file, b.fileName, true);
+      read(file, b.fileName, partial);
     } catch (err) {
       busy = false;
       working(false);
@@ -1145,14 +1166,6 @@ const LIB = (() => {
     const p = cur ? cur.place : null;
     if (cur) cur.place = null;
     return p || null;
-  };
-
-  // The top bar's words for a book opened from its stored reading.
-  api.openedIn = function () {
-    const t0 = api.current && api.current.t0;
-    const k = Math.max(1, Math.round((Date.now() - (t0 || 0)) / 1000));
-    return t0 ? "opened from your library in " + k + (k === 1 ? " second" : " seconds")
-              : "opened from your library";
   };
 
   function safeName(fileName) {
@@ -1206,11 +1219,18 @@ const LIB = (() => {
       return true;
     }
     if (m.type === "done") {
-      if (!m.restored && !cur.ephemeral) {
-        $("note").textContent = "Saving the program's reading to your library.";
-        worker.postMessage({ type: "save" });
-      }
+      // the reading is saved once it is finished, and a stored reading again once the
+      // thumbnails it lacked are drawn
+      if ((!m.restored || m.resave) && !cur.ephemeral) worker.postMessage({ type: "save" });
       return false;
+    }
+    if (m.type === "partial") {
+      if (!cur.ephemeral && store.putPartial) {
+        store.putPartial(cur.id, m.bytes, m.version, m.parts)
+          .then((book) => { if (book && book.partial) cur.book.partial = book.partial; })
+          .catch(() => {});
+      }
+      return true;
     }
     if (m.type === "reading") {
       sendReading(cur, m, 0);
@@ -1222,11 +1242,8 @@ const LIB = (() => {
     store.putReading(cur.id, m.bytes, m.version, m.size)
       .then((book) => {
         cur.book.reading = book.reading;
-        if (api.current === cur) {
-          status(store.kind === "device"
-            ? "The book is in your library on this device: it opens next time without being read again."
-            : "The book is in your library: any device opens it without reading it again.");
-        }
+        // kept quietly: only a failure is told (the body's data-saved is for the tests)
+        if (api.current === cur) document.body.dataset.saved = cur.id;
       })
       .catch((err) => {
         if (store.kind === "server" && tries < 4) setTimeout(() => sendReading(cur, m, tries + 1), 5000 * (tries + 1));

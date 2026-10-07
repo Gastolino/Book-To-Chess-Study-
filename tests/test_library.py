@@ -73,15 +73,131 @@ def test_a_stored_reading_opens_the_same_book(tmp_path, monkeypatch, garbled):
     assert [e["type"] for e in events] == ["index"]
     assert events[0]["pages"] == built["page_count"] and events[0]["title"] == built["title"]
     assert _same(driver.STATE["book"], built)
+    # the thumbnails come with the reading: none is drawn again, and nothing is saved again
+    assert len(driver.STATE["thumbs"]) == built["page_count"]
     rest = _drain(driver)
-    assert rest[-1]["type"] == "done" and rest[-1]["restored"]
-    assert any(e["type"] == "thumbs" for e in rest)
+    assert rest[-1]["type"] == "done" and rest[-1]["restored"] and not rest[-1]["resave"]
+    assert not any(e["type"] == "thumbs" for e in rest)
     # every chapter reader builds from the stored reading
     for ch in built["chapters"]:
         if ch["end"] >= ch["start"]:
             html = driver.chapter(ch["file"], lambda *_: None)
             assert "<html" in html
     assert "<html" in driver.index()
+
+
+def test_a_reading_without_thumbnails_is_saved_again_with_them(tmp_path, monkeypatch, garbled):
+    """A reading stored before the thumbnails went into it draws them once,
+    asks to be saved again, and keeps the version of the code that made it
+    (so that the app still offers to read it with today's code)."""
+    driver = _driver(tmp_path, monkeypatch)
+    driver.process(str(garbled), lambda *_: None)
+    pages = driver.STATE["book"]["page_count"]
+    driver.STATE["thumbs"] = {}
+    driver.STATE["reading_version"] = "older-code"
+    old = tmp_path / "old.bin"
+    old.write_bytes(driver.save_reading())
+
+    driver.STATE.clear()
+    events = json.loads(driver.restore(str(garbled), str(old)))
+    assert events[0]["outdated"] == "code"
+    rest = _drain(driver)
+    assert sum(len(e["thumbs"]) for e in rest if e["type"] == "thumbs") == pages
+    assert rest[-1]["resave"]
+    again = tmp_path / "again.bin"
+    again.write_bytes(driver.save_reading())
+    assert driver.reading_version() == "older-code"
+    assert driver.reading_header(again)["version"] == "older-code"
+
+    driver.STATE.clear()
+    driver.restore(str(garbled), str(again))
+    assert len(driver.STATE["thumbs"]) == pages
+    assert not any(e["type"] == "thumbs" for e in _drain(driver))
+
+
+def _read_until(driver, path, stop=None, partial=None, selection=None):
+    """Read the book at path; at each checkpoint keep checkpoint()'s bytes.
+    With stop (a part name) the reading ends there, as a reading the app
+    lost would. Returns (the checkpoints, the events)."""
+    notes = json.loads(driver.start(path, selection, None, partial))
+    kept, events = {}, list(notes)
+    while True:
+        out = json.loads(driver.step())
+        events += out["events"]
+        for ev in out["events"]:
+            if ev["type"] == "checkpoint":
+                part = "boards" if "boards" in ev["parts"] else "stage1"
+                kept[part] = driver.checkpoint()
+                if stop == part:
+                    return kept, events
+        if out["done"]:
+            return kept, events
+
+
+def test_a_reading_cut_short_goes_on_from_its_parts(tmp_path, monkeypatch, garbled):
+    """The parts of a reading under way (Stage 1, then the board readings)
+    come out as checkpoints; a reading that starts from them reads neither
+    again and makes the same book as a reading from the start."""
+    driver = _driver(tmp_path, monkeypatch)
+    kept, events = _read_until(driver, str(garbled))
+    assert [e["parts"] for e in events if e["type"] == "checkpoint"] == [["stage1"], ["boards", "stage1"]]
+    full = json.loads(json.dumps(driver.STATE["book"]))
+    assert all(v.startswith(driver.PARTIAL_MAGIC) for v in kept.values())
+
+    for part in ("stage1", "boards"):
+        # a fresh worker: nothing of the first reading is left in its files
+        shutil.rmtree(tmp_path / "out")
+        driver.STATE.clear()
+        saved = tmp_path / (part + ".bin")
+        saved.write_bytes(kept[part])
+        said = []
+        import stage1_inspect
+        from chessbook import assemble
+        ran = {"stage1": 0, "boards": 0}
+        real_s1, real_b = stage1_inspect.analyse_steps, assemble.read_boards_steps
+
+        def s1(*a, **k):
+            ran["stage1"] += 1
+            return real_s1(*a, **k)
+
+        def rb(*a, **k):
+            ran["boards"] += 1
+            return (yield from real_b(*a, **k))
+        monkeypatch.setattr(stage1_inspect, "analyse_steps", s1)
+        monkeypatch.setattr(assemble, "read_boards_steps", rb)
+        kept2, events = _read_until(driver, str(garbled), partial=str(saved))
+        said = [e["text"] for e in events if e["type"] == "progress"]
+        assert any("taken up where it stopped" in t for t in said), said
+        assert ran["stage1"] == 0
+        assert ran["boards"] == (0 if part == "boards" else 1)
+        # the parts it had are not sent again; the ones it made are
+        sent = [e["parts"] for e in events if e["type"] == "checkpoint"]
+        assert sent == ([] if part == "boards" else [["boards", "stage1"]])
+        assert _same(driver.STATE["book"], full)
+        monkeypatch.setattr(stage1_inspect, "analyse_steps", real_s1)
+        monkeypatch.setattr(assemble, "read_boards_steps", real_b)
+
+
+def test_parts_of_other_code_or_another_selection_are_not_used(tmp_path, monkeypatch, garbled):
+    driver = _driver(tmp_path, monkeypatch)
+    kept, _ = _read_until(driver, str(garbled), stop="boards")
+    saved = tmp_path / "boards.bin"
+    saved.write_bytes(kept["boards"])
+    job = type("J", (), {"ctx": {}})()
+    pdf = Path(str(garbled))
+    # another selection: Stage 1 is taken, the board readings are not
+    assert driver._resume_parts(pdf, saved, '{"pages": [1]}', job) == {"stage1"}
+    assert "stored_readings" not in job.ctx
+    assert driver._resume_parts(pdf, saved, None, job) == {"stage1", "boards"}
+    # other reading code, another book, or a damaged file: nothing is taken
+    monkeypatch.setattr(driver, "VERSION", "other-code")
+    assert driver._resume_parts(pdf, saved, None, type("J", (), {"ctx": {}})()) == set()
+    monkeypatch.undo()
+    driver = _driver(tmp_path, monkeypatch)
+    assert driver._resume_parts(pdf.with_name("other.pdf"), saved, None, job) == set()
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(b"junk")
+    assert driver._resume_parts(pdf, bad, None, job) == set()
 
 
 def test_corrections_apply_live_to_a_stored_reading(tmp_path, monkeypatch, garbled):
