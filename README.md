@@ -131,6 +131,17 @@ going back from a chapter's first page shows the last page of the chapter
 before. The page counter counts the whole book ("47 of 386"), and a page
 number typed into it opens that page in whatever chapter holds it.
 
+A page turns by sliding: during a swipe the page follows the finger, and let
+go past a quarter of its width (or flicked) it slides out while the next
+page slides in from the other edge; a shorter swipe puts it back. The arrows
+and Page Up and Page Down turn with the same slide. On an enlarged page the
+reading goes on where it naturally does: a turn forward shows the next
+page's top left, and a turn back the previous page's bottom right, just
+above the board at the foot of the screen. A turn into the next chapter
+does the same: the place of the next page slides in, and the next chapter
+shows that page there. With the system's setting for reduced motion the
+page changes at once.
+
 The pictures of the pages are drawn ten pages at a time: the ten pages
 around the page shown first, then the ten after them, then the ten before.
 A page whose picture has not come yet shows a light sheet of its size, which
