@@ -84,25 +84,31 @@ def test_the_book_icon_is_a_revolving_book_of_four_chequered_pages():
     assert squares.count("M") == 4 and squares.count("A") == 2
     assert 'class="leaf"' not in still
     # moving: the still book and four turning pages over it, the same page again, each starting
-    # 0.3 s after the one before, from its own quarter; drawn last page first, so that a page
-    # that starts again shows under the one still turning over its place
+    # 0.4 s after the one before, from its own quarter; drawn last page first, so that a page
+    # that starts again shows under the one that lands on its place
     leaves = re.findall(r'(?:<g transform="rotate\((\d+)\)">)?<g class="leaf" style="animation-delay:([\d.]+)s">'
                         r'(.*?)</g>', svg)
     assert [(turn or "0", float(delay)) for turn, delay, _ in leaves] == [
-        ("270", 0.9), ("180", 0.6), ("90", 0.3), ("0", 0.0)]
+        ("270", 1.2), ("180", 0.8), ("90", 0.4), ("0", 0.0)]
     assert all(page.fullmatch(body) for _, _, body in leaves)
     assert svg.startswith(still[:still.index("</svg>")])
-    # each turns a quarter turn clockwise about the spine's centre in 0.6 s of a 2 s round; only a
-    # transform moves, so that the turn is cheap on a phone; with reduced motion they are hidden
+    # each turns a quarter turn clockwise about the spine's centre in 0.4 s of a 2 s round, so that
+    # one page turns at a time (the next starts as it lands); only a transform moves, so that the
+    # turn is cheap on a phone; with reduced motion they are hidden
     rule = re.search(r"\.bookicon \.leaf\{([^}]*)\}", style.BOOK_CSS).group(1)
     assert "transform-box:view-box" in rule and "transform-origin:0 0" in rule
     assert re.search(r"animation:leaf 2s \S+ infinite", rule)
     frames = re.search(r"@keyframes leaf\{(.*?)\}\n", style.BOOK_CSS).group(1)
     assert set(re.findall(r"\{(\w+):", frames)) == {"transform"}
     assert re.findall(r"([\d.]+)%\{transform:rotate\((-?\d+)deg\)\}", frames) == [
-        ("0", "0"), ("30", "90"), ("100", "90")]
+        ("0", "0"), ("20", "90"), ("100", "90")]
     assert re.search(r"@media \(prefers-reduced-motion:reduce\)\{\.bookicon \.leaf\{animation:none;"
                      r"visibility:hidden\}\}", style.BOOK_CSS)
+    # the edges square at the corners (DESIGN.md), and gaps in the background in the dark scheme
+    assert "stroke-linejoin" not in svg
+    gap = '.bookicon path[fill="none"]{stroke:var(--bg);stroke-width:1.5px}'
+    assert '@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) ' + gap + "}" in style.BOOK_CSS
+    assert ':root[data-theme="dark"] ' + gap in style.BOOK_CSS
     sys.path.insert(0, str(ROOT / "tools"))
     import make_icons
     assert (ROOT / "web" / "icon.svg").read_text(encoding="utf-8").strip() == make_icons.source_svg()

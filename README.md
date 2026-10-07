@@ -167,8 +167,8 @@ pictures are kept on each device as well, not on the site.
 While the app starts, and while a book is read before its first page shows,
 the start page shows a revolving book: four pages, each chequered like a
 board, fanned about the spine like the blades of a pinwheel, that turn over
-one after the other, each a quarter turn clockwise, so that they swirl round
-the spine. It stands above a thin bar that fills as far as the work has come
+one at a time, each a quarter turn clockwise, so that they swirl round the
+spine. It stands above a thin bar that fills as far as the work has come
 where the app knows it, with the words of the work under it.
 In the reader, the same small book stands in the top bar, just left of
 **Library**, while the program works (reading the moves, drawing pages, saving the reading); a

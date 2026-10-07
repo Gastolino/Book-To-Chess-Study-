@@ -95,6 +95,8 @@ body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
 #busy{display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;
   margin:-7px -6px -7px -2px;visibility:hidden;align-self:center;padding:0}
 #busy.on{visibility:visible}
+/* (hidden, its pages rest: a turning page costs the phone a frame's work even out of sight) */
+#busy:not(.on) .bookicon .leaf{animation-play-state:paused}
 #busy .bookicon{width:24px;height:auto}
 #view{flex:1;border:0;width:100%;display:none}
 iframe.view{flex:1;border:0;width:100%}

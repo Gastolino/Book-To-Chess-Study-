@@ -10,7 +10,7 @@
 // browser profile kept on disk, the test:
 //   - loads the site (slowed down with ?pace=MS) and finds, while the app starts, the revolving
 //     book (four pages of a 3 by 3 chequer fanned about the spine, and four more that turn a
-//     quarter turn each about the centre, clockwise, one after the other, then rest) above a thin
+//     quarter turn each about the centre, clockwise, one at a time, then rest) above a thin
 //     bar, the words under it; with reduced motion the pages do not turn and the book stands whole;
 //   - adds BOOK_PDF: the book opens at its first page in the reader while it is read, with the
 //     small book at the right of the top bar, just left of Library, which leaves the page where
@@ -149,12 +149,13 @@ async function run(browser, which) {
     return res;
   });
   {
-    const k = turns.delays.map((d) => Math.round(d / 0.3));
+    const k = turns.delays.map((d) => Math.round(d / 0.4));
     const sorted = [...turns.delays].sort((a, b) => a - b);
     const ok = turns.n === 4 && turns.round >= 1.6 && turns.round <= 2.4 &&
-      // one after the other: each starts 0.3 s after the one before, and all four have turned
+      // one at a time: each starts 0.4 s after the one before, as it lands, and all four have turned
       // before the round ends, so that the book rests a moment
-      sorted.every((d, i) => Math.abs(d - 0.3 * i) < 0.01) && sorted[3] + turns.turn < turns.round - 0.2 &&
+      sorted.every((d, i) => Math.abs(d - 0.4 * i) < 0.01) && sorted[3] + turns.turn < turns.round - 0.2 &&
+      sorted.every((d, i) => i === 0 || d >= sorted[i - 1] + turns.turn - 0.01) &&
       [...turns.start, ...turns.middle, ...turns.end, ...turns.rest].every((p) => p.off < 0.5) &&
       // each page starts from its own quarter, a quarter after the page that turned before it,
       // and turns a quarter turn clockwise, to rest on the next page until its next turn
@@ -495,6 +496,8 @@ async function run(browser, which) {
   await page.waitForFunction(() => !document.getElementById("busy").classList.contains("on"), null, { timeout: 600000 });
   check("the small book is gone when the work is done", await page.evaluate(() =>
     getComputedStyle(document.getElementById("busy")).visibility === "hidden"));
+  check("its pages rest while it is gone", await page.evaluate(() =>
+    document.getElementById("busy").getAnimations({ subtree: true }).every((a) => a.playState !== "running")));
 
   // ---------------------------------------------------------------- a reading of other reading code
   if (which === "ipad") {

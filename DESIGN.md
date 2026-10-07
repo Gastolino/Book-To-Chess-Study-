@@ -96,11 +96,14 @@ quarter turn apart, like the blades of a pinwheel. Each page is hinged on one
 half of the spine, runs along the edge for its own length and sweeps back to
 the centre in a quarter circle; its face is a chequer of three by three
 squares in the two board colours, with hairline edges in the secondary
-colour (`chessbook/style.py`, `book_svg`). While the app works, the pages
-turn over one after the other, each a quarter turn clockwise about the
-spine, 0.3 s apart, so that the four swirl round the book; then the book
-rests (a transform only, 2 s a round with its rest). With reduced motion it
-stands still, whole. On the start page it stands 80 px wide, with room for
+colour, square at the corners; in the dark scheme, where those colours lie
+close together, the edges are thin gaps in the page background instead
+(`chessbook/style.py`, `book_svg`). While the app works, the pages turn over
+one at a time, each a quarter turn clockwise about the spine in 0.4 s, the
+next starting as the one before lands, so that the four swirl round the
+book; then the book rests (a transform only, 2 s a round with its rest of
+0.4 s). With reduced motion it stands still, whole, and while it is hidden
+its pages rest. On the start page it stands 80 px wide, with room for
 a turning page above a 2px bar in the accent colour on a hairline track (the
 part done, where the app knows it, else a sliding segment), with the words
 of the work under it in the secondary colour; in the reader it stands 24 px

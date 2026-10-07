@@ -266,8 +266,7 @@ def _book_page(light, dark, line):
     r = BOOK_R
     edge = f"M0 0V{-r}H{r}A{r} {r} 0 0 1 0 0Z"
     return (f'<path d="{edge}" fill="{light}"/><path d="{_dark_squares()}" fill="{dark}"/>'
-            f'<path d="{edge}" fill="none" stroke="{line}" stroke-width="1" stroke-linejoin="round" '
-            f'vector-effect="non-scaling-stroke"/>')
+            f'<path d="{edge}" fill="none" stroke="{line}" stroke-width="1" vector-effect="non-scaling-stroke"/>')
 
 
 def book_svg(cls="bookicon", animated=True, light="var(--board-light)", dark="var(--board-dark)",
@@ -288,10 +287,10 @@ def book_svg(cls="bookicon", animated=True, light="var(--board-light)", dark="va
     parts += [turned(k, page) for k in range(4)]
     if animated:
         # the upper page turns first, then the one on the right, and so on clockwise, each
-        # 0.3 s after the one before. A page starts again from its own place while the page
-        # before it still turns over that place, so the four are drawn last page first: the
-        # page that starts again shows under the turning one, and the join stays invisible
-        parts += [turned(k, f'<g class="leaf" style="animation-delay:{0.3 * k:g}s">{page}</g>')
+        # as the one before it lands. A page starts again from its own place as the page before
+        # it lands on that place, so the four are drawn last page first: the page that starts
+        # again shows under the one that lands, and the join stays invisible
+        parts += [turned(k, f'<g class="leaf" style="animation-delay:{0.4 * k:g}s">{page}</g>')
                   for k in reversed(range(4))]
     aria = f'role="img" aria-label="{label}"' if label else 'aria-hidden="true"'
     return (f'<svg class="{cls}" viewBox="{corner} {corner} {side} {side}" '
@@ -299,13 +298,19 @@ def book_svg(cls="bookicon", animated=True, light="var(--board-light)", dark="va
 
 
 # The turning pages: each turns a quarter turn about the centre of the spine
-# in 0.6 s, 0.3 s after the one before, so that the four swirl round the book
-# in 1.5 s; then the book rests for 0.5 s. Only a transform moves, so that the
-# turns cost little on a phone. Without motion (the reader's setting) the
-# turning pages are hidden and the book stands still, whole.
+# in 0.4 s, and the next starts as it lands, so that one page turns at a time
+# and the four swirl round the book in 1.6 s; then the book rests for 0.4 s.
+# Only a transform moves, so that the turns cost little on a phone. Without
+# motion (the reader's setting) the turning pages are hidden and the book
+# stands still, whole. In the dark scheme the board colours and the secondary
+# colour of the edges lie close together, so the edges are drawn as thin gaps
+# in the page's background, which part the pages as the gaps along the spine
+# of a book do.
 BOOK_CSS = """
 .bookicon{display:block;overflow:visible}
 .bookicon .leaf{transform-box:view-box;transform-origin:0 0;animation:leaf 2s cubic-bezier(.45,0,.55,1) infinite}
-@keyframes leaf{0%{transform:rotate(0deg)}30%{transform:rotate(90deg)}100%{transform:rotate(90deg)}}
+@keyframes leaf{0%{transform:rotate(0deg)}20%{transform:rotate(90deg)}100%{transform:rotate(90deg)}}
 @media (prefers-reduced-motion:reduce){.bookicon .leaf{animation:none;visibility:hidden}}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .bookicon path[fill="none"]{stroke:var(--bg);stroke-width:1.5px}}
+:root[data-theme="dark"] .bookicon path[fill="none"]{stroke:var(--bg);stroke-width:1.5px}
 """
