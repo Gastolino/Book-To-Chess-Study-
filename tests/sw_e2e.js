@@ -9,7 +9,8 @@
 // for it, and a busy machine may start before); by the third visit (the
 // browser started again on the same profile) Pyodide's files and the wheels
 // come from the device, and the page, the app's scripts and app.zip from the
-// network as before. Prints one
+// network when it answers; and with the network cut off, the app opens all the
+// same from the copies kept on the device. Prints one
 // JSON object with the results; the exit code is 1 when a check fails.
 const { chromium } = require("playwright");
 const fs = require("fs");
@@ -23,9 +24,10 @@ function check(name, cond, detail) {
 const EXE = process.env.CHROMIUM || "/opt/pw-browsers/chromium";
 const LAUNCH = fs.existsSync(EXE) ? { executablePath: EXE } : {};
 
-async function visit() {
+async function visit(offline) {
   const ctx = await chromium.launchPersistentContext(profile, LAUNCH);
   const page = ctx.pages()[0] || await ctx.newPage();
+  if (offline) await ctx.setOffline(true);
   const seen = [];
   ctx.on("requestfinished", async (req) => {
     const res = await req.response().catch(() => null);
@@ -36,6 +38,11 @@ async function visit() {
   await page.goto(siteUrl);
   await page.waitForFunction(() => typeof ready !== "undefined" && ready === true, null, { timeout: 300000 });
   const secs = (Date.now() - t) / 1000;
+  if (offline) {
+    // the library shows, offline
+    await page.waitForFunction(() => document.body.classList.contains("library") &&
+      !document.getElementById("lib").hidden, null, { timeout: 60000 });
+  }
   // the board libraries load after the worker is ready
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 60000 }).catch(() => {});
   await page.waitForTimeout(8000);
@@ -67,7 +74,11 @@ async function visit() {
     const libs = two.seen.filter((r) => /\/(wheels|pyodide)\//.test(r.url));
     check("the third visit takes the libraries from the device", libs.length > 4 && libs.every((r) => r.sw), libs);
     const rest = two.seen.filter((r) => /\/(index\.html|worker\.js|library\.js|app\.zip)$|\/$/.test(r.url));
-    check("the page, the scripts and app.zip come from the network", rest.length >= 3 && rest.every((r) => !r.sw), rest);
+    check("the page, the scripts and app.zip come from the network, through the service worker",
+          rest.length >= 3 && rest.every((r) => r.sw), rest);
+    const off = await visit(true);
+    out.timings["offline visit, until ready (s)"] = off.secs;
+    check("with the network cut off the app opens from the device", off.secs > 0, off.secs);
     check("no page errors", out.errors.length === 0, out.errors);
     out.ok = true;
   } catch (e) {

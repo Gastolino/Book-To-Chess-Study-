@@ -137,7 +137,8 @@ def test_device_library_end_to_end(tmp_path):
             "the pictures of the pages shown are kept on the device",
             "the parts of the reading are kept while it goes on",
             "the reading goes on from the parts kept", "the finished reading replaces the parts",
-            "a stored book draws no thumbnails again"} <= names
+            "a stored book draws no thumbnails again",
+            "offline, the app opens and the book shows its page"} <= names
     print(json.dumps(res["timings"], indent=1))
     print(json.dumps(res["storage"], indent=1))
     print("\n".join(res["notes"]))
