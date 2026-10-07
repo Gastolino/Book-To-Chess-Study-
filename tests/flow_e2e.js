@@ -135,15 +135,19 @@ async function run(browser, which) {
   check("the small book appears and goes without moving the reader", shift.on === shift.off, shift);
   const h0 = await page.evaluate(() => document.getElementById("top").getBoundingClientRect().height);
   await page.click("#busy");
-  const said = await page.evaluate(() => ({ took: document.getElementById("took").textContent,
-    note: document.getElementById("note").textContent, h: document.getElementById("top").getBoundingClientRect().height }));
-  check("a tap on the small book says what the program does, in the one status line",
-    said.took.length > 0 && said.note === "" && Math.abs(said.h - h0) < 1, { said, h0 });
+  const said = await page.evaluate(() => {
+    const tip = document.getElementById("tip"), took = document.getElementById("took");
+    return { tip: tip.hidden ? "" : tip.textContent, note: document.getElementById("note").textContent,
+             h: document.getElementById("top").getBoundingClientRect().height,
+             oneLine: took.scrollHeight <= took.clientHeight + 1 && getComputedStyle(took).whiteSpace === "nowrap" };
+  });
+  check("a tap on the small book says what the program does, under the bar, moving nothing; the status keeps one line",
+    said.tip.length > 0 && said.note === "" && Math.abs(said.h - h0) < 1 && said.oneLine, { said, h0 });
   await inFrame(() => document.getElementById("pageimg").decode().catch(() => null));
   await both("flow_book_opened");
   const topH = await page.evaluate(() => document.getElementById("top").getBoundingClientRect().height);
   await both("flow_topbar_busy", { x: 0, y: 0, width: opts.viewport.width, height: Math.ceil(topH) + 2 });
-  await page.evaluate(() => { document.getElementById("note").textContent = ""; });
+  await page.evaluate(() => { document.getElementById("note").textContent = ""; document.getElementById("tip").hidden = true; });
 
   // ---------------------------------------------------------------- one book, page after page
   const ch = await inFrame(() => window.READER.chapter);
