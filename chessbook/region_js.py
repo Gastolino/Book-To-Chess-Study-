@@ -659,6 +659,8 @@ function initRegion(){
   for (const b of [$("regionbtn"), $("mregion")])
     if (b) b.addEventListener("click", () => setRegionTool(!(RG.draw || regionOpen())));
   const box = $("pagebox");
+  // a new gesture: the click that a drag or tap may have left unsent is not waited for any longer
+  box.addEventListener("pointerdown", () => { RG.swallow = -1e9; }, true);
   box.addEventListener("pointerdown", regionDown);
   box.addEventListener("pointermove", regionMove);
   box.addEventListener("pointerup", (e) => regionUp(e, false));

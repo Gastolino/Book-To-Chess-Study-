@@ -564,6 +564,99 @@ async function run(browser, which) {
   check("removing the variation brings back the move it branched from", await inFrame((k) =>
     window.READER.nodes[window.readerState.nodeId] && window.READER.nodes[window.readerState.nodeId].key === k, branch.key));
 
+  // ---------------------------------------------------------------- a section of the page (Read a section)
+  // the worker gives the words of a spot of a page; a tap with the tool armed snaps the section to
+  // the word under it; a section drawn over a printed move reads, from the position before that move,
+  // as that move first (the book's own decoder, in the worker)
+  const sect = await inFrame(() => {
+    const D = window.READER;
+    for (const id of Object.keys(D.nodes)) {
+      const n = D.nodes[id], p = n.parent != null ? D.nodes[n.parent] : null;
+      if (n.main && n.status === "ok" && n.key && n.bbox && n.san && p && p.fen && (n.page in D.pages) &&
+          D.pages[n.page].marks.some((m) => m.node === id)) return { id, parent: n.parent, san: n.san, page: n.page, bbox: n.bbox };
+    }
+    return null;
+  });
+  check("the chapter has a printed move to read as a section", !!sect);
+  // (the tool belongs to reading mode, which is left as it was afterwards)
+  const wasReading = await inFrame(() => document.body.classList.contains("reading"));
+  if (!wasReading) await inFrame(() => document.getElementById("showread").click());
+  await inFrame((id) => { location.hash = "#node=" + id; }, sect.parent);
+  await waitFrame((id) => window.readerState.nodeId === id, sect.parent);
+  if (await inFrame(() => window.readerState.page) !== sect.page) await goPage(sect.page);
+  // (pointer events at points of the page, in PDF points, in the reader's frame)
+  const pagePointer = (pts) => inFrame((pts) => {
+    const box = document.getElementById("pagebox"), r = box.getBoundingClientRect(), P = window.READER.pages[window.readerState.page];
+    const xy = (p) => [r.left + p[0] * r.width / P.w, r.top + p[1] * r.height / P.h];
+    const [x0, y0] = xy(pts[0]), first = document.elementFromPoint(x0, y0);
+    const send = (type, p, el) => { const [x, y] = xy(p); el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pointerId: 9, isPrimary: true, button: 0, pointerType: "mouse" })); };
+    send("pointerdown", pts[0], first);
+    for (const p of pts.slice(1)) send("pointermove", p, box);
+    send("pointerup", pts[pts.length - 1], box);
+    if (pts.length === 1) first.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x0, clientY: y0 }));
+    return first.id || first.className;
+  }, pts);
+  const sectionNow = () => inFrame(() => {
+    const el = document.getElementById("rgsel");
+    if (!el) return null;
+    const r = document.getElementById("pagebox").getBoundingClientRect(), b = el.getBoundingClientRect();
+    const k = window.READER.pages[window.readerState.page].w / r.width;
+    return [b.left - r.left, b.top - r.top, b.right - r.left, b.bottom - r.top].map((v) => Math.round(v * k * 10) / 10);
+  });
+  await inFrame((id) => document.querySelector(".mark[data-node='" + id + "']").scrollIntoView({ block: "center" }), sect.id);
+  await inFrame((s) => {
+    window.__words = null;
+    window.addEventListener("message", (e) => { if (e.data && e.data.words && e.data.words.id === 990001) window.__words = e.data.words; });
+    const b = s.bbox;
+    parent.postMessage({ words: { id: 990001, page: s.page, rect: [b[0] - 80, b[1] - 30, b[2] + 80, b[3] + 30], near: 0 } }, "*");
+  }, sect);
+  const words = await waitFrame(() => window.__words, null, 120000);
+  const cx = (sect.bbox[0] + sect.bbox[2]) / 2, cy = (sect.bbox[1] + sect.bbox[3]) / 2;
+  check("the worker gives the words of a spot of the page, with their boxes", words.words.some((w) =>
+    w.box[0] <= cx && cx <= w.box[2] && w.box[1] <= cy && cy <= w.box[3]), words.words);
+  // a word in view that no move box covers: a tap with the tool armed takes it
+  const free = await inFrame((ws) => {
+    const P = window.READER.pages[window.readerState.page], r = document.getElementById("pagebox").getBoundingClientRect();
+    const hit = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+    return ws.find((w) => !P.marks.some((m) => hit(m.bbox, w.box)) && !P.diagrams.some((d) => hit(d.rect, w.box)) &&
+      w.box[2] - w.box[0] > 8 && r.top + w.box[1] * r.height / P.h > 0 &&
+      r.top + w.box[3] * r.height / P.h < window.innerHeight - 200) || null;
+  }, words.words);
+  await inFrame((phone) => document.getElementById(phone && document.getElementById("mregion").offsetParent ? "mregion" : "regionbtn").click(),
+    which === "phone");
+  check("the Read a section button arms the tool", await inFrame(() => document.body.classList.contains("rgdraw")));
+  if (!free) note("no word without a move box in view near the move: the snap to a word is not checked");
+  else {
+    await pagePointer([[(free.box[0] + free.box[2]) / 2, (free.box[1] + free.box[3]) / 2]]);
+    const want = [free.box[0] - 1.5, free.box[1] - 1, free.box[2] + 1.5, free.box[3] + 1];
+    const near1 = (a, b) => a && a.every((v, i) => Math.abs(v - b[i]) <= 1.2);
+    let snapped = null;
+    for (let i = 0; i < 600 && !near1(snapped, want); i++) { await page.waitForTimeout(100); snapped = await sectionNow(); }
+    check("a tap snaps the section to the word under it", near1(snapped, want), { snapped, want, word: free });
+    await waitFrame((t) => { const s = document.querySelector("#rgread .said"); return s && s.textContent.indexOf(t) >= 0; },
+      free.text, 120000);
+    check("the program reads the word of the section", true);
+    await inFrame(() => document.getElementById("rgcancel").click());
+    await inFrame((phone) => document.getElementById(phone && document.getElementById("mregion").offsetParent ? "mregion" : "regionbtn").click(),
+      which === "phone");
+  }
+  // a section drawn over the printed move, read from the position before it
+  const b0 = sect.bbox;
+  await inFrame((id) => document.querySelector(".mark[data-node='" + id + "']").scrollIntoView({ block: "center" }), sect.id);
+  await pagePointer([[b0[0] - 1.5, b0[1] - 1.5], [(b0[0] + b0[2]) / 2, (b0[1] + b0[3]) / 2], [b0[2] + 1.5, b0[3] + 1.5]]);
+  check("a drag draws the section in the app", !!(await sectionNow()) && await inFrame(() => !document.getElementById("fix").hidden));
+  const cand = await waitFrame(() => { const b = document.querySelector("#rgcands button"); return b ? b.textContent : null; }, null, 120000);
+  check("the program reads the section as the printed move, from the position before it",
+    cand.replace(/^\d+[.…]+/, "").split(" ")[0] === sect.san, { cand, san: sect.san });
+  await shot("09_read_a_section");
+  await inFrame(() => document.querySelector("#rgcands button").click());
+  check("a reading of the section fills the moves, checked as legal",
+    /legal here/.test(await inFrame(() => document.getElementById("rgcheck").textContent)));
+  await inFrame(() => document.getElementById("rgcancel").click());
+  check("Cancel takes the section away", await inFrame(() => !document.getElementById("rgsel") && document.getElementById("fix").hidden));
+  if (!wasReading) await inFrame(() => document.getElementById("showread").click());
+
   // ---------------------------------------------------------------- a diagram
   const diag = await inFrame(() => {
     const D = window.READER;

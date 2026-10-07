@@ -12,7 +12,8 @@
 // shows in the move list as a main-line move and as a box on the page, and is chosen; it is kept
 // after a reload; the pencil's tap on its box opens the section again, and "Remove these moves"
 // removes it; with the pencil on, a tap where no move box stands starts a section there, about 60
-// by 16 points around the tap; a section before a move adds alternatives to it. On an iPhone 13
+// by 16 points around the tap, and while its sheet is open a tap on a move box or in the move list
+// chooses the move it goes with; a section before a move adds alternatives to it. On an iPhone 13
 // (touch): the bar's button, a drag by touch that neither scrolls nor turns the page, a corner
 // moved by touch, and the move attached; no sideways scroll at 390 px. On an iPad held upright and
 // sideways: the sheet with a section. Screenshots in the light and dark schemes. Prints one JSON
@@ -221,6 +222,14 @@ function check(name, cond, detail) {
     await page.mouse.click(tap[0], tap[1]);
     r = await section(page);
     check("the pencil's tap on the page starts a section of about 60 by 16 points", near(r, [330, 132, 390, 148], 1.2), r);
+    // while the sheet is open, a tap on a move box (or in the move list) chooses the move the moves go with
+    await page.click(".mark[data-node='" + I.ke6 + "']");
+    s = await state(page);
+    check("a tap on a move box chooses the move the section goes with", s.open && /After 7…Ke6/.test(s.fixText) &&
+      near(await section(page), [330, 132, 390, 148], 1.2), s.fixText);
+    await page.click("#tree .mv[data-node='" + I.nc3 + "']");
+    s = await state(page);
+    check("so does a tap in the move list", s.open && /After 8\.Nc3/.test(s.fixText), s.fixText);
     await page.click("#rgwhere button[data-where=before]");
     await page.fill("#rgsan", "8.Qe4");
     s = await state(page);
