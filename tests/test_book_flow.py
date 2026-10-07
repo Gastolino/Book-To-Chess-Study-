@@ -109,6 +109,8 @@ def test_book_flow_end_to_end(tmp_path):
     assert {"while the app starts, the start page shows the book with two pages of 3 by 4 squares and a turning page",
             "with reduced motion the page does not turn",
             "a new book opens at its first page",
+            "on a chapter's last page a swipe slides the page out and the place of the next page in",
+            "the next chapter's reader shows the page enlarged where the turn left it, at its top left",
             "while the book is read, the small book shows at the top right of the top bar",
             "the small book appears and goes without moving the reader",
             "the small book is gone when the work is done",

@@ -337,10 +337,24 @@ height:0;border-top:1px solid var(--fail);transform:rotate(-45deg)}
 .k.wait{border:1px dotted var(--muted)}
 .k.unatt{border:1px dashed var(--muted)}
 .k.off{width:12px;height:12px;border:1px dashed var(--muted)}
-.pagescroll{width:100%;overflow-x:auto}
+/* the fitted page never scrolls sideways, so that a page sliding in during a turn adds no scroll
+   bar; the enlarged page does, and a strip as wide as it keeps its scroll range while the page
+   slides (otherwise the browser would shorten the range and hold the page still) */
+.pagescroll{width:100%;overflow-x:hidden}
+.pagescroll.zoom{overflow-x:auto}
+.pagescroll.zoom::after{content:"";display:block;width:200%;height:1px;margin-top:-1px;pointer-events:none}
 .pagebox{position:relative;width:100%;outline:1px solid var(--line)}
 .pagescroll.zoom .pagebox{width:200%}
 .pagebox img{display:block;width:100%;height:auto;user-select:none;-webkit-user-select:none}
+/* the picture that comes while its place shows fades in over that place */
+.pagebox.fading{background:var(--line)}
+/* A turn of the page: what showed of the page going out (a copy, its picture on a canvas) slides
+   on a stage over the page's place, clipped to it as the page itself is, under the board and the
+   bar at the foot of the window. */
+.turnstage{position:fixed;z-index:7;overflow:hidden;pointer-events:none}
+.turnpart{position:absolute;top:0;overflow:hidden}
+.turnpart .pagebox{position:absolute;top:0}
+.turnpart canvas{display:block;width:100%;height:100%}
 .ov{position:absolute;inset:0}
 .mark,.diag{position:absolute;padding:0;margin:0;border:0;border-radius:0;background:none;
 cursor:pointer;min-width:0;min-height:0;overflow:visible;outline:0 solid transparent;outline-offset:0}
@@ -564,6 +578,8 @@ const IMG_KEEP = 4;  // decoded page pictures kept for the diagram crops: the la
 // upright, which also put the line's moves beside the board (TABLET)
 const SMALL = window.matchMedia("(max-width:700px), (max-width:1100px) and (orientation:portrait)");
 const TABLET = window.matchMedia("(min-width:701px) and (max-width:1100px) and (orientation:portrait)");
+// the reader's setting for less motion: the pages change at once, with no slide and no fade
+const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)");
 const ROW = 25.5;  // the height of one row of the move list: 15px type at line height 1.7
 window.readerState = {fen: null, nodeId: null, page: null};
 const kinds = {};
@@ -694,17 +710,41 @@ function dropFar(){
     if (urls[k]) { URL.revokeObjectURL(urls[k]); delete urls[k]; }
   }
 }
+let fadeNext = false;       // the first picture fades in: this reader came from a turn in another chapter
 function showPicture(p){
-  const img = $("pageimg"), src = picSrc(p);
-  $("pagebox").classList.toggle("waiting", !src);
-  if (src) {
-    if (img.getAttribute("src") !== src) img.src = src;
-    // the app shows a reader that loaded in the background once its page shows
-    if (window.CHESSBOOK_APP) {
-      const told = () => parent.postMessage({pictureShown: p}, "*");
-      if (img.complete) told(); else img.addEventListener("load", told, {once: true});
+  const img = $("pageimg"), box = $("pagebox"), src = picSrc(p);
+  if (!src) {
+    box.classList.add("waiting");
+    box.dataset.wait = "picture";
+    img.removeAttribute("src");
+    return;
+  }
+  if (img.getAttribute("src") !== src) img.src = src;
+  // The picture shows once it is decoded, and its place shows meanwhile: a changed picture would
+  // otherwise keep the last page's picture under this page's outlines for a moment. A picture
+  // that came while its place showed fades in over the place.
+  let done = false;
+  const shown = () => {
+    if (done || S.page !== p || img.getAttribute("src") !== src) return;
+    done = true;
+    const fade = box.classList.contains("waiting") && !REDUCED.matches && (fadeNext || box.dataset.wait === "picture");
+    box.classList.remove("waiting");
+    delete box.dataset.wait;
+    fadeNext = false;
+    if (fade) {
+      box.classList.add("fading");
+      const end = () => box.classList.remove("fading");
+      img.animate([{opacity: 0}, {opacity: 1}], {duration: 240, easing: "ease-out"}).finished.then(end, end);
     }
-  } else img.removeAttribute("src");
+    // the app shows a reader that loaded in the background once its page shows
+    if (window.CHESSBOOK_APP) parent.postMessage({pictureShown: p}, "*");
+  };
+  if (img.complete && img.naturalWidth) { shown(); return; }
+  if (!box.classList.contains("waiting")) box.dataset.wait = "decode";
+  box.classList.add("waiting");
+  // decoded is enough (the load event may come a little later)
+  img.addEventListener("load", shown, {once: true});
+  if (img.decode) img.decode().then(shown, () => null);
 }
 function picturesCame(pics){
   let n = 0;
@@ -715,7 +755,8 @@ function picturesCame(pics){
     IMG[p] = pics[k];
     delete imgCache[p];
     n++;
-    if (p === S.page) {
+    // (a page left by a turn into another chapter keeps that page's place)
+    if (p === S.page && !leaving) {
       showPicture(p);
       if (lateView) {
         const v = lateView;
@@ -849,6 +890,233 @@ function goPage(p, keepHash){
   }
   showPage(p);
   if (!keepHash) history.replaceState(null, "", "#page=" + p);
+}
+
+/* ---------------------------------------------------------------- turning the page */
+// A turn by a swipe, the page arrows or Page Up and Page Down slides the page out the way it goes
+// while the next page slides in from the other edge, the two as one strip. What showed of the
+// page going out is copied onto a stage over the page's place (its picture drawn on a canvas,
+// which shows at once where a copied image may wait for its decoding), so that the page itself
+// takes the next page at once; the stage is clipped to the page's place, as the page is. With
+// less motion the page changes at once.
+const TURN_MS = 300, TURN_GAP = 24, TURN_EASE = "cubic-bezier(.25,.8,.3,1)";
+let turning = null;   // the slide on the screen: its stage (if any) and its animations
+let leaving = null;   // a turn into another chapter, until that chapter's reader shows (no turns meanwhile)
+let landed = null;    // the last landing, done again while the window settles (a bar that goes away)
+let arrived = null;   // the turn in another chapter's reader that opened this one (its address says so)
+
+// The part of the window where the page can be read: below a top bar that stays on the screen,
+// and above the bar of the current move, an open editor and the board that stays at the foot of
+// the window (the space revealMark keeps the current move in).
+function viewTop(){
+  const bar = document.querySelector("header.bar");
+  const pos = bar ? getComputedStyle(bar).position : "";
+  return pos === "fixed" || pos === "sticky" ? Math.max(0, bar.getBoundingClientRect().bottom) : 0;
+}
+function viewBottom(){
+  const bar = $("mbar");
+  let b = (bar && getComputedStyle(bar).display !== "none" ? bar.getBoundingClientRect().top : window.innerHeight) -
+    bottomCover();
+  if (SMALL.matches && !bottomCover() && document.body.classList.contains("stickboard")) {
+    // the board's place while it stays at the foot of the window (sticky, just above the bar)
+    const blk = $("boardblock");
+    b = Math.min(b, window.innerHeight - (parseFloat(getComputedStyle(blk).bottom) || 0) -
+      blk.getBoundingClientRect().height);
+  }
+  return b;
+}
+// Where the view lands after a turn, so that the reading goes on where it naturally does: on an
+// enlarged page at the new page's top left after a turn forward, and at its bottom right after a
+// turn back; on a page fitted to the width at its top after a turn forward when the top of the
+// page had gone up out of view, and where the window stands otherwise. y: where the reader of the
+// chapter before or after left the place of this page in the window, its top (its foot after a
+// turn back on an enlarged page), so that the page shows where its place was; an enlarged page's
+// foot stays above a board that stays at the foot of this window, though.
+function land(dir, zoom, y){
+  const ps = $("pagescroll"), given = y !== undefined && isFinite(y);
+  if (zoom) ps.scrollLeft = dir > 0 ? 0 : ps.scrollWidth - ps.clientWidth;
+  const r = $("pagebox").getBoundingClientRect(), top = viewTop();
+  let by = 0;
+  if (zoom && dir < 0) by = r.bottom - (given ? Math.min(y, viewBottom()) : viewBottom());
+  else if (zoom) by = r.top - top;
+  else if (given) by = r.top - y;
+  else if (dir > 0 && r.top < top - 1) by = r.top - top;
+  if (Math.abs(by) >= 0.5) window.scrollTo({top: window.scrollY + by, left: window.scrollX, behavior: "auto"});
+  landed = {dir, zoom, y, until: performance.now() + 1500};
+}
+// what shows of the page now, its finger offset included: a copy of the page box in a clip of the
+// part in view, with its place in the window
+function snapshot(){
+  const box = $("pagebox"), ps = $("pagescroll"), img = $("pageimg");
+  const r = box.getBoundingClientRect(), f = ps.getBoundingClientRect();
+  const left = Math.max(r.left, f.left), right = Math.min(r.right, f.left + ps.clientWidth);
+  const copy = box.cloneNode(true);
+  copy.removeAttribute("id");
+  for (const el of copy.querySelectorAll("[id]")) el.removeAttribute("id");
+  copy.style.transform = "";
+  copy.style.left = (r.left - left) + "px";
+  copy.style.width = r.width + "px";
+  copy.style.height = r.height + "px";
+  const pic = copy.querySelector("img");
+  if (pic && img.complete && img.naturalWidth) {
+    // drawn at the size it shows at, no larger than the picture
+    const cv = document.createElement("canvas");
+    const k = Math.min(1, r.width * (window.devicePixelRatio || 1) / img.naturalWidth);
+    cv.width = Math.max(1, Math.round(img.naturalWidth * k));
+    cv.height = Math.max(1, Math.round(img.naturalHeight * k));
+    cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+    cv.className = img.className;   // "scan": dimmed in the dark scheme as the picture is
+    pic.replaceWith(cv);
+  }
+  // the ribbon of a bookmarked page goes out as a picture too, so that the warm yellow stays the
+  // colour of the ribbon and the bookmark icon alone (DESIGN.md)
+  const rib = $("ribbon"), copied = copy.querySelector(".ribbon");
+  if (copied && !rib.hidden) {
+    const q = rib.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const cv = document.createElement("canvas"), g = cv.getContext("2d");
+    cv.width = Math.max(1, Math.round(q.width * dpr));
+    cv.height = Math.max(1, Math.round(q.height * dpr));
+    g.fillStyle = getComputedStyle(rib.querySelector("svg")).fill;
+    g.scale(cv.width / 20, cv.height / 64);   // the ribbon's polygon, drawn in its 20 by 64 box
+    g.beginPath(); g.moveTo(0, 0); g.lineTo(20, 0); g.lineTo(20, 64); g.lineTo(10, 54); g.lineTo(0, 64); g.fill();
+    cv.style.cssText = "position:absolute;z-index:5;left:" + (q.left - r.left) + "px;top:" + (q.top - r.top) +
+      "px;width:" + q.width + "px;height:" + q.height + "px";
+    copied.replaceWith(cv);
+  } else if (copied) copied.remove();
+  const part = document.createElement("div");
+  part.className = "turnpart";
+  part.append(copy);
+  return {el: part, left: left, right: right, top: r.top, height: r.height};
+}
+// the page's place in the window, which clips the slide as it clips the page (null when none of
+// it shows)
+function pageClip(){
+  const ps = $("pagescroll"), f = ps.getBoundingClientRect(), h = $("pagebox").getBoundingClientRect().height;
+  const c = {left: f.left, right: f.left + ps.clientWidth, top: Math.max(f.top, viewTop(), 0),
+             bottom: Math.min(f.top + h, window.innerHeight)};
+  return c.bottom - c.top > 1 && c.right - c.left > 1 ? c : null;
+}
+function stageAt(clip){
+  const st = document.createElement("div");
+  st.className = "turnstage";
+  st.setAttribute("aria-hidden", "true");
+  st.inert = true;
+  st.style.cssText = "left:" + clip.left + "px;top:" + clip.top + "px;width:" + (clip.right - clip.left) +
+    "px;height:" + (clip.bottom - clip.top) + "px";
+  document.body.append(st);
+  return st;
+}
+function putOn(st, clip, part){
+  const s = part.el.style;
+  s.left = (part.left - clip.left) + "px"; s.top = (part.top - clip.top) + "px";
+  s.width = (part.right - part.left) + "px"; s.height = part.height + "px";
+  st.append(part.el);
+}
+function dropStage(st){
+  // the canvas gives its memory back at once (a phone's browser keeps it a while otherwise)
+  for (const cv of st.querySelectorAll("canvas")) { cv.width = 0; cv.height = 0; }
+  st.remove();
+}
+// the slide of the strip: the part going out and the page coming in move by the same distance,
+// a little faster when a swipe has taken the page part of the way
+function slide(out, inc, from, width){
+  const opts = {duration: Math.round(TURN_MS - 50 + 50 * Math.min(1, Math.abs(from) / (width + TURN_GAP))),
+                easing: TURN_EASE};
+  return [out.animate([{transform: "translateX(0)"}, {transform: "translateX(" + -from + "px)"}], opts),
+          inc.animate([{transform: "translateX(" + from + "px)"}, {transform: "translateX(0)"}], opts)];
+}
+function endTurn(){
+  const t = turning;
+  if (!t) return;
+  turning = null;
+  for (const a of t.anims) a.cancel();
+  if (t.stage) dropStage(t.stage);
+  $("pagebox").style.transform = "";
+  $("pagescroll").classList.remove("turning");
+}
+// a swipe too short to turn the page: the page goes back to its place
+function springBack(dx){
+  const box = $("pagebox");
+  box.style.transform = "";
+  if (!dx || REDUCED.matches) return;
+  const t = turning = {stage: null, anims: [box.animate([{transform: "translateX(" + dx + "px)"},
+    {transform: "translateX(0)"}], {duration: 220, easing: TURN_EASE})]};
+  $("pagescroll").classList.add("turning");
+  t.anims[0].onfinish = () => { if (turning === t) endTurn(); };
+}
+// The place of a page that another chapter's reader holds: a light sheet of this page's size, as
+// a page that waits for its picture, and that page's number in the page counter. That reader
+// opens once the sheet has come in, and shows its page in the same place.
+function sheetFor(p){
+  $("pageimg").removeAttribute("src");
+  $("pagebox").classList.add("waiting");
+  $("ov").innerHTML = "";
+  $("ribbon").hidden = true;
+  closeSymMenu();
+  bmNote("");
+  say("");
+  $("pagenum").value = label(p);
+}
+// the turn into another chapter did not lead away (the browser came back to this page, or the
+// app did not open the other chapter): this page shows again
+function stayHere(){
+  if (!leaving) return;
+  clearTimeout(leaving.timer);
+  leaving = null;
+  endTurn();
+  showPage(S.page);
+}
+// dir: 1 forward, -1 back; dx: how far a swipe has taken the page already
+function turnPage(dir, dx){
+  dx = dx || 0;
+  if (leaving) return;
+  endTurn();
+  const p = S.page + dir, box = $("pagebox"), ps = $("pagescroll");
+  // a page past the chapter's first or last page: the reader of the chapter that holds it
+  const away = p >= 1 && p <= D.pageCount && !(p in D.pages) ? chapterFor(p) : null;
+  if (p < 1 || p > D.pageCount || (away ? !away.file || away.empty : !(p in D.pages))) { springBack(dx); return; }
+  const zoom = ps.classList.contains("zoom");
+  const out = REDUCED.matches ? null : snapshot();
+  box.style.transform = "";
+  if (away) sheetFor(p); else goPage(p);
+  land(dir, zoom);
+  let leave = null;
+  if (away) {
+    // that reader is told of the turn in its address (page=, turn=, z= for an enlarged page, and
+    // y=, the sheet's top in the window, or its foot after a turn back on an enlarged page);
+    // should it not show, this page comes back
+    const r = box.getBoundingClientRect(), y = Math.round(zoom && dir < 0 ? r.bottom : r.top);
+    leave = () => openFile(away.file + "#page=" + p + "&turn=" + dir + (zoom ? "&z=1" : "") + "&y=" + y);
+    leaving = {timer: setTimeout(stayHere, 30000)};
+  }
+  const clip = out && pageClip();
+  if (!clip) { if (leave) leave(); return; }
+  const st = stageAt(clip);
+  putOn(st, clip, out);
+  // the page coming in starts just beyond the edge of the part going out
+  const from = dir > 0 ? out.right + TURN_GAP - clip.left : out.left - TURN_GAP - clip.right;
+  box.style.transform = "translateX(" + from + "px)";
+  ps.classList.add("turning");
+  const t = turning = {stage: st, anims: []}, img = $("pageimg");
+  const go = () => {
+    if (turning !== t) return;
+    box.style.transform = "";
+    // a picture not decoded in the time slides in as its place, and fades in when it comes
+    if (box.classList.contains("waiting") && !(img.complete && img.naturalWidth)) box.dataset.wait = "picture";
+    t.anims = slide(out.el, box, from, clip.right - clip.left);
+    t.anims[1].onfinish = () => {
+      if (turning !== t) return;
+      endTurn();
+      // the place holds: whatever moved the window or the page meanwhile (a late layout, a
+      // scroll that was still running) does not move the reading away from it
+      if (landed && performance.now() < landed.until) land(landed.dir, landed.zoom, landed.y);
+      if (leave) leave();
+    };
+  };
+  // a picture still being decoded gets a moment (a tenth of a second at most), so that the page
+  // coming in seldom shows its place for a few frames only
+  if (!img.getAttribute("src") || (img.complete && img.naturalWidth)) go();
+  else Promise.race([img.decode().catch(() => null), new Promise((r) => setTimeout(r, 120))]).then(go);
 }
 function pct(v, total){ return (100 * v / total).toFixed(3) + "%"; }
 function diagramName(d, p){
@@ -1789,6 +2057,15 @@ function fromHash(){
     if (at[2]) S.wanted = at[2];
     return true;
   }
+  // "page=PAGE&turn=1&z=1&y=Y": the reader of the chapter before (or after) turned to this page,
+  // enlarged (z) or not, and left its place at Y in the window
+  const tn = /^page=(\d+)&turn=(-?1)((?:&\w+=[^&]*)*)$/.exec(h);
+  if (tn) {
+    const q = new URLSearchParams(tn[3]);
+    arrived = {dir: parseInt(tn[2], 10), zoom: q.get("z") === "1", y: q.has("y") ? parseFloat(q.get("y")) : undefined};
+    goPage(tn[1], true);
+    return true;
+  }
   const m = /^(page|node|line)=(.+)$/.exec(h);
   if (!m) return false;
   if (m[1] === "page") { goPage(m[2], true); return true; }
@@ -1851,31 +2128,70 @@ function init(){
     S.mini = !(S.mini === null ? !!(S.node || S.diagram) : S.mini); renderMini(); viewChanged();
   });
   $("mmoves").addEventListener("click", toMoves);
-  // A horizontal swipe on the page turns it. An enlarged page that can still
-  // scroll that way scrolls first, and turns only at its edge.
+  // A horizontal swipe on the page turns it: the page follows the finger, and turns when let go
+  // past a quarter of its width (or flicked), or else goes back to its place. The first movement
+  // decides: up or down, the window scrolls as usual. An enlarged page that can still scroll that
+  // way scrolls first, and turns only at its edge.
   (function(){
     const box = $("pagescroll");
     let t0 = null;
+    const canScroll = (dx, left) => {
+      const room = box.scrollWidth - box.clientWidth;
+      return room > 1 && ((dx < 0 && left < room - 1) || (dx > 0 && left > 1));
+    };
+    const drop = () => { if (t0 && t0.kind === "turn") springBack(t0.dx); t0 = null; };
     box.addEventListener("touchstart", (e) => {
-      if (e.touches.length !== 1) { t0 = null; return; }
+      if (e.touches.length !== 1 || leaving) { drop(); return; }
+      endTurn();
       const t = e.touches[0];
-      t0 = {x: t.clientX, y: t.clientY, at: Date.now(), left: box.scrollLeft};
+      t0 = {x: t.clientX, y: t.clientY, at: Date.now(), left: box.scrollLeft, kind: null, dx: 0, track: []};
     }, {passive: true});
+    box.addEventListener("touchmove", (e) => {
+      if (!t0) return;
+      if (e.touches.length !== 1) { drop(); return; }
+      const t = e.touches[0], dx = t.clientX - t0.x, dy = t.clientY - t0.y;
+      if (!t0.kind) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        t0.kind = Math.abs(dx) > Math.abs(dy) && !canScroll(dx, t0.left) && e.cancelable ? "turn" : "other";
+      }
+      if (t0.kind !== "turn") return;
+      if (e.cancelable) e.preventDefault();
+      // with no page that way the page gives a little, and goes back; with less motion it stays
+      const p = S.page + (dx < 0 ? 1 : -1);
+      t0.dx = REDUCED.matches ? 0 : p >= 1 && p <= D.pageCount ? dx : dx / 3;
+      $("pagebox").style.transform = t0.dx ? "translateX(" + t0.dx + "px)" : "";
+      const now = performance.now();
+      t0.track.push([t.clientX, now]);
+      while (t0.track.length > 1 && now - t0.track[0][1] > 100) t0.track.shift();
+    }, {passive: false});
     box.addEventListener("touchend", (e) => {
-      if (!t0 || e.changedTouches.length !== 1) { t0 = null; return; }
+      if (!t0 || e.changedTouches.length !== 1) { drop(); return; }
       const t = e.changedTouches[0], dx = t.clientX - t0.x, dy = t.clientY - t0.y;
       const start = t0; t0 = null;
-      if (Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy) || Date.now() - start.at > 700) return;
-      const room = box.scrollWidth - box.clientWidth;
-      if (room > 1) {
-        const atLeft = start.left <= 1, atRight = start.left >= room - 1;
-        if ((dx < 0 && !atRight) || (dx > 0 && !atLeft)) return;
+      if (start.kind === "turn") {
+        // the speed over the last tenth of a second (none when the finger rested): a quick flick
+        // turns the page however short, and a flick back keeps it
+        const now = performance.now(), a = start.track.find((q) => now - q[1] <= 100);
+        const v = a && now > a[1] ? (t.clientX - a[0]) / (now - a[1]) : 0;
+        const dir = dx < 0 ? 1 : -1, w = box.clientWidth;
+        const far = Math.abs(dx) > Math.min(120, Math.max(60, w / 4));
+        const flick = Math.abs(v) > 0.35 && Math.abs(dx) > 20;
+        const there = S.page + dir >= 1 && S.page + dir <= D.pageCount;
+        if (there && (flick ? (v < 0) === (dx < 0) : far)) turnPage(dir, start.dx);
+        else springBack(start.dx);
+        return;
       }
-      goPage(S.page + (dx < 0 ? 1 : -1));
+      // a swipe whose way the browser did not send (its start and its end only)
+      if (start.kind || Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy) || Date.now() - start.at > 700) return;
+      if (!canScroll(dx, start.left)) turnPage(dx < 0 ? 1 : -1);
     }, {passive: true});
+    box.addEventListener("touchcancel", drop, {passive: true});
+    // a landing is done again while the window settles, until the reader scrolls it
+    window.addEventListener("touchstart", () => { landed = null; }, {passive: true, capture: true});
+    window.addEventListener("wheel", () => { landed = null; }, {passive: true});
   })();
-  $("prevpage").addEventListener("click", () => goPage(S.page - 1));
-  $("nextpage").addEventListener("click", () => goPage(S.page + 1));
+  $("prevpage").addEventListener("click", () => turnPage(-1));
+  $("nextpage").addEventListener("click", () => turnPage(1));
   $("pagenum").addEventListener("keydown", (e) => { if (e.key === "Enter") { typedPage(); e.preventDefault(); } });
   $("pagenum").addEventListener("change", typedPage);
   $("pagenum").addEventListener("focus", () => $("pagenum").select());
@@ -1919,20 +2235,29 @@ function init(){
     else if (e.key === "ArrowUp") { sideStep(-1); e.preventDefault(); }
     else if (e.key === "Home") { toEnd(-1); e.preventDefault(); }
     else if (e.key === "End") { toEnd(1); e.preventDefault(); }
-    else if (e.key === "PageDown") { goPage(S.page + 1); e.preventDefault(); }
-    else if (e.key === "PageUp") { goPage(S.page - 1); e.preventDefault(); }
+    else if (e.key === "PageDown") { turnPage(1); e.preventDefault(); }
+    else if (e.key === "PageUp") { turnPage(-1); e.preventDefault(); }
   });
   window.addEventListener("hashchange", fromHash);
   let resizing = 0;
   window.addEventListener("resize", () => {
     cancelAnimationFrame(resizing);
-    resizing = requestAnimationFrame(() => { sizeCoords(document); layoutPanel(false); barHeight(); });
+    resizing = requestAnimationFrame(() => {
+      sizeCoords(document); layoutPanel(false); barHeight();
+      // the window grew or shrank just after a turn (the app's top bar went away as the page
+      // scrolled to its place): the page lands again in the space it has now
+      if (landed && performance.now() < landed.until) land(landed.dir, landed.zoom, landed.y);
+    });
   });
   SMALL.addEventListener && SMALL.addEventListener("change", () => { placeBoard(); renderBoard(); layoutPanel(false); });
   TABLET.addEventListener && TABLET.addEventListener("change", () => { placeBoard(); renderBoard(); layoutPanel(false); });
   // the browser may restore the state of the boxes when the reader comes back to this page: the
-  // stored selection wins
-  window.addEventListener("pageshow", () => { if (S.page) pageState(); if (S.diagram) diagramState(S.diagram); });
+  // stored selection wins; a page left by a turn into another chapter shows again
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted) stayHere();
+    if (S.page) pageState();
+    if (S.diagram) diagramState(S.diagram);
+  });
   let rd = false;
   try { rd = localStorage.getItem("chessbook-reading") === "1"; } catch (e) { rd = false; }
   setReading(rd);
@@ -1942,6 +2267,16 @@ function init(){
   // a link to a page (from the contents page, or the page arrows at the end of a chapter) shows
   // the first line on that page, as an opening without a link does
   if (!fromHash() || (!S.node && !S.diagram)) defaultView();
+  if (arrived) {
+    // this reader opened from a turn in the chapter before or after: the page shows where that
+    // reader left its place, enlarged if that page was, and its picture fades in over the place
+    const a = arrived;
+    arrived = null;
+    if (a.zoom) setZoom(true);
+    fadeNext = true;
+    land(a.dir, a.zoom, a.y);
+    window.addEventListener("load", () => land(a.dir, a.zoom, a.y), {once: true});
+  }
   if (pendingView) {
     // the screen as it stood when the app was closed: again once the fonts and pictures have settled
     const v = pendingView;
