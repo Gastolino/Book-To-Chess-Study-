@@ -37,6 +37,7 @@ import pymupdf
 from . import corrections, pgnout, style
 from .chess_js import CHESS_JS
 from .engine_js import ENGINE_CSS, ENGINE_JS
+from .region_js import REGION_CSS, REGION_JS
 from .review_js import CORRECTIONS_JS, EYE_SVG, REVIEW_CSS, REVIEW_JS
 from .movetext import LETTER_SETS, junk_prefix
 from .selection import EXCLUDED_KINDS
@@ -527,7 +528,7 @@ column-gap:24px;align-items:start}
 .mbar{padding:10px 24px}
 .mbtns{gap:0 20px}
 .mini.on{width:260px}}
-""" + REVIEW_CSS + ENGINE_CSS
+""" + REVIEW_CSS + ENGINE_CSS + REGION_CSS
 
 CHAPTER_JS = r"""
 (function(){
@@ -1249,7 +1250,8 @@ function renderMini(){
   const mini = $("mini"), bar = $("mbar");
   let [kind, x] = boardFor();
   if (S.diagram && !S.node) { kind = "crop"; x = S.diagram; }
-  const editing = !!(RV.edit && document.getElementById("fix") && !$("fix").hidden);
+  // (while a section of the page is drawn, the board keeps off the page as it does for an editor)
+  const editing = !!(RV.edit && document.getElementById("fix") && !$("fix").hidden) || RG.draw;
   const want = S.mini === null ? !!(S.node || S.diagram || editing) : S.mini;
   $("mboard").setAttribute("aria-pressed", String(want));
   document.body.classList.toggle("stickboard", SMALL.matches && want && kind !== "empty" && !editing);
@@ -1438,7 +1440,8 @@ function statusLines(n){
   if (mine && FIX.pending("moves", n.key))
     out.push("You corrected this move to <span class=n>" + esc(mine.san) + "</span>. " + esc(applyWords()));
   if (n.corrected === "added")
-    return ["added", esc(D.words.added), ["You added this move on the board, in a variation of your own."].concat(out)];
+    return ["added", esc(D.words.added), [n.region ? "You read this move in a section of " + esc(pageName(n.region.page)) +
+      " where the program had found no move." : "You added this move on the board, in a variation of your own."].concat(out)];
   if (n.corrected) {
     const why = n.corrected === "move" ? "You gave this move." :
       n.corrected === "placed" ? "You placed this variation here." :
@@ -1512,7 +1515,7 @@ function selectNode(id, opts){
   if (S.diagram) closeDiagram();
   S.preview = null;
   if (RV.edit && !(RV.edit.kind === "move" && RV.edit.node === id) && RV.edit.kind !== "symbol" &&
-      !(RV.edit.kind === "gap" && gapKeyOf(id) === RV.edit.key)) closeFix();
+      RV.edit.kind !== "region" && !(RV.edit.kind === "gap" && gapKeyOf(id) === RV.edit.key)) closeFix();
   const lineChanged = S.line !== n.line;
   S.node = id; S.line = n.line;
   if (!opts.fromPage) S.wanted = null;   // the reader chose a move: the wanted one is forgotten
@@ -1528,6 +1531,8 @@ function selectNode(id, opts){
   if (treeFocus) { const el = $("tree").querySelector(".mv.cur"); if (el) el.focus({preventScroll: true}); }
   history.replaceState(null, "", "#node=" + id);
   setState();
+  // the moves of a section being read go with the move chosen
+  regionFollow(id);
 }
 function firstLineHere(){
   return linesHere()[0] || D.lineOrder[0];
@@ -1925,7 +1930,8 @@ function init(){
 }
 init();
 })();
-""".replace("init();\n})();", REVIEW_JS.replace("__EYE__", EYE_SVG) + ENGINE_JS + "\ninit();\n})();")
+""".replace("init();\n})();", REVIEW_JS.replace("__EYE__", EYE_SVG) + REGION_JS + ENGINE_JS +
+                                     "\ninit();\n})();")
 
 CHAPTER_HTML = """<!doctype html>
 <html lang="en">
@@ -1944,6 +1950,7 @@ CHAPTER_HTML = """<!doctype html>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number"><span class="ptotal small muted" id="pagetotal"></span>
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
 <button class="ib" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
+<button class="ib rtool" id="regionbtn" aria-pressed="false" aria-label="Read a section of the page that the program missed" title="Read a section: drag across moves that the program missed">__ICON_SECTION__</button>
 <button class="tb" id="reviewbtn" aria-pressed="false">Review</button>
 <button class="tb" id="showread" aria-pressed="false">Show reading</button>
 <a class="nav" href="index.html">Contents</a>
@@ -2030,6 +2037,7 @@ __PGNBTN__
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
 <div class="mside"><span class="mtxt" id="mtxt"></span><span class="meval small" id="mevalnum"></span>
 <span class="mbtns"><button class="ib" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
+<button class="ib rtool" id="mregion" aria-pressed="false" aria-label="Read a section of the page that the program missed">__ICON_SECTION__</button>
 <button class="ib" id="mcpu" aria-pressed="false" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
 <button class="ib" id="mbm" aria-pressed="false" aria-label="Bookmark this page">__ICON_BOOKMARK__</button>
 <button class="ib" id="mzoom" aria-pressed="false" aria-label="Enlarge the page">__ICON_ZOOM__</button>
@@ -2093,7 +2101,7 @@ def chapter_data(book, ch, pgn_text, engine=False):
                 nn["alternatives"] = n["alternatives"]
             if n.get("reason"):
                 nn["reason"] = n["reason"]
-            for k in ("key", "corrected", "gap", "added", "added_before", "added_stale"):
+            for k in ("key", "corrected", "gap", "added", "added_before", "added_stale", "region"):
                 if n.get(k):
                     nn[k] = n[k]
             if n.get("gap") and not n.get("san"):
@@ -2213,6 +2221,7 @@ def chapter_html(book, ch, images, pgn_text, pgn_info, engine=False):
         "__ICON_END__": style.icon("end"),
         "__ICON_FLIP__": style.icon("flip"),
         "__ICON_PENCIL__": style.icon("pencil"),
+        "__ICON_SECTION__": style.icon("section"),
         "__ICON_CPU__": style.icon("cpu"),
         "__ICON_GEAR__": style.icon("gear"),
         "__ICON_BOOKMARK__": style.icon("bookmark"),

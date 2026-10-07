@@ -420,6 +420,37 @@ def test_bare_move_join_in_chromium(tmp_path):
         assert (screens / name).stat().st_size > 10000, name
 
 
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_reading_a_section_in_chromium(tmp_path):
+    """Reading a section of the page that the program missed (tests/region_e2e.js),
+    on the reader opened from a file: the button arms the tool, a drag draws the
+    section and its corners and inside change it, a typed move is checked as it
+    is typed, and attached after the chosen move it continues the main line,
+    shows in the move list and as a box on the page, and stays after a reload;
+    on a desktop, a phone by touch, and a tablet upright and sideways."""
+    from test_corrections import MISSED
+    pdf = make_book(tmp_path / "missed.pdf", note7=MISSED)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    out = tmp_path / "output" / "missed" / "reader"
+    reader.build_reader(book, pdf, out)
+    ch = book["chapters"][1]
+    screens = ROOT / "output" / "screens"
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "region_e2e.js"), str(out / ch["file"]), str(screens)],
+                          capture_output=True, text=True, env=env, timeout=600)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    assert res["errors"] == []
+    for name in ("region_sheet_1280_light.png", "region_sheet_1280_dark.png", "region_added_1280_light.png",
+                 "region_added_1280_dark.png", "region_draw_390_light.png", "region_sheet_390_light.png",
+                 "region_sheet_390_dark.png", "region_added_390_light.png", "region_sheet_820_light.png",
+                 "region_sheet_820_dark.png", "region_sheet_1180_light.png", "region_sheet_1180_dark.png"):
+        assert (screens / name).stat().st_size > 10000, name
+
+
 # a7 holds a white pawn, so that a move on the board can promote
 PAWN_FEN = "6k1/P4pp1/7p/8/8/8/5PPP/3R2K1 w - - 0 1"
 

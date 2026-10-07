@@ -159,6 +159,9 @@ ICONS = {
     "chevron": "<path d='M7.5 5l5 5-5 5'/>",
     "pencil": "<path d='M4 16l.9-3.6L13.6 3.7a1.3 1.3 0 0 1 1.8 0l.9.9a1.3 1.3 0 0 1 0 1.8L7.6 15.1z"
               "M12.2 5.1l2.7 2.7'/>",
+    # a dashed rectangle: a section of the page for the program to read
+    "section": "<path d='M3.5 6.5v-3h3M9 3.5h2M13.5 3.5h3v3M16.5 9v2M16.5 13.5v3h-3M11 16.5H9"
+               "M6.5 16.5h-3v-3M3.5 11V9'/>",
     "download": "<path d='M10 3.5v9M6.5 9l3.5 3.5L13.5 9M4.5 16h11'/>",
     # a processor: a square with pins on its sides, for the analysis switch
     "cpu": "<path d='M5.5 5.5h9v9h-9zM8 8h4v4H8zM8 2.5v3M12 2.5v3M8 14.5v3M12 14.5v3M2.5 8h3M2.5 12h3"
