@@ -463,6 +463,10 @@ async function run() {
       window.readerState.page === p.page && window.readerState.nodeId === p.node &&
       !document.getElementById("ribbon").hidden && window.readerState, { chapter, page: mark.page, node: mark.node }, 300000);
     check("the bookmark in the library opens the book at its page and move", atMark.page === mark.page, atMark);
+    // the pictures of the page shown are drawn and stored before the page goes back to the library
+    // (which loads the page again, and ends a drawing under way)
+    await b.until(() => b.page.evaluate((id) => LIB.pagesCount(id).then((n) => n || null), one.id),
+                  "the pictures of the page shown in the device's store", 120000).catch(() => 0);
     // the same file again: the library holds the book already
     await b.page.click("#another");
     await b.page.waitForFunction(() => document.body.classList.contains("library") &&

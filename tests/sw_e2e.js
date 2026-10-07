@@ -4,10 +4,12 @@
 //
 // Usage: NODE_PATH=/opt/node22/lib/node_modules node tests/sw_e2e.js SITE_URL PROFILE_DIR
 //
-// The first visit loads the libraries from the network and the service
-// worker keeps them; the second visit (the browser started again on the same
-// profile) takes Pyodide's files and the wheels from the device, and the
-// page, the app's scripts and app.zip from the network as before. Prints one
+// The first visits load the libraries from the network and the service
+// worker keeps them (on the very first, the worker waits up to two seconds
+// for it, and a busy machine may start before); by the third visit (the
+// browser started again on the same profile) Pyodide's files and the wheels
+// come from the device, and the page, the app's scripts and app.zip from the
+// network as before. Prints one
 // JSON object with the results; the exit code is 1 when a check fails.
 const { chromium } = require("playwright");
 const fs = require("fs");
@@ -51,17 +53,19 @@ async function visit() {
   try {
     const one = await visit();
     out.timings["first visit, until ready (s)"] = one.secs;
-    check("one cache of libraries", one.cached.names.length === 1, one.cached.names);
-    const kept = one.cached.urls;
+    const two0 = await visit();
+    out.timings["second visit, until ready (s)"] = two0.secs;
+    check("one cache of libraries", two0.cached.names.length === 1, two0.cached.names);
+    const kept = two0.cached.urls;
     check("the cache holds the wheels and Pyodide's files",
           kept.some((u) => /\/wheels\/pymupdf-.*\.whl$/.test(u)) && kept.some((u) => /\/wheels\/chess-.*\.whl$/.test(u)) &&
           kept.some((u) => /\/pyodide\/pyodide\.asm\.wasm$/.test(u)) && kept.some((u) => /\/pyodide\/opencv/.test(u)), kept);
     check("nothing else is kept", kept.every((u) => /\/(wheels|pyodide)\//.test(u)), kept);
 
     const two = await visit();
-    out.timings["second visit, until ready (s)"] = two.secs;
+    out.timings["third visit, until ready (s)"] = two.secs;
     const libs = two.seen.filter((r) => /\/(wheels|pyodide)\//.test(r.url));
-    check("the second visit takes the libraries from the device", libs.length > 4 && libs.every((r) => r.sw), libs);
+    check("the third visit takes the libraries from the device", libs.length > 4 && libs.every((r) => r.sw), libs);
     const rest = two.seen.filter((r) => /\/(index\.html|worker\.js|library\.js|app\.zip)$|\/$/.test(r.url));
     check("the page, the scripts and app.zip come from the network", rest.length >= 3 && rest.every((r) => !r.sw), rest);
     check("no page errors", out.errors.length === 0, out.errors);

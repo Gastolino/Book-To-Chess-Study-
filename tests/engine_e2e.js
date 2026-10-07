@@ -160,9 +160,17 @@ function serve(dir) {
     v = await view(page);
     const bookNext = await page.evaluate(() => { const r = window.READER.lines[window.readerState.nodeId ? window.READER.nodes[window.readerState.nodeId].line : null];
       const root = window.READER.nodes[r.root]; return root.children.map((c) => window.READER.nodes[c].uci); });
-    const other = v.rows.find((r) => bookNext.indexOf(r.uci) < 0);
-    check("a suggested move other than the book's is listed", !!other, { rows: v.rows, bookNext });
-    await page.click("#evlines .evline[data-uci='" + other.uci + "']");
+    check("a suggested move other than the book's is listed", v.rows.some((r) => bookNext.indexOf(r.uci) < 0),
+          { rows: v.rows, bookNext });
+    // the row is found and tapped in one go: the list is drawn again as the search goes deeper
+    const other = await page.evaluate((book) => {
+      const el = [...document.querySelectorAll("#evlines .evline")].find((b) => book.indexOf(b.dataset.uci) < 0);
+      if (!el) return null;
+      const row = { first: el.querySelector(".efirst").textContent, uci: el.dataset.uci };
+      el.click();
+      return row;
+    }, bookNext);
+    check("a suggestion other than the book's move is tapped", !!other, bookNext);
     await page.waitForSelector("#fix:not([hidden])");
     let fix = await page.evaluate(() => document.getElementById("fix").innerText);
     check("a tap on a suggestion opens the board-move chooser", /Your move 1\./.test(fix) && /Add a new variation/.test(fix) && /Cancel/.test(fix), fix);
