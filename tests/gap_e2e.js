@@ -55,7 +55,9 @@ function check(name, cond, detail) {
     await page.waitForFunction((p) => window.readerState.page === p, info.page);
     check("the pencil is off", await page.evaluate(() => !document.body.classList.contains("pencil")));
 
-    // the Review list names the gap, and its item opens the gap's corrector
+    // the Review list names the gap, and its item opens the gap's corrector (Review shows in
+    // reading mode; the taps after it come with reading mode off again)
+    await page.click("#showread");
     await page.click("#reviewbtn");
     const rev = await page.evaluate(() => document.getElementById("revlist").innerText);
     check("the Review list names the gap", /Black's move 5, missing from the text/.test(rev), rev);
@@ -63,6 +65,7 @@ function check(name, cond, detail) {
     await page.waitForFunction(() => /Give Black's move 5/.test((document.querySelector("#fix h3") || {}).textContent || ""));
     await page.click("#reviewbtn");
     check("closing Review closes the corrector", await page.evaluate(() => document.getElementById("fix").hidden));
+    await page.click("#showread");
 
     // a tap on the red move after the gap opens its corrector at once
     await page.click(".mark[data-node='" + info.after + "']");

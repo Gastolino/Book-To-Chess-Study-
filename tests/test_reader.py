@@ -100,7 +100,8 @@ def test_chapter_page(little):
     assert "[White \"Smith\"]" in data["pgn"] and data["pgnName"] == "ch01.pgn"
     for needle in ("window.readerState", "Download PGN", "Chess board", "id=\"bflip\"",
                    "ArrowRight", "Board reading (Stage 3) could not read that diagram", "href=\"index.html\"",
-                   'id="showread"', ">Show reading<", ">On this page<", ">Contents<",
+                   'id="showread"', 'aria-label="Show reading"', style.icon("reading"),
+                   ">On this page<", ">Contents<",
                    'id="chips"', 'id="dpanel"'):
         assert needle in text, needle
     # the dropdown and the pill chips are gone
@@ -132,7 +133,8 @@ def test_bookmarks_on_the_contents_page(little, tmp_path):
     """A build given bookmarks lists them on the contents page, each a link
     that opens the chapter at that page and move; one per page at most, in
     page order; and both pages carry the bookmark store and the warm yellow
-    token, used by the icon and the ribbon alone."""
+    token, used by the icon, the ribbon and the line under the current move
+    outside reading mode alone."""
     out, book, _ = little
     plain = (out / "index.html").read_text(encoding="utf-8")
     assert '<p class="summary small" id="bmlist"></p>' in plain
@@ -144,7 +146,8 @@ def test_bookmarks_on_the_contents_page(little, tmp_path):
     assert "--bookmark:#f2b705" in chapter and "--bookmark:#f2b705" in plain
     css = re.sub(r"/\*.*?\*/", "", _css_of(chapter), flags=re.S)
     uses = re.findall(r"[^{}]*\{[^}]*var\(--bookmark\)[^}]*\}", css)
-    assert uses and all(re.match(r"\s*(#bmbtn|#mbm|\.ribbon)", u) for u in uses), uses
+    assert uses and all(re.match(r"\s*(#bmbtn|#mbm|\.ribbon|body:not\(\.reading\) \.mark\.current\{)", u)
+                        for u in uses), uses
     assert "var(--bookmark)" not in _css_of(plain) and "var(--bookmark)" not in style.base_css()
     node = next(nid for nid, n in book["nodes"].items() if n.get("page") == 4 and n.get("san"))
     marked = dict(book, bookmarks=[{"page": 9, "node": None, "at": 2}, {"page": 4, "node": node, "at": 1},
@@ -306,7 +309,8 @@ def test_bookmarks_in_chromium(tmp_path):
     assert res["errors"] == []
     names = {c["name"] for c in res["checks"]}
     assert {"the icon fills in the warm yellow", "the ribbon covers no move box or diagram",
-            "the warm yellow colours no element but the icon and the ribbon",
+            "the warm yellow colours no element but the icon, the ribbon and the current move",
+            "the current move on the page is underlined in the warm yellow",
             "the bookmark persists after a reload", "a tap on the ribbon removes the bookmark",
             "Undo brings the bookmark back", "the contents page lists the bookmarks",
             "the link opens the chapter at the bookmarked page and move",

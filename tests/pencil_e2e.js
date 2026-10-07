@@ -6,7 +6,8 @@
 // builds it, with a patch that tests/test_reader.py computed with
 // chessbook/live.py for a correction of the move printed "Zq9"), and checks:
 // the pencil in the top bar (and in the bar at the foot of a phone screen) is
-// a thin line icon with no background; with the pencil on, a tap on a move
+// a thin line icon with no background, shown in reading mode only (the Show
+// reading icon); with the pencil on, a tap on a move
 // that the program read without doubt opens its corrector, which takes
 // another legal move; "Continue a line…" on a sequence placed in no line
 // joins it after a move tapped on the page; "Start a new line here" and "Not
@@ -48,7 +49,10 @@ function check(name, cond, detail) {
     await page.evaluate((p) => { location.hash = "#page=" + p; }, gamePage);
     await page.waitForFunction((p) => window.readerState.page === p, gamePage);
 
-    // the pencil: a thin line icon without a background, always in the top bar
+    // the pencil: a thin line icon without a background, in the top bar while Show reading is on
+    check("the pencil is hidden outside reading mode", await page.evaluate(() =>
+      !document.body.classList.contains("reading") && document.getElementById("penbtn").getClientRects().length === 0));
+    await page.click("#showread");
     const pen = await page.evaluate(() => {
       const b = document.getElementById("penbtn"), svg = b.querySelector("svg"), r = b.getBoundingClientRect();
       return { visible: r.width > 0 && r.height > 0, stroke: getComputedStyle(svg).strokeWidth,
@@ -159,6 +163,8 @@ function check(name, cond, detail) {
     await page.goto(url + "#page=" + gamePage);
     await page.reload();
     await page.waitForFunction((p) => window.readerState && window.readerState.page === p, gamePage);
+    // (the browser keeps reading mode on from above)
+    check("reading mode is still on after the reload", await page.evaluate(() => document.body.classList.contains("reading")));
     const mpen = await page.evaluate(() => { const r = document.getElementById("mpen").getBoundingClientRect();
       return r.width > 0 && r.top >= window.innerHeight - 120; });
     check("the phone bar holds the pencil", mpen);

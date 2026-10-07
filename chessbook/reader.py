@@ -295,7 +295,13 @@ CHAPTER_CSS = r"""
 .where .book{color:var(--muted);min-width:0;overflow-wrap:anywhere}
 .where h1{font-size:17px;line-height:1.35;min-width:0;overflow-wrap:anywhere}
 .tools{display:flex;align-items:center;gap:24px;flex:none}
-#showread{min-width:6.6em;text-align:left}
+#showread[aria-pressed="true"]{color:var(--accent)}
+/* A touch screen keeps a tapped button in :hover until the next tap elsewhere, which would paint a
+   switch just turned off in the accent colour of a switch that is on */
+@media (hover:none){.ib[aria-pressed="false"]:not(:disabled):hover{color:var(--fg)}}
+/* The tools that correct what the program read belong to reading mode: outside it the page holds
+   only the book, and none of them shows (or acts on a tap) */
+body:not(.reading) .rtool{display:none}
 .pnav{display:flex;align-items:center}
 .pnav .ib{padding:4px 6px}
 .pnav .ib svg{width:16px;height:16px}
@@ -339,15 +345,23 @@ height:0;border-top:1px solid var(--fail);transform:rotate(-45deg)}
 cursor:pointer;min-width:0;min-height:0;overflow:visible;outline:0 solid transparent;outline-offset:0}
 .diag{z-index:1}
 .mark{z-index:2}
-.diag.excluded{outline:1px dashed var(--muted)}
+.mark.current,.diag.current{z-index:3}
+/* Outside reading mode the boxes draw nothing on the page, on any device, except the current move:
+   it is underlined in the bookmark's yellow, the one other use of that colour (DESIGN.md), so that
+   the place in the book stands out as the bookmark does. A pointer that can hover still finds the
+   box under it. */
+body:not(.reading) .mark.current{border-bottom:2px solid var(--bookmark)}
+@media (hover:hover){.mark:hover,.diag:hover{outline:1px solid var(--accent)}}
+/* In reading mode each box shows what the program made of it */
+.reading .diag.excluded{outline:1px dashed var(--muted)}
 .reading .mark.st-guessed,.reading .mark.st-ambiguous,.reading .mark.st-inserted{outline:1px solid var(--doubt)}
 .reading .mark.st-failed{outline:1px solid var(--fail)}
 .reading .mark.st-waiting{outline:1px dotted var(--muted)}
 .reading .mark.st-unattached{outline:1px dashed var(--muted)}
-.mark:hover,.diag:hover,.reading .mark:hover{outline:1px solid var(--accent)}
-.mark.current,.diag.current,.reading .mark.current{outline:1.5px solid var(--accent);z-index:3}
-.mark:focus-visible,.diag:focus-visible,.reading .mark:focus-visible{outline:1.5px solid var(--accent);
-outline-offset:1px;z-index:4}
+.reading .mark:hover,.reading .diag:hover{outline:1px solid var(--accent)}
+.reading .mark.current,.reading .diag.current{outline:1.5px solid var(--accent)}
+.mark:focus-visible,.diag:focus-visible,.reading .mark:focus-visible,.reading .diag:focus-visible{
+outline:1.5px solid var(--accent);outline-offset:1px;z-index:4}
 .pagefoot{margin-top:16px;display:grid;gap:8px}
 .pagefoot .row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 24px}
 .onpage{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px}
@@ -428,9 +442,10 @@ background:var(--muted)}
 .dot.st-ok{background:var(--ok)}
 .dot.st-guessed,.dot.st-ambiguous,.dot.st-inserted{background:var(--doubt)}
 .dot.st-failed{background:var(--fail)}
-/* The bookmark: the only use of the warm yellow (DESIGN.md). The icon fills
-   in on a bookmarked page, and a ribbon hangs from the top edge of the page
-   picture, sized with the page as the marks are. */
+/* The bookmark: the warm yellow (DESIGN.md), which only it and the line under
+   the current move use. The icon fills in on a bookmarked page, and a ribbon
+   hangs from the top edge of the page picture, sized with the page as the
+   marks are. */
 #bmbtn[aria-pressed="true"],#mbm[aria-pressed="true"]{color:var(--bookmark)}
 #bmbtn[aria-pressed="true"] svg,#mbm[aria-pressed="true"] svg{fill:var(--bookmark)}
 .ribbon{position:absolute;top:0;width:4.5%;padding:0;margin:0;border:0;border-radius:0;background:none;
@@ -449,8 +464,9 @@ border:1px solid var(--line);white-space:nowrap}
 .bmnote .tb{margin-left:4px}
 .boardblock{display:flow-root}
 .mbar,.mini,.touch{display:none}
+/* on a touch screen, in reading mode, a faint line under each box shows where a tap lands */
 @media (hover:none) and (pointer:coarse){.touch{display:block}.mouse{display:none}
-.mark{border-bottom:1px solid color-mix(in srgb,var(--accent) 45%,transparent)}}
+.reading .mark{border-bottom:1px solid color-mix(in srgb,var(--accent) 45%,transparent)}}
 /* the compact layout: phones, and tablets held upright (one column, the board at the foot of the
    window, the bar under it) */
 @media (max-width:700px),(max-width:1100px) and (orientation:portrait){
@@ -1487,10 +1503,10 @@ function renderInfo(){
         more.map(x => "<p>" + x + "</p>").join("") + "</div>";
       const gk = gapKeyOf(S.node);
       if (gk && !(RV.edit && RV.edit.kind === "gap"))
-        h += "<p class=small><button class=tb id=fixgapbtn>" + esc(n.gap && n.san ? "Change the moves you gave" :
+        h += "<p class='small rtool'><button class=tb id=fixgapbtn>" + esc(n.gap && n.san ? "Change the moves you gave" :
           gapTitle(gk)) + "</button></p>";
       else if (n.key && beforeFen(n) && !(RV.edit && RV.edit.node === S.node))
-        h += "<p class=small><button class=tb id=fixthis>Correct this move</button></p>";
+        h += "<p class='small rtool'><button class=tb id=fixthis>Correct this move</button></p>";
       else if (n.corrected === "added" && !(RV.edit && RV.edit.node === S.node))
         h += "<p class=small><button class=tb id=fixadded>Change your variation</button></p>";
     }
@@ -1653,7 +1669,7 @@ function showDiagram(id){
   h += "<div class='small muted'>" + lines.map(x => "<p>" + x + "</p>").join("") + "</div>";
   h += "<label class=use><input type=checkbox id=usediag autocomplete=off> Use this diagram</label>";
   if (D.notPosition.indexOf(d.kind) < 0 && d.status !== "partial")
-    h += "<p class=small><button class=tb id=dfix>Correct the position</button></p>";
+    h += "<p class='small rtool'><button class=tb id=dfix>Correct the position</button></p>";
   // the lines that start from the diagram, except the one the panel already names
   const others = (d.lines || []).filter(l => D.lines[l] && l !== S.line);
   if (others.length) {
@@ -1731,10 +1747,18 @@ function selNote(){
 }
 function setReading(on){
   document.body.classList.toggle("reading", on);
-  const b = $("showread");
+  // the icon's name says what a tap does
+  const b = $("showread"), name = on ? "Hide reading" : "Show reading";
   b.setAttribute("aria-pressed", String(on));
-  b.textContent = on ? "Hide reading" : "Show reading";
+  b.setAttribute("aria-label", name);
+  b.title = name;
   try { localStorage.setItem("chessbook-reading", on ? "1" : "0"); } catch (e) { /* no storage */ }
+  if (on) return;
+  // the correction tools show in reading mode only, so none of them may stay at work unseen: the
+  // pencil goes off, and Review and the correction close
+  if (PEN.on) setPencil(false);
+  if (RV.on) setReview(false);
+  if (RV.edit) closeFix();
 }
 
 function setInverted(on){
@@ -1946,9 +1970,9 @@ CHAPTER_HTML = """<!doctype html>
 <span class="pnav"><button class="ib" id="prevpage" aria-label="Previous page" title="Previous page (Page Up)">__ICON_BACK__</button>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number"><span class="ptotal small muted" id="pagetotal"></span>
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
-<button class="ib" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
-<button class="tb" id="reviewbtn" aria-pressed="false">Review</button>
-<button class="tb" id="showread" aria-pressed="false">Show reading</button>
+<button class="ib rtool" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
+<button class="tb rtool" id="reviewbtn" aria-pressed="false">Review</button>
+<button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
 <a class="nav" href="index.html">Contents</a>
 <button class="ib" id="bmbtn" aria-pressed="false" aria-label="Bookmark this page" title="Bookmark: a tap marks this page and the chosen move.">__ICON_BOOKMARK__</button>
 <button class="ib" id="invbtn" aria-pressed="false" aria-label="Invert the page: white text on black" title="Invert the page: white text on black.">__ICON_INVERT__</button>
@@ -2032,7 +2056,7 @@ __PGNBTN__
 <div class="mbar" id="mbar" aria-label="Current move">
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
 <div class="mside"><span class="mtxt" id="mtxt"></span><span class="meval small" id="mevalnum"></span>
-<span class="mbtns"><button class="ib" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
+<span class="mbtns"><button class="ib rtool" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
 <button class="ib" id="mcpu" aria-pressed="false" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
 <button class="ib" id="mbm" aria-pressed="false" aria-label="Bookmark this page">__ICON_BOOKMARK__</button>
 <button class="ib" id="mzoom" aria-pressed="false" aria-label="Enlarge the page">__ICON_ZOOM__</button>
@@ -2216,6 +2240,7 @@ def chapter_html(book, ch, images, pgn_text, pgn_info, engine=False):
         "__ICON_END__": style.icon("end"),
         "__ICON_FLIP__": style.icon("flip"),
         "__ICON_PENCIL__": style.icon("pencil"),
+        "__ICON_READING__": style.icon("reading"),
         "__ICON_CPU__": style.icon("cpu"),
         "__ICON_GEAR__": style.icon("gear"),
         "__ICON_BOOKMARK__": style.icon("bookmark"),

@@ -64,6 +64,9 @@ line-height:0;color:var(--doubt);display:none}
 .eye.fixed{color:var(--ok)}
 .eye:hover{color:var(--accent)}
 .eye::before{content:"";position:absolute;left:50%;top:50%;width:32px;height:28px;transform:translate(-50%,-50%)}
+/* with the pencil on, a tap on a move opens its corrector, which also names the symbol: the eye
+   then takes only the taps on its own drawing, and the rest of the move is the pencil's */
+.pencil .eye::before{display:none}
 .reading .eye{display:block}
 .reading .mark.fixed,.k.fixed{outline:1px solid var(--ok)}
 .k.fixed{border-color:var(--ok)}
@@ -1039,7 +1042,7 @@ function pageEyes(){
   paintFixes();
 }
 /* ---------------- the pencil: correct anything on the page, and join or split lines */
-const PEN = {on: false, connect: null};
+const PEN = {on: false, connect: null, wasReading: null};  // wasReading: reading mode was on when the pencil came on
 function lineFixWords(part, v){
   if (part === "connect") return "Joined by you to a line after another move.";
   if (v && v.remove) return "Taken out of the line by you.";
@@ -1160,6 +1163,15 @@ function setPencil(on){
   say(on ? "Pencil on: a tap on a move, a diagram or a sequence on the page opens its correction. " +
     "A second tap on the pencil ends it." : "");
   if (!on && RV.edit && !RV.on) closeFix();
+  // the pencil is a tool of reading mode, as Review is: on, it shows the reading; off, it leaves
+  // the page as it found it
+  if (on) {
+    PEN.wasReading = reading();
+    if (!PEN.wasReading) { setReading(true); renderInfo(); layoutPanel(false); }
+  } else if (PEN.wasReading === false) {
+    PEN.wasReading = null;
+    setReading(false); renderInfo(); layoutPanel(false);
+  }
 }
 function penClick(b){
   // the pencil's tap on the page: true when it handled the tap

@@ -186,7 +186,8 @@ function check(name, cond, detail) {
     check("the patch chooses the move that makes it longer", s.san === "d4" && s.corrected === "added", s);
     await both(page, "boardmove_added_1280");
 
-    // the Review list names the variation
+    // the Review list names the variation (Review shows in reading mode)
+    await page.click("#showread");
     await page.click("#reviewbtn");
     const rev = await page.evaluate(() => document.getElementById("revlist").innerText);
     check("the Review list names the variation", /Your variation after 2\.Nf3/.test(rev) && /Added by you/.test(rev), rev);
@@ -196,6 +197,7 @@ function check(name, cond, detail) {
     check("its item opens the variation's corrector", /You added 2…d6 3\.d4 on the board/.test(s.fixText) &&
       /Remove this variation/.test(s.fixText) && s.san === "d6", s.fixText);
     await page.click("#reviewbtn");
+    await page.click("#showread");
 
     // the corrector of a move of the variation removes it
     const d4 = await page.evaluate(() => Object.keys(READER.nodes).find(k => READER.nodes[k].corrected === "added" &&
