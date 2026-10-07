@@ -35,8 +35,9 @@ TOKENS = {
     "fail": ("#b4413a", "#e0756d"),
     "board-light": ("#ecebe6", "#b9b8b2"),
     "board-dark": ("#bdbab2", "#8f8d87"),
-    # the bookmark icon when set and the ribbon on a bookmarked page, and
-    # nothing else: one sharp warm yellow in both schemes, so that it stands out
+    # the bookmark icon when set, the ribbon on a bookmarked page and the line
+    # under the current move outside reading mode, and nothing else: one sharp
+    # warm yellow in both schemes, so that it stands out
     "bookmark": ("#f2b705", "#f2b705"),
 }
 
@@ -169,6 +170,11 @@ ICONS = {
     "bookmark": "<path d='M5.5 3.5h9v13l-4.5-3.3-4.5 3.3z'/>",
     # a circle, the left half filled: the page shown in reverse
     "invert": "<circle cx='10' cy='10' r='6.5'/><path d='M10 3.5a6.5 6.5 0 0 0 0 13z' fill='currentColor' stroke='none'/>",
+    # two filled squares, the second up and to the right of the first, overlapping by a quarter:
+    # one path filled even-odd, so that the square they share is cut out. It stands for the
+    # program's reading laid over the page (Show reading). Squares of 9 match the other icons in
+    # size; their edges lie on half units, whole pixels on the iPad's and the Mac's screens
+    "reading": "<path d='M3.5 7.5h9v9h-9zM8 3h9v9H8z' fill='currentColor' fill-rule='evenodd' stroke='none'/>",
 }
 
 

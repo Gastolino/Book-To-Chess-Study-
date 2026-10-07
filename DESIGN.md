@@ -39,6 +39,14 @@ chess notation.
   thin coloured outline or a small coloured dot beside the item, with the
   meaning written out in words once on the page. Colour never carries the
   meaning alone.
+- The reader shows the book in two ways. By default the page picture is the
+  book alone: the boxes over it draw nothing, and the current move is
+  underlined 2px in the warm yellow at the foot of its box. Reading mode,
+  turned on by the Show reading icon (two filled squares of one size, the
+  second up and to the right of the first, overlapping by a quarter, with the
+  square they share cut out), outlines each scanned item by its status, gives
+  the current move the accent outline, and shows the tools that correct the
+  reading (the pencil, Review); outside reading mode those tools are hidden.
 
 ## Colour
 
@@ -59,11 +67,12 @@ Give `body` an explicit background.
 | `--fail` | `#b4413a` | `#e0756d` | failed |
 | `--board-light` | `#ecebe6` | `#b9b8b2` | light squares |
 | `--board-dark` | `#bdbab2` | `#8f8d87` | dark squares |
-| `--bookmark` | `#f2b705` | `#f2b705` | the bookmark icon when set, and the ribbon |
+| `--bookmark` | `#f2b705` | `#f2b705` | the bookmark icon when set, the ribbon, and the current move on the page outside reading mode |
 
-The bookmark is the only element that uses the warm yellow; nothing else may
-use it. It keeps the same value in dark mode, since it is meant to stand out
-from everything else on the page.
+The warm yellow marks the bookmark (the icon when set and the ribbon) and the
+current move on the page outside reading mode, and nothing else. It keeps the
+same value in dark mode, since it is meant to stand out from everything else
+on the page.
 
 In dark mode, pictures of the book (page images, thumbnails, diagram crops)
 are dimmed slightly and never inverted.

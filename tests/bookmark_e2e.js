@@ -11,7 +11,7 @@
 // ribbon removes it with "Bookmark removed. Undo" and that Undo brings it
 // back, that the contents page lists it as a link that opens the chapter at
 // that page and move, and that the warm yellow colours no element but the
-// icon and the ribbon. Then the same on an iPhone 13 (the icon in the bar at
+// icon, the ribbon and the line under the current move on the page. Then the same on an iPhone 13 (the icon in the bar at
 // the foot of the screen) and an iPad held sideways, with no sideways scroll.
 // Takes screenshots in the light and dark schemes, checks that no console
 // errors occur, and prints one JSON object with the results; the exit code
@@ -43,13 +43,14 @@ const tokenRgb = (page) => page.evaluate(() => {
   const rgb = getComputedStyle(probe).color; probe.remove(); return rgb;
 });
 // every element whose computed colours hold the given colour, apart from the
-// bookmark icons and the ribbon (and what is inside them)
+// bookmark icons and the ribbon (and what is inside them) and the box of the
+// current move on the page, which reading mode off underlines in that colour
 const yellowElsewhere = (page, rgb) => page.evaluate((rgb) => {
   const props = ["color", "background-color", "border-top-color", "border-right-color", "border-bottom-color",
                  "border-left-color", "outline-color", "fill", "stroke", "text-decoration-color"];
   const found = [];
   for (const el of document.querySelectorAll("*")) {
-    if (el.closest("#bmbtn, #mbm, #ribbon")) continue;
+    if (el.closest("#bmbtn, #mbm, #ribbon") || el.matches("#ov .mark.current")) continue;
     const cs = getComputedStyle(el);
     for (const p of props) if (cs.getPropertyValue(p) === rgb) found.push(el.tagName + "#" + el.id + "." + el.className + ":" + p);
   }
@@ -131,6 +132,12 @@ const ribbonFits = (page) => page.evaluate(() => {
     check("a page without a bookmark shows the plain icon and no ribbon",
           st.pressed === "false" && !st.ribbon && (await stored(page)) === null, st);
     check("the warm yellow colours nothing before a bookmark is set", (await yellowElsewhere(page, rgb)).length === 0);
+    const under = await page.evaluate(() => {
+      const el = document.querySelector("#ov .mark.current"), cs = el && getComputedStyle(el);
+      return cs && { width: cs.borderBottomWidth, style: cs.borderBottomStyle, color: cs.borderBottomColor };
+    });
+    check("the current move on the page is underlined in the warm yellow",
+          under && under.width === "2px" && under.style === "solid" && under.color === rgb, { under, rgb });
     const plain = await page.evaluate(() => ({
       color: getComputedStyle(document.getElementById("bmbtn")).color,
       fill: getComputedStyle(document.querySelector("#bmbtn svg")).fill }));
@@ -161,7 +168,7 @@ const ribbonFits = (page) => page.evaluate(() => {
       return getComputedStyle(poly).fill === rgb && cs.boxShadow === "none" && cs.backgroundColor === "rgba(0, 0, 0, 0)";
     }, rgb));
     const only = await yellowElsewhere(page, rgb);
-    check("the warm yellow colours no element but the icon and the ribbon", only.length === 0, only);
+    check("the warm yellow colours no element but the icon, the ribbon and the current move", only.length === 0, only);
     await shot(page, "bookmark_1280_light.png");
     await page.emulateMedia({ colorScheme: "dark" });
     const dark = await tokenRgb(page);
@@ -265,7 +272,7 @@ const ribbonFits = (page) => page.evaluate(() => {
       const wide = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       check("no sideways scroll", wide <= 0, wide);
       const found = await yellowElsewhere(page, rgb);
-      check("the warm yellow colours no element but the icons and the ribbon", found.length === 0, found);
+      check("the warm yellow colours no element but the icons, the ribbon and the current move", found.length === 0, found);
       await page.evaluate(() => document.getElementById("pagebox").scrollIntoView({ block: "start" }));
       await page.waitForTimeout(300);
       await shot(page, "bookmark_" + width + "_light.png");
