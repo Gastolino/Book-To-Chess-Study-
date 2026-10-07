@@ -8,28 +8,36 @@ function say(text) {
   postMessage({ type: "progress", text: String(text) });
 }
 
+// numpy and OpenCV (for reading the board pictures and the figurines' shapes)
+// come from Pyodide itself. A book opened from its stored reading needs neither
+// to show, so they load after the worker is ready; reading a book, a
+// correction and the state that applies corrections wait for them (boardsP).
+// loadPackage reports a package it cannot fetch on the console and goes on,
+// so the packages loaded are checked afterwards (without them a book is read
+// as before, and its diagrams stay unread).
+let boardsP = Promise.resolve(true);
+async function loadBoards(cfg) {
+  if (!cfg.packages || !cfg.packages.length) return true;
+  try { await py.loadPackage(cfg.packages, { messageCallback: () => {}, errorCallback: () => {} }); }
+  catch (err) { /* checked below */ }
+  const ok = cfg.packages.every((name) => name in py.loadedPackages);
+  postMessage({ type: "boards", ok });
+  return ok;
+}
+
 async function init(cfg) {
   importScripts(cfg.indexURL + "pyodide.js");
   say("Starting Python in the browser");
   py = await loadPyodide({ indexURL: cfg.indexURL });
   say("Loading the PDF and chess libraries");
-  // numpy and OpenCV (for reading the board pictures) come from Pyodide itself
-  // (without them the book is read as before, and its diagrams stay unread).
-  // loadPackage reports a package it cannot fetch on the console and goes on,
-  // so the packages loaded are checked afterwards.
-  let boards = true;
-  if (cfg.packages && cfg.packages.length) {
-    try { await py.loadPackage(cfg.packages, { messageCallback: () => {}, errorCallback: () => {} }); }
-    catch (err) { /* checked below */ }
-    boards = cfg.packages.every((name) => name in py.loadedPackages);
-  }
   await py.loadPackage(cfg.wheels);
   const zip = await (await fetch(cfg.appZip)).arrayBuffer();
   py.unpackArchive(zip, "zip", { extractDir: "/app" });
   py.FS.mkdirTree("/books");
   py.runPython("import sys; sys.path.insert(0, '/app/web')");
   driver = py.pyimport("driver");
-  postMessage({ type: "ready", boards, version: driver.VERSION });
+  postMessage({ type: "ready", version: driver.VERSION });
+  boardsP = loadBoards(cfg);
 }
 
 // Bytes made by Python, as a JavaScript array (the Python object is freed).
@@ -86,6 +94,7 @@ onmessage = async (event) => {
       await init(msg.cfg);
     } else if (msg.type === "process") {
       const t0 = performance.now();
+      await boardsP;
       const path = "/books/" + msg.name;
       py.FS.writeFile(path, new Uint8Array(msg.bytes));
       const id = ++job;
@@ -108,12 +117,17 @@ onmessage = async (event) => {
       const path = "/books/" + msg.name;
       py.FS.writeFile(path, new Uint8Array(msg.bytes));
       py.FS.writeFile("/books/reading.bin", await gzip(msg.reading, "decompress"));
+      // corrections the reading may lack are applied before the book shows: with the state
+      // that applies them, which needs the board libraries
+      if (msg.corrections) await boardsP;
       const id = ++job;
       const events = JSON.parse(driver.restore(path, "/books/reading.bin", msg.selection || null,
                                                msg.corrections || null));
       py.FS.unlink("/books/reading.bin");
       for (const ev of events) postMessage(ev);
       if (events.length && events[0].type === "stale") return;
+      // the book shows; the state that applies corrections loads once the libraries are there
+      await boardsP;
       await run(id, t0);
     } else if (msg.type === "save") {
       // the finished reading, gzipped, for the library
@@ -142,10 +156,12 @@ onmessage = async (event) => {
       postMessage({ type: "drawn", pages, size: head.size, window: msg.window, gen: msg.gen,
                     seconds: (performance.now() - t0) / 1000 }, Object.values(pages).map((b) => b.buffer));
     } else if (msg.type === "correct") {
+      await boardsP;
       // a correction made in the open chapter: applied to the book at once
       const out = driver.correct(msg.corrections, msg.chapter);
       postMessage({ type: "patch", chapter: msg.chapter, result: JSON.parse(out) });
     } else if (msg.type === "correct-more") {
+      await boardsP;
       // a piece-symbol correction reaching the other chapters, a few at a time;
       // the patch is for the chapter the worker opened last
       const result = JSON.parse(driver.correct_more(JSON.stringify(msg.chapters), msg.chapter || ""));

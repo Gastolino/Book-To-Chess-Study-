@@ -119,3 +119,28 @@ def test_app_in_chromium(tmp_path):
         assert "the app's reader shows an eval from the engine" in names
     print(json.dumps(res["timings"], indent=1))
     print("\n".join(res["notes"]))
+
+
+@pytest.mark.skipif(not _ready(), reason="no local Pyodide folder, Pyodide wheels, node or Playwright")
+def test_the_libraries_come_from_the_device_after_the_first_visit(tmp_path):
+    """The service worker (web/sw.js) keeps Pyodide and the wheels on the
+    device (tests/sw_e2e.js)."""
+    site = tmp_path / "site"
+    subprocess.run([sys.executable, str(ROOT / "tools" / "build_web.py"), "--out", str(site),
+                    "--local", str(PYODIDE), "--pymupdf", str(_wheel("pymupdf-*.whl")),
+                    "--chess", str(_wheel("chess-*.whl"))], check=True)
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(_Handler, directory=str(site)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        env = dict(os.environ, NODE_PATH=NODE_PATH)
+        proc = subprocess.run([NODE, str(ROOT / "tests" / "sw_e2e.js"),
+                               f"http://127.0.0.1:{server.server_address[1]}/", str(tmp_path / "profile")],
+                              capture_output=True, text=True, env=env, timeout=1200)
+    finally:
+        server.shutdown()
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout[-3000:] + proc.stderr[-3000:]
+    res = json.loads(lines[-1])
+    assert res["ok"], (res.get("failure"), [c for c in res["checks"] if not c["ok"]], res["errors"])
+    print(json.dumps(res["timings"], indent=1))

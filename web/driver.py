@@ -474,6 +474,7 @@ def correct_more(chapters_json, name=""):
     the patch for the chapter the worker opened last (name when it has
     opened none since the contents page) when its lines changed."""
     t0 = time.perf_counter()
+    _settle()
     if _loading() or STATE.get("keep") is None:
         return json.dumps({"patch": None, "pending": [], "chapter": name, "seconds": 0})
     todo = set(json.loads(chapters_json))
@@ -533,6 +534,7 @@ def save_reading():
     opens it again."""
     if _loading():
         raise ValueError("The book is still being read.")
+    _settle()
     keep = STATE["keep"]
     if keep is None:
         raise ValueError("The book was opened without the state that applies corrections.")
@@ -583,10 +585,42 @@ def reading_header(path):
         return h
 
 
-def _load_reading(path, header):
+class _Later:
+    """The state that applies corrections, left in a stored reading until it
+    is needed (_settle): loading it takes most of the time of opening a book,
+    and its figurine shapes need numpy and OpenCV, which the app loads after
+    it is ready. It shares objects with the book, so the same unpickler
+    loads it, from the reading kept in memory meanwhile."""
+
+    def __init__(self, unpickler, buf):
+        self.unpickler, self.buf = unpickler, buf
+
+    def load(self):
+        try:
+            return self.unpickler.load()
+        finally:
+            self.unpickler = self.buf = None
+
+
+def _load_reading(path, header, later=False):
     """(book, keep, thumbs) from a stored reading; keep is None when this
     program cannot load the builder's state, and book None when it cannot
-    load the book either. thumbs is {} for a reading saved without them."""
+    load the book either. thumbs is {} for a reading saved without them.
+    With later, keep is a _Later (for a reading of format 2) instead."""
+    if later and header["format"] >= 2:
+        buf = io.BytesIO(Path(path).read_bytes())
+        buf.read(len(READING_MAGIC2))
+        buf.readline()
+        u = pickle.Unpickler(buf)
+        try:
+            book = u.load()
+        except Exception:
+            return None, None, {}
+        try:
+            thumbs = u.load() if header.get("thumbs") else {}
+        except Exception:
+            return book, None, {}           # nor can the state that follows load
+        return book, _Later(u, buf), {k: base64.b64encode(v).decode("ascii") for k, v in thumbs.items()}
     with open(path, "rb") as f:
         f.read(len(READING_MAGIC2) if header["format"] >= 2 else len(READING_MAGIC))
         f.readline()
@@ -633,27 +667,28 @@ def restore(path, reading_path, selection_json=None, corrections_json=None):
         return json.dumps([{"type": "stale", "why": "The selection of pages and diagrams changed "
                                                     "since the stored reading was made."}])
     t0 = time.perf_counter()
-    book, keep, thumbs = _load_reading(reading_path, header)
+    book, later, thumbs = _load_reading(reading_path, header, later=True)
     if book is None:
         return json.dumps([{"type": "stale", "why": "The stored reading was made by a version of "
                                                     "the program that this one cannot open."}])
-    outdated = None
-    if keep is None:
-        outdated = "state"
-    elif header.get("version") != VERSION:
-        outdated = "code"
     import pymupdf
     _clear()
     doc = pymupdf.open(pdf)
-    if keep is not None:
-        keep.update(doc=doc, pdf=pdf)
-        keep["builder"].doc = doc
     fix_path = corrections.corrections_path(pdf, CFG)
     fix = corrections.parse_corrections_text(corrections_json) if corrections_json else \
         corrections.empty()
     corrections.save(fix, fix_path)
     old = corrections.normalise(book.get("corrections") or {})
-    if keep is not None and any(fix[k] != old[k] for k in corrections.PARTS):
+    differ = any(fix[k] != old[k] for k in corrections.PARTS)
+    # the state that applies corrections is loaded now only when corrections made since the
+    # reading was stored must be applied before the book shows; otherwise after it shows
+    keep = _settle_keep(later, doc, pdf) if differ or not isinstance(later, _Later) else None
+    outdated = None
+    if keep is None and (differ or not isinstance(later, _Later)):
+        outdated = "state"
+    elif header.get("version") != VERSION:
+        outdated = "code"
+    if keep is not None and differ:
         try:
             live.apply(keep, book, fix)
         except Exception:
@@ -671,13 +706,42 @@ def restore(path, reading_path, selection_json=None, corrections_json=None):
                  built=set(), built_from={}, data={}, recent=[], fix_path=fix_path, index_stale=False,
                  pending=set(), open=None, book=book, keep=keep, t0=t0,
                  selection=header.get("selection"), restored=True, timeline={}, outdated=outdated,
-                 reading_version=header.get("version"), thumbs_drawn=False)
+                 reading_version=header.get("version"), thumbs_drawn=False,
+                 keep_later=later if keep is None and outdated != "state" else None)
     reader.build_reader(book, pdf, STATE["out"], chapters=set(), app=True, thumbs=STATE["thumbs"])
     html = (STATE["out"] / "index.html").read_text(encoding="utf-8")
     _lighten(full=True)
     return json.dumps([dict({"type": "index", "html": html, "title": book["title"],
                              "pages": book["page_count"], "restored": True, "outdated": outdated,
                              "seconds": round(time.perf_counter() - t0, 2)}, **_chapter_list(book))])
+
+
+def _settle_keep(later, doc, pdf):
+    """The state that applies corrections, from a _Later (or as loaded), tied
+    to the open document; None when this program cannot load it."""
+    try:
+        keep = later.load() if isinstance(later, _Later) else later
+    except Exception:
+        keep = None
+    if keep is not None:
+        keep.update(doc=doc, pdf=pdf)
+        keep["builder"].doc = doc
+    return keep
+
+
+def _settle():
+    """Load the state that applies corrections of a book opened from its
+    stored reading, if it waits still. Returns "state" when it cannot be
+    loaded (the book shows as stored, and corrections need it read again)."""
+    later = STATE.pop("keep_later", None)
+    if later is None:
+        return None
+    keep = _settle_keep(later, STATE["doc"], STATE["pdf"])
+    STATE["keep"] = keep
+    if keep is None:
+        STATE["outdated"] = "state"
+        return "state"
+    return None
 
 
 def _chapter_list(book):
@@ -690,6 +754,7 @@ def _chapter_list(book):
 
 
 def _no_state():
+    _settle()
     if STATE.get("book") is not None and STATE.get("keep") is None:
         raise ValueError("This copy of the book was read by an earlier version of the program, which "
                          "this one cannot correct. Read again reads the book anew and keeps your "
@@ -697,8 +762,11 @@ def _no_state():
 
 
 def _restored_step():
-    """After restore(): the page thumbnails of the contents page, a batch at
-    a time, then "done"."""
+    """After restore(): the state that applies corrections, the page
+    thumbnails of the contents page (a batch at a time), then "done"."""
+    if STATE.get("keep_later") is not None:
+        why = _settle()
+        return json.dumps({"events": [{"type": "outdated", "why": why}] if why else [], "done": False})
     doc = STATE["doc"]
     todo = [p for p in range(1, doc.page_count + 1) if p not in STATE["thumbs"]]
     todo = todo[:progressive.THUMB_BATCH]

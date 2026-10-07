@@ -125,3 +125,34 @@ def test_final_patch_keeps_the_move(tmp_path, monkeypatch):
     for old, key in keyed.items():
         new = final["renamed"].get(old)
         assert new and final["nodes"][new]["key"] == key
+
+
+def test_the_reading_goes_on_from_the_open_chapter():
+    """Before the first pass, the chapter read ahead is the one after the
+    open chapter (the reader goes on from where it is), not the first one
+    of the book; with the front matter or nothing open, it is the first."""
+    job = progressive.Job.__new__(progressive.Job)
+    chapters = [{"start": 1, "end": 4}] + [{"start": 5 + 10 * i, "end": 14 + 10 * i} for i in range(5)]
+    for i, c in enumerate(chapters):
+        c["file"] = f"ch{i:02d}.html"
+    job.plain, job.changed, job.solo, job.prov, job.ctx = {"chapters": chapters}, False, {}, {}, {}
+    job.open = None
+    assert job._wanted() == 1
+    job.open = "ch00.html"
+    assert job._wanted() == 0                   # the open front matter itself
+    job.solo[0] = {}
+    assert job._wanted() == 1
+    job.open = "ch03.html"
+    assert job._wanted() == 3                   # the open chapter first
+    job.solo[3] = {}
+    assert job._wanted() == 4                   # then the one after it, not chapter 1
+    job.solo[4] = {}
+    assert job._wanted() is None
+    job.open = "ch05.html"
+    job.solo[5] = {}
+    assert job._wanted() is None                # the last chapter: nothing after it
+    job.ctx["pass_no"] = 1
+    job.open = "ch02.html"
+    assert job._wanted() == 2                   # during the pass, only the open chapter
+    job.solo[2] = {}
+    assert job._wanted() is None

@@ -17,6 +17,7 @@ it) into site/engine/, where the reader loads it the first time analysis is
 turned on; without it the reader says that the engine is not installed.
 """
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -180,6 +181,18 @@ start at once.</div>
 <script>
 const CFG = __CFG__;
 const $ = (id) => document.getElementById(id);
+// The libraries come from the device after the first visit (sw.js). On the very first visit
+// the worker starts once the service worker looks after the page (or after two seconds), so
+// that what it loads is kept already.
+const SW = ("serviceWorker" in navigator && /^https?:$/.test(location.protocol))
+  ? navigator.serviceWorker.register("sw.js").then(() => {
+      if (navigator.serviceWorker.controller) return;
+      return new Promise((resolve) => {
+        navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
+        setTimeout(resolve, 2000);
+      });
+    }).catch(() => {})
+  : Promise.resolve();
 const worker = new Worker("worker.js");
 let ready = false, busy = false, current = null, lastFile = null, lastName = "";
 // While the worker reads the book, the reader can already read it: the top bar
@@ -406,9 +419,15 @@ worker.onmessage = (e) => {
     ready = true;
     fraction = null;
     working(busy);
-    const choose = LIB.on ? "Ready. Open a book or add one." : "Ready. Choose a book.";
-    if (!busy) status(m.boards === false ? choose + " This browser could not load board reading, so " +
-      "the program reads only the diagrams that the book prints in a chess font." : choose);
+    if (!busy) status(LIB.on ? "Ready. Open a book or add one." : "Ready. Choose a book.");
+  } else if (m.type === "boards") {
+    // the board libraries load after the worker is ready (a stored book needs none to show)
+    if (!m.ok) status("This browser could not load board reading, so the program reads only the " +
+      "diagrams that the book prints in a chess font.");
+  } else if (m.type === "outdated") {
+    // the stored reading's state for corrections could not be loaded once the book showed
+    outdated(m.why);
+    if (openChapter && openChapter !== "index.html") $("note").textContent = outdatedNote;
   } else if (m.type === "index") {
     // the chapters are known: the book opens at its first page (a new book), or where the
     // reader was (the library's place, the app coming back, Read again), while the reading
@@ -840,7 +859,7 @@ function storedCorrections(name) {
   } catch (e) { /* no storage */ }
   return null;
 }
-worker.postMessage({ type: "init", cfg: CFG });
+SW.then(() => worker.postMessage({ type: "init", cfg: CFG }));
 // the start page becomes the library: the Cloudflare site's, or the one in
 // this browser; a book the system closed while it was open opens again there
 LIB.start(SESSION.pending()).then((on) => {
@@ -932,6 +951,14 @@ def main(argv=None):
         engine = "new URL('engine/', location.href).href"
         (out / "_headers").write_text("/engine/*\n  Cache-Control: public, max-age=31536000, immutable\n",
                                       encoding="utf-8")
+    # The service worker (web/sw.js) keeps the libraries on the device: Pyodide's
+    # folder and the wheels, whose names change with their versions.
+    keep = [index_url] + ["wheels/"]
+    digest = hashlib.sha256(json.dumps([index_url] + wheels).encode("utf-8")).hexdigest()[:12]
+    sw = (ROOT / "web" / "sw.js").read_text(encoding="utf-8")
+    keep_js = "[" + ", ".join(f"new URL({k!r}, self.registration.scope).href" for k in keep) + "]"
+    (out / "sw.js").write_text(sw.replace("__CACHE__", "chessbook-libs-" + digest)
+                               .replace("__KEEP__", keep_js), encoding="utf-8")
     # Wheel paths are made absolute against the site, because the worker
     # resolves them from its own location.
     cfg = ("{indexURL: new URL(%r, location.href).href, appZip: new URL('app.zip', location.href).href, "

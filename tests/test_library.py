@@ -115,6 +115,70 @@ def test_a_reading_without_thumbnails_is_saved_again_with_them(tmp_path, monkeyp
     assert not any(e["type"] == "thumbs" for e in _drain(driver))
 
 
+BLOCKED_OPEN = r"""
+import json, sys
+class Block:
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in ("numpy", "cv2"):
+            raise ImportError("not loaded yet: " + name)
+sys.meta_path.insert(0, Block())
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/web"]
+from pathlib import Path
+import driver
+driver.OUT, driver.CFG = Path(sys.argv[2]) / "out", Path(sys.argv[2]) / "cfg"
+ev = json.loads(driver.restore(sys.argv[3], sys.argv[4]))
+html = driver.chapter(ev[0]["first"], lambda *_: None)
+print(json.dumps({"type": ev[0]["type"], "outdated": ev[0]["outdated"], "chapter": "<html" in html,
+                  "waiting": driver.STATE.get("keep_later") is not None,
+                  "numpy": "numpy" in sys.modules or "cv2" in sys.modules}))
+"""
+
+
+def test_a_stored_book_shows_before_the_board_libraries_load(tmp_path, monkeypatch, garbled):
+    """The app loads numpy and OpenCV after it is ready: a stored book opens
+    and its chapters show without them, and the state that applies
+    corrections (which needs them) loads in the first step after."""
+    driver = _driver(tmp_path, monkeypatch)
+    driver.process(str(garbled), lambda *_: None)
+    saved = tmp_path / "reading.bin"
+    saved.write_bytes(driver.save_reading())
+    out = subprocess.run([sys.executable, "-c", BLOCKED_OPEN, str(ROOT), str(tmp_path / "w"), str(garbled),
+                          str(saved)], capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0, out.stderr[-3000:]
+    res = json.loads(out.stdout.strip().splitlines()[-1])
+    assert res == {"type": "index", "outdated": None, "chapter": True, "waiting": True, "numpy": False}
+
+    # with the libraries there: the state loads in the first step, and corrections apply
+    driver.STATE.clear()
+    driver.restore(str(garbled), str(saved))
+    assert driver.STATE["keep"] is None and driver.STATE["keep_later"] is not None
+    first = json.loads(driver.step())
+    assert first == {"events": [], "done": False}
+    assert driver.STATE["keep"] is not None and driver.STATE.get("keep_later") is None
+    _drain(driver)
+    res = json.loads(driver.correct(json.dumps({"version": 1, "glyphs": {"tLl": "N"}}), "ch01.html"))
+    assert "patch" in res
+
+
+def test_a_state_that_cannot_load_is_said_after_the_book_shows(tmp_path, monkeypatch, garbled):
+    driver = _driver(tmp_path, monkeypatch)
+    driver.process(str(garbled), lambda *_: None)
+    saved = tmp_path / "reading.bin"
+    saved.write_bytes(driver.save_reading())
+    driver.STATE.clear()
+    driver.restore(str(garbled), str(saved))
+
+    class Broken:
+        def load(self):
+            raise ImportError("the builder's classes changed")
+    driver.STATE["keep_later"] = driver._Later(Broken(), None)
+    events = _drain(driver)
+    assert {"type": "outdated", "why": "state"} in events
+    assert driver.STATE["keep"] is None
+    with pytest.raises(ValueError):
+        driver.correct(json.dumps({"version": 1, "glyphs": {"tLl": "N"}}), "ch01.html")
+
+
 def _read_until(driver, path, stop=None, partial=None, selection=None):
     """Read the book at path; at each checkpoint keep checkpoint()'s bytes.
     With stop (a part name) the reading ends there, as a reading the app
