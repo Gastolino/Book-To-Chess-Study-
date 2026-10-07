@@ -19,7 +19,7 @@ It writes output/<stem>/book.json and returns the same dict:
                     "page", "bbox", "status", "raw", "comment", "main",
                     "assumed", "uci", "line", "alternatives"?, "reason"?, "key"?,
                     "corrected"?, "gap"?, "fill"?, "missing"?, "added"?, "added_before"?,
-                    "added_stale"?}},
+                    "added_stale"?, "region"?}},
      "unattached": [{"page", "chapter", "text", "reason", "key", "bbox"}],
      "dismissed", "attached": [the same, for sequences the reader dismissed or placed],
      "symbols": {piece symbol: times printed}, "letters", "corrections",
@@ -56,7 +56,9 @@ there), or "added" (a move of a variation the reader added on the board,
 corrections.py "added": such a node has no token, and its "added" is the key
 of the printed move the variation branches from, after it or, with
 "added_before", before it; "added_stale" on that move's node says why moves
-the reader added there are left out). "symbols" counts every such piece symbol in the book, for the
+the reader added there are left out; "region" ({"page", "rect"}) on a move
+the reader read in a section of a page that the program missed, whose mark
+on that page is the box of its printed word, or the section's box). "symbols" counts every such piece symbol in the book, for the
 reader's Review view.
 
 The corrections are not used while the book is assembled. Each line keeps
@@ -242,6 +244,7 @@ import pymupdf
 from . import corrections as fixes
 from . import figurines
 from . import pdftext as pt
+from . import region
 from . import selection as sel
 from .movetext import GlyphModel, Token, clean_run, decode, find_sequences, numbering_counts
 from .movetext import DOTLESS_MIN, DOTLESS_SHARE
@@ -4607,48 +4610,116 @@ class _Builder:
 
     def add_variation(self, L, nid, key, entry, before):
         """Play one variation the reader added at node nid; returns why its
-        moves (or the rest of them) are left out, or ""."""
+        moves (or the rest of them) are left out, or "". The moves of an
+        entry read from a section of a page (corrections.py "added" with
+        "rect") carry the section ("region") and have their boxes on its
+        page; with "main" they continue the main line when nid ends it."""
         base = self.nodes[nid]["parent"] if before else nid
         where = (f"before {self.move_words(nid)}" if before else f"after {self.move_words(nid)}")
+        section = entry.get("rect") is not None
+        first = entry.get("first", 0) if section else len(entry["san"])
         fen = self.nodes[base]["fen"]
         if not fen or self.nodes[base]["status"] == "waiting":
             return (f"The position {where} is unknown, so the program cannot play the moves you "
-                    "added there.")
+                    + ("read on the page there." if section else "added there."))
         board = chess.Board(fen)
         parent = base
+        read = []           # (place among the section's moves, node) of the moves made from it
+        stop = ""
         for i, san in enumerate(entry["san"]):
             try:
                 mv = board.parse_san(san)
-            except ValueError:
-                side = "Black" if board.turn == chess.BLACK else "White"
-                if i == 0:
-                    return (f"The variation you added {where} starts with {san}, which is not a "
-                            f"legal move for {side} there, so the program leaves it out.")
-                return (f"A variation you added {where} goes on with {san}, which is not a legal "
-                        f"move for {side} there, so the program leaves out the moves from it on.")
+            except ValueError as exc:
+                stop = self.left_out(board, san, exc, where, section, i == 0)
+                break
             s = board.san(mv)
             hit = self.child_with(parent, s)
             if hit is not None:
                 h = self.nodes[hit]
                 if h.get("added") != key or bool(h.get("added_before")) != before:
-                    return (f"The line plays {s} {where} itself, so the program leaves out the "
-                            "variation you added with it.")
+                    stop = (f"The line plays {s} {where} itself, so the program leaves out the " +
+                            ("moves you read on the page with it." if section else
+                             "variation you added with it."))
+                    break
                 parent = hit
                 board.push(mv)
                 continue
+            # a section read after the last move of the main line goes on with the main line
+            main = bool(entry.get("main")) and not before and parent == L.main_nodes[-1] and \
+                self.nodes[parent]["main"]
             number, black = board.fullmove_number, board.turn == chess.BLACK
             board.push(mv)
             new = self.new_node(L, parent=parent, san=s, fen=board.fen(), number=number,
-                                black=black, status="ok", raw="", main=False, uci=mv.uci(),
+                                black=black, status="ok", raw="", main=main, uci=mv.uci(),
                                 page=self.nodes[nid]["page"], corrected="added", added=key)
+            if main:
+                L.main_nodes.append(new)
             if before:
                 self.nodes[new]["added_before"] = True
+            if i >= first:
+                self.nodes[new].update(page=entry["page"],
+                                       region={"page": entry["page"], "rect": list(entry["rect"])})
+                read.append((i - first, new))
             parent = new
+        if read:
+            self.mark_section(L, entry, read, len(entry["san"]) - first)
+        if stop:
+            return stop
         # the reader's note goes with the last move of the variation
         note = entry.get("note")
         if note and parent != base and note not in self.nodes[parent]["comment"]:
             self.nodes[parent]["comment"] = (self.nodes[parent]["comment"] + " " + note).strip()
         return ""
+
+    @staticmethod
+    def left_out(board, san, exc, where, section, first):
+        """Why a move the reader gave is left out, with the moves after it."""
+        side = "Black" if board.turn == chess.BLACK else "White"
+        if isinstance(exc, chess.AmbiguousMoveError):
+            why = f"which more than one {side.lower()} piece can play there"
+        elif isinstance(exc, chess.InvalidMoveError):
+            why = "which is not a move in standard notation"
+        else:
+            why = f"which is not a legal move for {side} there"
+        if section:
+            return (f"The moves you read on the page {where} " + ("start" if first else "go on") +
+                    f" with {san}, {why}, so the program " +
+                    ("leaves them out." if first else "leaves out the moves from it on."))
+        if first:
+            return (f"The variation you added {where} starts with {san}, {why}, so the program "
+                    "leaves it out.")
+        return (f"A variation you added {where} goes on with {san}, {why}, so the program leaves "
+                "out the moves from it on.")
+
+    def mark_section(self, L, entry, read, n):
+        """The boxes on the page of the moves read from a section (read:
+        [(place among the section's n moves, node)]): the box of each printed
+        move when the section prints n moves, else the section's box on its
+        first move. A box takes its place among the page's marks in reading
+        order (down a column, then the next column), which the Review list
+        follows."""
+        page, rect = entry["page"], entry["rect"]
+        boxes = region.move_boxes(self.doc, page, rect, n)
+        if boxes is None:
+            read = read[:1]
+        try:
+            half = self.doc[page - 1].rect.width / 2 if self.doc is not None else 0
+        except Exception:           # a page the document cannot give: the order of the boxes alone
+            half = 0
+
+        def place(b):
+            return ((b[0] + b[2]) / 2 > half if half else False, b[1], b[0])
+        for k, nid in read:
+            box = list(boxes[k]) if boxes is not None else list(rect)
+            here = self.marks[page]
+            lo = max((m["_o"] for m in here if place(m["bbox"]) <= place(box)), default=None)
+            hi = min((m["_o"] for m in here if place(m["bbox"]) > place(box)), default=None)
+            o = (0.0 if lo is None and hi is None else hi - 1 if lo is None else
+                 lo + 1 if hi is None else (lo + hi) / 2)
+            self.nodes[nid]["bbox"] = box
+            here.append({"bbox": box, "node": nid, "status": "ok", "raw": self.nodes[nid]["san"],
+                         "line": L.id, "_o": o, "corrected": "added"})
+            self.line_pages[L.id].add(page)
 
     def finish_replayed(self, L):
         """Status and pages of a replayed line, and the comments of the
@@ -4666,8 +4737,9 @@ class _Builder:
             L.status = {0: "ok", 1: "guessed", 2: "ambiguous", 3: "failed"}[worst]
             if len(L.main_nodes) <= 1:
                 L.status = "failed"
+        # (the moves read from a section of a page carry it in the main line too)
         pages = [self.nodes[n]["page"] for n in L.main_nodes[1:]
-                 if self.nodes[n]["page"] and self.nodes[n].get("key")]
+                 if self.nodes[n]["page"] and (self.nodes[n].get("key") or self.nodes[n].get("region"))]
         L.end_page = max(pages + [L.page])
 
     def apply_fix(self, fix, chapters=None, window=None):

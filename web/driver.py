@@ -50,7 +50,7 @@ from pathlib import Path
 
 sys.path.insert(0, "/app")
 
-from chessbook import corrections, live, progressive, reader, selection  # noqa: E402
+from chessbook import corrections, live, progressive, reader, region, selection  # noqa: E402
 
 OUT = Path("/out")
 CFG = Path("/cfg")
@@ -73,7 +73,7 @@ KEEP_CHAPTERS = 3
 READING_FILES = ("chessbook/assemble.py", "chessbook/movetext.py", "chessbook/boards.py",
                  "chessbook/figshapes.py", "chessbook/figurines.py", "chessbook/pdftext.py",
                  "chessbook/textdiagram.py", "chessbook/selection.py", "chessbook/corrections.py",
-                 "chessbook/live.py", "chessbook/assets", "stage1_inspect.py")
+                 "chessbook/live.py", "chessbook/region.py", "chessbook/assets", "stage1_inspect.py")
 # The form of a stored reading (save_reading); raised by hand when it changes.
 READING_FORMAT = 2
 
@@ -490,6 +490,70 @@ def correct_more(chapters_json, name=""):
             patch, STATE["data"][name] = live.chapter_patch(STATE["book"], ch, STATE["data"][name])
     _stale(res, keep=name)
     return json.dumps({"patch": patch, "pending": res["pending"], "chapter": name,
+                       "seconds": round(time.perf_counter() - t0, 3)})
+
+
+# ---------------------------------------------------------------- a section of a page
+
+def words(page, x0, y0, x1, y1, near=0):
+    """The words of the text layer of PDF page `page` in and near the
+    rectangle (x0, y0)-(x1, y1), in PDF points, with their boxes (see
+    chessbook/region.py words()), as JSON: the reader's selection snaps to
+    the word under a tap."""
+    return json.dumps(region.words(_doc(), int(page), [x0, y0, x1, y1], float(near or 0)))
+
+
+def _region_decoder():
+    """The book's own decoder: its glyph model and letters, with the piece
+    symbols the reader named. While the book is read, the glyph model learnt
+    so far (or the one every book starts from)."""
+    if STATE.get("book") is not None:
+        _settle()
+        if STATE.get("keep") is not None:
+            return STATE["keep"]["builder"].dec
+    from chessbook import assemble
+    from chessbook.movetext import GlyphModel
+    job = STATE.get("job")
+    ctx = job.ctx if job is not None else {}
+    letters = ctx.get("letters") or (STATE.get("book") or {}).get("letters")
+    return assemble._Decoder(ctx.get("glyphs") or GlyphModel(seed=True), letters)
+
+
+def _position_at(at, side):
+    """The position that the moves of a section start from: at is a FEN, or
+    the id or token key of a move of the book, and side "after" or "before"
+    that move."""
+    if "/" in at:
+        return at
+    book = STATE.get("book")
+    if book is None and STATE.get("job") is not None and STATE.get("open"):
+        book = STATE["job"].source(int(STATE["open"][2:-5]))
+    nodes = (book or {}).get("nodes") or {}
+    n = nodes.get(at) or next((v for v in nodes.values() if v.get("key") == at), None)
+    if n is None:
+        raise ValueError("The program no longer finds the move that the section follows.")
+    if side == "before":
+        n = nodes.get(n["parent"]) if n.get("parent") is not None else None
+    if n is None or not n.get("fen"):
+        raise ValueError("The position at that move is unknown, so the program cannot read moves from it.")
+    return n["fen"]
+
+
+def read_region(page, rect_json, at, side="after"):
+    """What the program reads in a section of PDF page `page` (rect_json: the
+    rectangle [x0, y0, x1, y1] in PDF points): the text printed there and the
+    move sequences it reads as, decoded with the book's own decoder from the
+    position after (or before) the move at (a FEN, a node id or a token
+    key), legal there, best first. Returns JSON {"text", "words", "fen",
+    "candidates": [{"san", "cost", "unsure"}], "seconds"}."""
+    t0 = time.perf_counter()
+    rect = [float(v) for v in json.loads(rect_json)]
+    doc = _doc()
+    found = [w for w in region.words(doc, int(page), rect) if w["inside"]]
+    text = " ".join(w["text"] for w in found)
+    fen = _position_at(str(at), side)
+    cands = region.read(_region_decoder(), fen, text) if text else []
+    return json.dumps({"text": text, "words": found, "fen": fen, "candidates": cands,
                        "seconds": round(time.perf_counter() - t0, 3)})
 
 

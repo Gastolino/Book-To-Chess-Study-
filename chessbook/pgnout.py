@@ -18,7 +18,9 @@ result is "*". Notes whose moves branch off after the last move of the game
 are written as a variation that repeats that move, never as moves played.
 The variations the reader added on the board (corrections.py "added") are
 variations like the book's, with the comment "Added by the reader." on their
-first move.
+first move; the moves the reader read in a section of a page that the
+program missed carry "Added by the reader from the page.", and continue the
+game itself when the reader said they continue its main line.
 """
 from __future__ import annotations
 
@@ -164,7 +166,8 @@ def line_game(book, line):
                              "supplied it.")
             if n.get("corrected") == "added" and \
                     nodes[n["parent"]].get("corrected") != "added":
-                notes.append("Added by the reader.")
+                notes.append("Added by the reader from the page." if n.get("region") else
+                             "Added by the reader.")
         elif n.get("assumed"):
             try:
                 move = board.parse_san(n["assumed"])
