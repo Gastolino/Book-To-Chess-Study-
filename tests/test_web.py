@@ -37,6 +37,17 @@ def test_top_bar_shows_no_file_name(tmp_path):
     assert "flex-wrap:wrap" in page
 
 
+def test_the_page_keeps_clear_of_the_home_indicator(tmp_path):
+    # the reader's frame is told no safe area: the app's page pads itself, so that the bar at the
+    # foot of the reader sits above the iPhone's home indicator
+    page = build(tmp_path)
+    assert "viewport-fit=cover" in page
+    body = re.search(r"\nbody\{margin:0;display:flex;flex-direction:column;[^}]*\}", page).group(0)
+    for side in ("top", "right", "bottom", "left"):
+        assert f"env(safe-area-inset-{side})" in body
+    assert "box-sizing:border-box" in body
+
+
 def test_read_again_passes_the_stored_corrections(tmp_path):
     page = build(tmp_path)
     assert 'k.startsWith("chessbook-corrections:" + name + ":")' in page

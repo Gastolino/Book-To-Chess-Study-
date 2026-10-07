@@ -37,7 +37,7 @@ PYMUPDF_WHEEL = "pymupdf-1.28.2-cp313-abi3-pyemscripten_2025_0_wasm32.whl"
 
 SHELL = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Chess Book Reader</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
@@ -48,7 +48,10 @@ SHELL = """<!doctype html>
 <meta name="apple-mobile-web-app-title" content="Chess books">
 <style>__CSS__
 html,body{height:100%}
-body{margin:0;display:flex;flex-direction:column}
+/* the page keeps clear of the iPhone's home indicator, notch and rounded corners (the reader's
+   frame cannot: a frame is told no safe area), so the reader's bar sits above the indicator */
+body{margin:0;display:flex;flex-direction:column;box-sizing:border-box;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
 #start{max-width:620px;margin:0 auto;padding:72px 16px 32px;width:100%;box-sizing:border-box}
 #start h1{font-size:26px;margin-bottom:10px}
 #start p{margin:0 0 10px;color:var(--muted)}
