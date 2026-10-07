@@ -497,7 +497,10 @@ function regionEntry(spot, moves){
   if (spot.before) e.before = true;
   e.page = RG.sel.page;
   e.rect = RG.sel.rect.map(R1);
-  if (RG.read && RG.read.text) e.text = RG.read.text;
+  // what the program read there: now, or when the section was stored (the reader opened from a file
+  // cannot read the page again)
+  const kept = RG.edit && RG.edit.entry.page === e.page && sameEntry(RG.edit.entry.rect, e.rect) ? RG.edit.entry.text : null;
+  if ((RG.read && RG.read.text) || kept) e.text = (RG.read && RG.read.text) || kept;
   if (spot.prefix.length) e.first = spot.prefix.length;
   if (!spot.before && RG.where === "after" && RG.how === "main" && endsMain(RG.anchor)) e.main = true;
   return e;

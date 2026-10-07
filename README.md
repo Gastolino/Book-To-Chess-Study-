@@ -379,6 +379,27 @@ the moves printed after it find the line gone on). The other choices stay:
 another move of a line, "Continue a line…" with a tap on any move, or "Not
 a variation".
 
+Moves that the book prints but the program found nowhere (no box on the
+page) are read with "Read a section", the dashed rectangle beside the
+pencil in reading mode (and in the bar at the foot of a tablet's screen).
+With it on, a drag across the moves draws a rectangle round them, and a tap
+takes the word under the finger; with the pencil on, a tap on the page where
+no box stands does the same. The rectangle keeps its place on the page when
+the page is enlarged; its corners change its size and a drag inside it moves
+it. The sheet that opens says what the program reads there (in the browser
+app, which reads the page's text with the book's own reading of its piece
+symbols) and offers its readings as buttons, and it takes the moves typed in
+standard notation, checked move by move as they are typed: a move that is
+not legal is named with the reason. The moves go after the chosen move or
+before it, as alternatives to it; after the last move of the main line they
+continue the main line, or form a variation, as you choose. A tap on another
+move, on the page or in the move list, chooses that move instead. The moves
+then stand in the move list and in the PGN, each with a box on the page (the
+box of its printed word when the section prints as many moves, else the
+rectangle), and a tap on a box with the pencil opens the section again to
+change or remove it. A reader built from the command line shows such moves
+at once; the next run writes them into the book.
+
 In the browser app every correction applies at once: the worker replays only
 the lines it touches and sends the open chapter its changes, so the board,
 the move list, the outlines on the page and the Review list change while the
