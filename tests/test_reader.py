@@ -254,7 +254,10 @@ def test_primer_reader_in_chromium(tmp_path, monkeypatch):
     # the selection the index page builds reads back with selection.py
     sel = Selection(parse_selection_text(res["selection"]))
     assert not sel.page_selected(250) and sel.page_selected(251)
-    assert not sel.page_selected(5)
+    # the front matter (page 5 is in it) keeps the run's selection: a fresh run reads it by default
+    # (selection.py), while a book.json made before that change still leaves pages 1 to 13 out
+    run = json.loads((PRIMER_READER.parent / "book.json").read_text(encoding="utf-8"))["selection"]
+    assert sel.page_selected(5) == Selection(run).page_selected(5)
     for shot in ("review_move_1280_light.png", "review_move_390_dark.png", "review_diagram_390_light.png",
                  "review_diagram_1280_dark.png", "review_symbol_390_light.png"):
         assert (screens / shot).stat().st_size > 10000, shot

@@ -170,8 +170,8 @@ board, fanned about the spine like the blades of a pinwheel, that turn over
 one after the other, each a quarter turn clockwise, so that they swirl round
 the spine. It stands above a thin bar that fills as far as the work has come
 where the app knows it, with the words of the work under it.
-In the reader, the same small book stands at the right of the top bar while
-the program works (reading the moves, drawing pages, saving the reading); a
+In the reader, the same small book stands in the top bar, just left of
+**Library**, while the program works (reading the moves, drawing pages, saving the reading); a
 tap on it says what it is doing, and it goes when the work is done. With
 reduced motion set on the device, the pages do not turn and the book stands
 still. The book with its four chequered pages is also the app's icon

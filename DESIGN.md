@@ -46,7 +46,8 @@ chess notation.
   second up and to the right of the first, overlapping by a quarter, with the
   square they share cut out), outlines each scanned item by its status, gives
   the current move the accent outline, and shows the tools that correct the
-  reading (the pencil, Review); outside reading mode those tools are hidden.
+  reading (the pencil, Read a section, Review); outside reading mode those
+  tools are hidden.
 
 ## Colour
 

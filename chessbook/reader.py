@@ -983,6 +983,21 @@ function snapshot(){
       "px;width:" + q.width + "px;height:" + q.height + "px";
     copied.replaceWith(cv);
   } else if (copied) copied.remove();
+  // so does the line under the current move outside reading mode, which is in the same yellow
+  const cur = $("ov").querySelector(".mark.current"), curCopy = copy.querySelector(".mark.current");
+  const cs = cur && getComputedStyle(cur), lw = cs ? parseFloat(cs.borderBottomWidth) || 0 : 0;
+  if (curCopy && lw > 0 && cs.borderBottomStyle !== "none") {
+    const q = cur.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const cv = document.createElement("canvas"), g = cv.getContext("2d");
+    cv.width = Math.max(1, Math.round(q.width * dpr));
+    cv.height = Math.max(1, Math.round(lw * dpr));
+    g.fillStyle = cs.borderBottomColor;
+    g.fillRect(0, 0, cv.width, cv.height);
+    cv.style.cssText = "position:absolute;z-index:3;left:" + (q.left - r.left) + "px;top:" + (q.bottom - lw - r.top) +
+      "px;width:" + q.width + "px;height:" + lw + "px";
+    curCopy.style.borderBottom = "0";
+    copy.append(cv);
+  }
   const part = document.createElement("div");
   part.className = "turnpart";
   part.append(copy);
