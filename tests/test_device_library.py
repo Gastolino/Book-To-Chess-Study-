@@ -69,7 +69,7 @@ def test_the_shell_offers_the_library_everywhere(tmp_path):
     assert 'id="libspace"' in page and 'id="libhint"' in page
     manifest = json.loads((site / "manifest.webmanifest").read_text(encoding="utf-8"))
     assert manifest["display"] == "standalone"
-    # the icons: the open book with two chequered pages (tools/make_icons.py, web/icon.svg)
+    # the icons: the revolving book with four chequered pages (tools/make_icons.py, web/icon.svg)
     for name in ("icon-32.png", "icon-180.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png"):
         assert (site / name).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", name
     assert {i["src"] for i in manifest["icons"]} >= {"icon-180.png", "icon-192.png", "icon-512.png",
@@ -77,7 +77,8 @@ def test_the_shell_offers_the_library_everywhere(tmp_path):
     assert any(i.get("purpose") == "maskable" for i in manifest["icons"])
     assert manifest["background_color"] == manifest["theme_color"] == "#fbfbfa"
     assert '<link rel="icon" href="favicon.svg" type="image/svg+xml">' in page
-    assert (site / "favicon.svg").read_text(encoding="utf-8").count('fill="#bdbab2"') == 12
+    # four pages, each with its dark squares as one shape
+    assert (site / "favicon.svg").read_text(encoding="utf-8").count('fill="#bdbab2"') == 4
     lib = (site / "library.js").read_text(encoding="utf-8")
     assert 'indexedDB.open(NAME, 1)' in lib and "navigator.storage.persist()" in lib
     assert "navigator.storage.estimate()" in lib and "navigator.share(" in lib

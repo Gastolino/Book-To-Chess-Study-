@@ -81,17 +81,22 @@ engine's lines are rows of notation, the suggested move at weight 500.
 
 ## The sign of work
 
-An open book seen from the front: two pages side by side, each a chequer of
-three columns and four rows in the two board colours, with hairline edges in
-the secondary colour over a thin cover line (`chessbook/style.py`,
-`book_svg`). While the app works, a third page turns over from right to left
-(a transform only, 1.2 s a turn with its pause); with reduced motion it
-stands still. On the start page it stands about 88 px wide over a 2px bar in
-the accent colour on a hairline track (the part done, where the app knows
-it, else a sliding segment), with the words of the work under it in the
-secondary colour; in the reader it stands 24 px wide at the right of the top
-bar, over the same line along the bar's foot, and takes its room whether it
-shows or not. Still, on the page background, it is the app's icon.
+A revolving book seen along its spine: four pages fanned about the centre a
+quarter turn apart, like the blades of a pinwheel. Each page is hinged on one
+half of the spine, runs along the edge for its own length and sweeps back to
+the centre in a quarter circle; its face is a chequer of three by three
+squares in the two board colours, with hairline edges in the secondary
+colour (`chessbook/style.py`, `book_svg`). While the app works, the pages
+turn over one after the other, each a quarter turn clockwise about the
+spine, 0.3 s apart, so that the four swirl round the book; then the book
+rests (a transform only, 2 s a round with its rest). With reduced motion it
+stands still, whole. On the start page it stands 80 px wide, with room for
+a turning page above a 2px bar in the accent colour on a hairline track (the
+part done, where the app knows it, else a sliding segment), with the words
+of the work under it in the secondary colour; in the reader it stands 24 px
+wide at the right of the top bar, over the same line along the bar's foot,
+and takes its room whether it shows or not. Still, on the page background,
+it is the app's icon.
 
 ## Layout
 

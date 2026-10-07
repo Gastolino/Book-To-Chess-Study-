@@ -173,7 +173,7 @@ async function run(browser, which) {
     await page.evaluate(() => document.getElementById("topbar").classList.contains("on")));
   check("the small book at the top right shows that the program is at work",
     await page.evaluate(() => { const b = document.getElementById("busy"); return b.classList.contains("on") &&
-      getComputedStyle(b).visibility === "visible" && b.querySelectorAll(".leaf").length === 1; }));
+      getComputedStyle(b).visibility === "visible" && b.querySelectorAll(".leaf").length === 4; }));
   if (first0.chapter.index === 0)
     check("the front matter's pages are read by default: page 1 is ticked", first0.use, first0);
   check("the page counter counts the whole book", /^of \d+$/.test(first0.total), first0);

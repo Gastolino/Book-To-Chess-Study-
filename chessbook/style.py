@@ -15,6 +15,7 @@ stage reports share one set of fonts, colours and rules.
 from __future__ import annotations
 
 import base64
+import math
 from functools import lru_cache
 from pathlib import Path
 
@@ -177,60 +178,124 @@ def icon(name):
 
 
 # ---------------------------------------------------------------- the book icon
-# An open book seen from the front: two pages side by side, each a chequer of
-# three columns and four rows in the board colours, over a thin cover line. It
-# is the app's icon (tools/make_icons.py renders web/icon.svg) and, with a
-# third page turning over from right to left, the sign that the app is at
-# work. The turning page flips about the spine (a scaleX transform only, so
-# that it costs little on a phone); it carries the right page's chequer, and
-# since the two pages' chequers are mirror images, the page that lands on the
-# left and the one that starts again on the right are invisible joins.
-BOOK_W, BOOK_H, SQ = 64, 44, 8
-PAGES_X = (6, 34)
-PAGE_Y = 5
+# A revolving book seen along its spine: four pages fanned about the centre, a
+# quarter turn apart, like the blades of a pinwheel. Each page is hinged on
+# one half of the spine (the upper page on the upper half), runs along the
+# icon's edge for its own length, and sweeps back to the centre in a quarter
+# circle, so that it reads as a page that curls as it turns; its face is a
+# chequer of three by three squares in the board colours, the far squares cut
+# by the curve. It is the app's icon (tools/make_icons.py renders
+# web/icon.svg) and, with four more pages that turn over a quarter turn each,
+# one after the other and all clockwise, the sign that the app is at work.
+# The turning pages copy the still ones, and the drawing is the same after a
+# quarter turn, so that a page that lands on the next one and a page that
+# starts again from its own place are invisible joins. The centre of the spine
+# is the origin, so that a page turns about (0, 0) in any view box.
+BOOK_R, SQ = 24, 8      # a page's length from the centre, and a chequer square
 
 
-def _book_page(x, light, dark, line):
-    cells = []
-    for r in range(4):
-        for c in range(3):
-            fill = dark if (c + r) % 2 else light
-            cells.append(f'<rect x="{x + c * SQ}" y="{PAGE_Y + r * SQ}" width="{SQ}" height="{SQ}" fill="{fill}"/>')
-    return ("".join(cells) +
-            f'<rect x="{x}" y="{PAGE_Y}" width="{3 * SQ}" height="{4 * SQ}" fill="none" stroke="{line}" '
-            f'stroke-width="1" vector-effect="non-scaling-stroke"/>')
+def _cut_to_circle(poly, cx, cy, r):
+    """The part of a convex polygon (its corners clockwise on the screen, and
+    too small to hold the whole circle) that lies inside the circle about
+    (cx, cy) of radius r, as SVG path data: the polygon's own edges where they
+    stay inside, arcs of the circle where they leave it. The page's squares are
+    drawn as plain shapes, not clipped, since PyMuPDF (which draws the app's
+    icons) ignores an SVG's clip paths and patterns."""
+    def inside(p):
+        return (p[0] - cx) ** 2 + (p[1] - cy) ** 2 <= r * r + 1e-6
+
+    # the polygon's corners with the points where its edges cross the circle
+    points = []
+    for i, p in enumerate(poly):
+        q = poly[(i + 1) % len(poly)]
+        points.append(p)
+        dx, dy, fx, fy = q[0] - p[0], q[1] - p[1], p[0] - cx, p[1] - cy
+        a, b, c = dx * dx + dy * dy, 2 * (fx * dx + fy * dy), fx * fx + fy * fy - r * r
+        if b * b - 4 * a * c > 0:
+            root = math.sqrt(b * b - 4 * a * c)
+            for t in sorted(((-b - root) / (2 * a), (-b + root) / (2 * a))):
+                if 1e-6 < t < 1 - 1e-6:
+                    points.append((p[0] + t * dx, p[1] + t * dy))
+    kept = [i for i, p in enumerate(points) if inside(p)]
+    if len(kept) < 2:
+        return ""
+
+    def num(v):
+        return f"{round(v, 2):g}"
+
+    # two points next to each other on the polygon are joined by its edge (a chord of the
+    # circle stays inside it); where points outside were left out between them, by the arc;
+    # the closing edge back to the first point, when it is straight, is the Z
+    path = ""
+    for j, i in enumerate(kept + kept[:1]):
+        x, y = points[i]
+        if j == 0:
+            path = f"M{num(x)} {num(y)}"
+        elif i != (kept[j - 1] + 1) % len(points):
+            path += f"A{r} {r} 0 0 1 {num(x)} {num(y)}"
+        elif j < len(kept):
+            path += f"L{num(x)} {num(y)}"
+    return path + "Z"
+
+
+@lru_cache(maxsize=None)
+def _dark_squares():
+    """The dark squares of the upper page, as one path."""
+    r, squares = BOOK_R, []
+    for row in range(3):
+        for col in range(3):
+            if (row + col) % 2:
+                x, y = col * SQ, -r + row * SQ
+                squares.append(_cut_to_circle([(x, y), (x + SQ, y), (x + SQ, y + SQ), (x, y + SQ)], 0, -r, r))
+    return "".join(squares)
+
+
+def _book_page(light, dark, line):
+    """The upper page: hinged on the spine's upper half, along the top edge to
+    the right, and back to the centre in a quarter circle about the spine's top."""
+    r = BOOK_R
+    edge = f"M0 0V{-r}H{r}A{r} {r} 0 0 1 0 0Z"
+    return (f'<path d="{edge}" fill="{light}"/><path d="{_dark_squares()}" fill="{dark}"/>'
+            f'<path d="{edge}" fill="none" stroke="{line}" stroke-width="1" stroke-linejoin="round" '
+            f'vector-effect="non-scaling-stroke"/>')
 
 
 def book_svg(cls="bookicon", animated=True, light="var(--board-light)", dark="var(--board-dark)",
              line="var(--muted)", bg=None, label=None, pad=0):
-    """The book icon as an SVG element. animated adds the turning page (class
-    "leaf"); the colours default to the page's tokens; bg fills a square
+    """The book icon as an SVG element. animated adds the four turning pages
+    (class "leaf"); the colours default to the page's tokens; bg fills a square
     background (the app icon) and pad widens the view box around the book."""
-    w, h = BOOK_W + 2 * pad, BOOK_H + 2 * pad
-    side = max(w, h) if bg else None
-    vb = (f"{-pad - (side - w) / 2} {-pad - (side - h) / 2} {side} {side}" if side
-          else f"{-pad} {-pad} {w} {h}")
+    side = 2 * (BOOK_R + pad)
+    corner = -BOOK_R - pad
     parts = []
     if bg:
-        parts.append(f'<rect x="{-pad - (side - w) / 2}" y="{-pad - (side - h) / 2}" width="{side}" '
-                     f'height="{side}" fill="{bg}"/>')
-    parts.append(_book_page(PAGES_X[0], light, dark, line))
-    parts.append(_book_page(PAGES_X[1], light, dark, line))
-    # the cover's edge under the pages, dipping at the spine
-    parts.append(f'<path d="M3 {PAGE_Y + 4 * SQ + 2}H29.5L32 {PAGE_Y + 4 * SQ + 4}L34.5 {PAGE_Y + 4 * SQ + 2}H61" '
-                 f'fill="none" stroke="{line}" stroke-width="1" vector-effect="non-scaling-stroke"/>')
+        parts.append(f'<rect x="{corner}" y="{corner}" width="{side}" height="{side}" fill="{bg}"/>')
+    page = _book_page(light, dark, line)
+
+    def turned(k, body):
+        return body if k == 0 else f'<g transform="rotate({90 * k})">{body}</g>'
+
+    parts += [turned(k, page) for k in range(4)]
     if animated:
-        parts.append(f'<g class="leaf">{_book_page(PAGES_X[1], light, dark, line)}</g>')
+        # the upper page turns first, then the one on the right, and so on clockwise, each
+        # 0.3 s after the one before. A page starts again from its own place while the page
+        # before it still turns over that place, so the four are drawn last page first: the
+        # page that starts again shows under the turning one, and the join stays invisible
+        parts += [turned(k, f'<g class="leaf" style="animation-delay:{0.3 * k:g}s">{page}</g>')
+                  for k in reversed(range(4))]
     aria = f'role="img" aria-label="{label}"' if label else 'aria-hidden="true"'
-    return (f'<svg class="{cls}" viewBox="{vb}" xmlns="http://www.w3.org/2000/svg" {aria}>'
-            + "".join(parts) + "</svg>")
+    return (f'<svg class="{cls}" viewBox="{corner} {corner} {side} {side}" '
+            f'xmlns="http://www.w3.org/2000/svg" {aria}>' + "".join(parts) + "</svg>")
 
 
-# The turning page: 0.9 s to turn, then a short pause. Without motion (the
-# reader's setting) the book stands still.
+# The turning pages: each turns a quarter turn about the centre of the spine
+# in 0.6 s, 0.3 s after the one before, so that the four swirl round the book
+# in 1.5 s; then the book rests for 0.5 s. Only a transform moves, so that the
+# turns cost little on a phone. Without motion (the reader's setting) the
+# turning pages are hidden and the book stands still, whole.
 BOOK_CSS = """
 .bookicon{display:block;overflow:visible}
-.bookicon .leaf{transform-box:view-box;transform-origin:32px 0;animation:leaf 1.2s cubic-bezier(.45,0,.55,1) infinite}
-@keyframes leaf{0%{transform:scaleX(1)}75%{transform:scaleX(-1)}100%{transform:scaleX(-1)}}
+.bookicon .leaf{transform-box:view-box;transform-origin:0 0;animation:leaf 2s cubic-bezier(.45,0,.55,1) infinite}
+@keyframes leaf{0%{transform:rotate(0deg)}30%{transform:rotate(90deg)}100%{transform:rotate(90deg)}}
 @media (prefers-reduced-motion:reduce){.bookicon .leaf{animation:none;visibility:hidden}}
 """

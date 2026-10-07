@@ -1,14 +1,15 @@
-"""Render the app's icons from one SVG source, web/icon.svg: the open book
-with two pages of a 3 by 4 chequer (chessbook/style.py, book_svg), still, on
-the page background of DESIGN.md's light tokens (a Home Screen icon cannot
-follow the dark scheme).
+"""Render the app's icons from one SVG source, web/icon.svg: the revolving
+book, four pages fanned about the spine, each a chequer of 3 by 3 squares
+(chessbook/style.py, book_svg), still, on the page background of DESIGN.md's
+light tokens (a Home Screen icon cannot follow the dark scheme).
 
     python3 tools/make_icons.py            render web/icons/*.png and favicon.svg
     python3 tools/make_icons.py --svg      write web/icon.svg again from style.py first
 
 Writes, into web/icons/: icon-180.png (apple-touch-icon), icon-192.png and
 icon-512.png (the manifest), icon-maskable-512.png (the manifest's maskable
-icon: the book inside the middle 60 %, the safe zone of any mask),
+icon: the book inside the middle 60 %, and its corners inside the circle
+of 80 % that is the safe zone of any mask),
 icon-32.png and favicon.svg (the browser tab). PyMuPDF draws the PNGs. The
 site build (tools/build_web.py) copies the files; they are committed, so that
 the build needs no drawing.
@@ -32,7 +33,7 @@ def source_svg():
                          line=LIGHT["line"], bg=LIGHT["bg"], pad=8)
     # the background reaches far beyond the view box, so that a wider view (maskable) keeps it
     return re.sub(r'<rect x="[^"]+" y="[^"]+" width="[^"]+" height="[^"]+" fill="#fbfbfa"/>',
-                  '<rect x="-1000" y="-1000" width="2064" height="2044" fill="#fbfbfa"/>', svg, count=1)
+                  '<rect x="-1000" y="-1000" width="2000" height="2000" fill="#fbfbfa"/>', svg, count=1)
 
 
 def widened(svg, factor):
@@ -56,18 +57,25 @@ def render(svg, size):
     return pix.tobytes("png")
 
 
+def pictures(svg):
+    """Every PNG icon drawn from the icon's SVG, as {file name: PNG bytes}."""
+    out = {f"icon-{size}.png": render(svg, size) for size in (180, 192, 512)}
+    # the browser tab's icon is tiny: the book fills more of it
+    out["icon-32.png"] = render(widened(svg, 0.84), 32)
+    # the book is 48 of the icon's 64 units wide, 75 %: widened by 1.4 it is 54 % wide, inside
+    # the middle 60 %, and its corners (34 units from the centre) keep inside the safe circle
+    out["icon-maskable-512.png"] = render(widened(svg, 1.4), 512)
+    return out
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if "--svg" in argv or not SOURCE.exists():
         SOURCE.write_text(source_svg() + "\n", encoding="utf-8")
     svg = SOURCE.read_text(encoding="utf-8").strip()
     OUT.mkdir(parents=True, exist_ok=True)
-    for size in (180, 192, 512):
-        (OUT / f"icon-{size}.png").write_bytes(render(svg, size))
-    # the browser tab's icon is tiny: the book fills more of it
-    (OUT / "icon-32.png").write_bytes(render(widened(svg, 0.84), 32))
-    # the book's width is about 80 % of the icon: widened by 1.4 it keeps inside the middle 60 %
-    (OUT / "icon-maskable-512.png").write_bytes(render(widened(svg, 1.4), 512))
+    for name, png in pictures(svg).items():
+        (OUT / name).write_bytes(png)
     (OUT / "favicon.svg").write_text(svg + "\n", encoding="utf-8")
     print("Icons written to", OUT)
 
