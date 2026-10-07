@@ -17,7 +17,8 @@
 // store a "moves" correction; a pawn that reaches the last rank asks for the
 // piece; the board of the diagram view takes the line's first move; the
 // diagram corrector still takes taps. On an iPhone 13 (touch): taps on the
-// small board in the bar, a drag on the large board that does not scroll the
+// board that stays at the foot of the window, a drag on the board in its place
+// below the page (after Moves) that does not scroll the
 // page, and a swipe that still turns the page. On an iPad held sideways: a tap
 // on a piece and on its square. Screenshots of the chooser and of an added
 // variation in the light and dark schemes. Prints one JSON object; the exit
@@ -283,14 +284,18 @@ function check(name, cond, detail) {
     await pp.goto(url + "#page=4");
     await pp.waitForFunction(() => window.readerState.page === 4);
     await pp.tap(".mark[data-node='" + I.nf3 + "']");
-    await pp.waitForFunction(() => document.getElementById("mini").classList.contains("on"));
-    const M = "#minibox svg.board";
+    // the board stays at the foot of the window, above the bar, while the page is in view
+    await pp.waitForFunction(() => document.body.classList.contains("stickboard"));
+    const foot = await pp.evaluate(() => [document.getElementById("boardblock").getBoundingClientRect().bottom,
+      document.getElementById("mbar").getBoundingClientRect().top]);
+    check("on a phone the board stays at the foot of the window, above the bar", Math.abs(foot[0] - foot[1]) <= 1.5, foot);
+    const M = "#board svg.board";
     let [x, y] = await at(pp, M, "d7");
     await pp.touchscreen.tap(x, y);
     [x, y] = await at(pp, M, "d6");
     await pp.touchscreen.tap(x, y);
     s = await state(pp);
-    check("taps on the small board in the bar make a move", s.open && /Your move 2…d6/.test(s.fixText), s.fixText);
+    check("taps on the board at the foot of the window make a move", s.open && /Your move 2…d6/.test(s.fixText), s.fixText);
     const sheet = await pp.evaluate(() => {
       const f = document.getElementById("fix"), bar = document.getElementById("mbar");
       return { pos: getComputedStyle(f).position, bottom: f.getBoundingClientRect().bottom,
@@ -310,7 +315,7 @@ function check(name, cond, detail) {
     // a drag on the large board moves the piece and does not scroll the page
     await fresh(pp, "#node=" + I.nf3);
     await pp.waitForFunction((id) => window.readerState.nodeId === id, I.nf3);
-    await pp.evaluate(() => document.getElementById("panel").scrollIntoView({ block: "start" }));
+    await pp.tap("#mmoves");
     await pp.waitForTimeout(300);
     const cdp = await phone.newCDPSession(pp);
     const touchDrag = async (sel, from, to) => {
@@ -337,9 +342,9 @@ function check(name, cond, detail) {
     await pp.evaluate(() => window.scrollTo(0, 0));
     await pp.waitForTimeout(200);
     const p0 = await pp.evaluate(() => window.readerState.page);
-    // (above the bar at the foot, which holds the small board)
+    // (above the board at the foot of the window)
     const r = await pp.evaluate(() => { const b = document.getElementById("pagescroll").getBoundingClientRect();
-      const bar = document.getElementById("mbar").getBoundingClientRect();
+      const bar = document.getElementById("boardblock").getBoundingClientRect();
       return [b.left + b.width * 0.8, b.left + b.width * 0.15, (Math.max(b.top, 0) + bar.top) / 2]; });
     await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: r[0], y: r[2] }] });
     for (let i = 1; i <= 6; i++)

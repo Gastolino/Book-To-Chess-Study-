@@ -89,13 +89,21 @@ body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
 iframe.view{flex:1;border:0;width:100%}
 #top{display:none;flex-wrap:wrap;align-items:baseline;gap:4px 20px;padding:10px 16px;
   border-bottom:1px solid var(--line);font-size:13px;color:var(--muted);position:relative}
+/* the status takes the room the buttons leave, on one line: long words end in an ellipsis
+   (a tap on the small book shows them whole), so that the bar keeps its height */
+#took{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #note{flex-basis:100%}
+/* the whole words of the work, for a few seconds after a tap on the small book: over the page,
+   under the bar, so that nothing moves */
+#tip{position:absolute;top:100%;left:0;right:0;z-index:5;padding:8px 16px;background:var(--bg);
+  border-bottom:1px solid var(--line);color:var(--fg)}
+#tip[hidden]{display:none}
 #note:empty{display:none}
 #note.error{color:var(--fail)}
 #topbar{position:absolute;left:0;right:0;bottom:-1px;height:1px;overflow:hidden}
 #top button{font:inherit;color:var(--fg);background:none;border:0;padding:0;cursor:pointer}
 #top button:hover{text-decoration:underline}
-#top .gap{flex:1}
+#top .gap{flex:0 0 0}
 #top button[hidden]{display:none}
 /* the library (web/library.js): the Cloudflare site's, or the one in this browser */
 body.library #start{max-width:760px;padding-top:40px}
@@ -143,7 +151,7 @@ body.library #drop .small{max-width:46em}
 <button id="again" type="button" hidden>Read again</button>
 <button id="another" type="button">Open another book</button>
 <button id="busy" type="button" aria-label="What the program is doing" title="What the program is doing">__BOOK_SMALL__</button>
-<span id="note" role="status"></span><div id="topbar"><i></i><b></b></div></div>
+<span id="note" role="status"></span><span id="tip" role="status" hidden></span><div id="topbar"><i></i><b></b></div></div>
 <main id="start">
 <h1>Chess Book Reader</h1>
 <div id="intro">
@@ -326,15 +334,14 @@ function workNow() {
   if (!parts.length && workingNow) parts.push(workWords);
   return parts.filter(Boolean).join(" ").replace(/([^.])( Drawing| Saving)/g, "$1.$2");
 }
-// a tap shows them in the status line itself for a few seconds (a second line would repeat it and
-// push the reader down), unless the reading has written newer words there meanwhile
+// a tap shows them whole for a few seconds, in a slip under the bar (#tip) that moves nothing
 let busyTimer = 0;
 $("busy").addEventListener("click", () => {
-  const el = $("took"), before = el.textContent;
-  const words = workNow() || "The program has nothing to do now.";
-  el.textContent = words;
+  const tip = $("tip");
+  tip.textContent = workNow() || "The program has nothing to do now.";
+  tip.hidden = false;
   clearTimeout(busyTimer);
-  busyTimer = setTimeout(() => { if (el.textContent === words) el.textContent = before; }, 4000);
+  busyTimer = setTimeout(() => { tip.hidden = true; }, 4000);
 });
 // The flag goes first in the head, so that the page's own script sees it
 // while it starts (the stored corrections it sends, the words it chooses).

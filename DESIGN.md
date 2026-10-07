@@ -98,7 +98,11 @@ shows or not. Still, on the page background, it is the app's icon.
 The book page sits on the left and the board panel on the right, divided by a
 hairline. The panel holds, from top to bottom: the board, the line's title,
 the move list, and the comment on the current move, each separated by a
-hairline. On narrow screens the panel follows the page. Pages must work at
+hairline. On narrow screens the board and its controls follow the page
+picture and stay at the foot of the window, just above the bar of the current
+move, while the page scrolls by; at the end of the page picture they scroll up
+with the line's title and the move list, and the page's foot (the lines on
+the page, the chapters) comes last. Pages must work at
 390px width with a 16px side margin and no horizontal scroll.
 
 ## Writing on the pages

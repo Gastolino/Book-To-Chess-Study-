@@ -15,7 +15,8 @@
 // chooser; turning analysis off ends the worker; offline, and with the
 // engine's files out of reach, the engine still loads from the browser's
 // storage. On an iPhone 13 and on an iPad held sideways: the icon in the bar
-// and in the panel, the eval in the bar, no sideways scroll. Screenshots of
+// and in the panel, the eval in the bar, the eval bar beside the board at the
+// foot of the phone's window, no sideways scroll. Screenshots of
 // the board with the eval bar and the analysis, and of the settings, in the
 // light and dark schemes. Prints one JSON object; the exit code is 1 when a
 // check fails.
@@ -317,7 +318,16 @@ function serve(dir) {
     v = await view(pp);
     check("on a phone the icon in the bar turns analysis on", v.pressed === "true" && v.rows[0].score === "M1" && v.mnum === "M1", v);
     check("no sideways scroll at 390 px", v.sw <= v.w, v);
-    await pp.evaluate(() => document.getElementById("panel").scrollIntoView({ block: "start" }));
+    const eb = await pp.evaluate(() => {
+      const e = document.getElementById("evalbar").getBoundingClientRect(), b = document.getElementById("boardblock").getBoundingClientRect();
+      const bar = document.getElementById("mbar").getBoundingClientRect(), w = document.querySelector("#board svg").getBoundingClientRect();
+      return { e: [e.left, e.top, e.width, e.height], b: [b.left, b.top, b.right, b.bottom], barTop: bar.top, board: [w.left, w.right],
+               stick: document.body.classList.contains("stickboard"), hidden: document.getElementById("evalbar").hidden };
+    });
+    check("on a phone the eval bar stands beside the board at the foot of the window",
+          eb.stick && !eb.hidden && eb.e[2] > 0 && eb.e[1] >= eb.b[1] && eb.e[1] + eb.e[3] <= eb.b[3] + 1 &&
+          eb.e[0] + eb.e[2] <= eb.board[0] + 1 && Math.abs(eb.b[3] - eb.barTop) <= 1.5, eb);
+    await pp.tap("#mmoves");
     await pp.waitForTimeout(300);
     await both(pp, "engine_board_390");
     await pp.tap("#bgear");
