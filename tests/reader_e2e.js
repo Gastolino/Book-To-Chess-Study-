@@ -17,8 +17,12 @@
 // out), checks that a box keeps its page, that the contents page shows the
 // change and keeps its ticks after the Back button, checks the phone layout
 // at 390x844 (no sideways scroll, a board as wide as the page, no jump of the
-// window when a box is tapped, the small board, which steps aside when the
-// panel is in view), checks the label of a page without a printed number,
+// window when a box is tapped, the board at the foot of the window above the
+// bar, and "Moves"), and on an iPhone 13 (390x664 visible) the board that
+// sticks to the foot of the window while the page scrolls by and lets go at
+// the end of the page picture, "Board", the current move above the board, a
+// correction, and the wide layouts with the board at the head of the panel;
+// checks the label of a page without a printed number,
 // opens the Review view and corrects one move, one diagram, one sequence
 // placed in no line and one piece symbol (through the eye on the page), checks
 // what the browser stores, takes screenshots of the editors at 1280 and 390 px
@@ -26,7 +30,7 @@
 // checks that no console errors occur, and saves screenshots into
 // SCREENS_DIR. Prints one JSON object with the results; the exit code is 1
 // when a check fails.
-const { chromium } = require("playwright");
+const { chromium, devices } = require("playwright");
 const path = require("path");
 const fs = require("fs");
 
@@ -351,43 +355,188 @@ async function openChapterOf(page, p) {
     const widths = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
     check("no sideways scroll at 390 px", widths[0] <= widths[1], widths);
     const mark = await page.$("#ov .mark[data-node='" + target + "']");
-    // from the top of the window, so that the panel below the page stays out of view
+    // from the top of the window
     await page.evaluate(() => window.scrollTo(0, 0));
     await mark.scrollIntoViewIfNeeded();
     const y0 = await page.evaluate(() => window.scrollY);
     await mark.click();
     await page.waitForTimeout(400);
     // the page stays in view: the window moves at most so far that the tapped box
-    // stays above the bar, which now holds the small board, and never down to the panel
+    // stays above the board, which stays at the foot of the window above the bar
     const tapped = await page.evaluate((id) => {
       const r = document.querySelector("#ov .mark[data-node='" + id + "']").getBoundingClientRect();
-      const bar = document.getElementById("mbar").offsetHeight;
-      return { y1: window.scrollY, top: r.top, bottom: r.bottom, free: window.innerHeight - bar,
-               panel: document.getElementById("panel").getBoundingClientRect().top - window.innerHeight };
+      const b = document.getElementById("boardblock").getBoundingClientRect();
+      return { y1: window.scrollY, top: r.top, bottom: r.bottom, free: b.top,
+               panel: document.getElementById("lsec").getBoundingClientRect().top - window.innerHeight };
     }, target);
-    check("tapping a box keeps it in view above the bar, on the page",
+    check("tapping a box keeps it in view above the board, on the page",
           tapped.top >= 0 && tapped.bottom <= tapped.free && tapped.panel > 0, { y0, ...tapped });
     const boardW = await page.evaluate(() => [document.querySelector("#board svg").getBoundingClientRect().width,
       document.documentElement.clientWidth]);
     check("the board is as wide as the page at 390 px, within 16 px margins",
           Math.abs(boardW[0] - (boardW[1] - 32)) <= 1, boardW);
-    const mini = await page.evaluate(() => {
-      const m = document.getElementById("mini");
-      const r = m.getBoundingClientRect();
-      return { on: m.classList.contains("on"), pieces: m.querySelectorAll("use").length, w: r.width,
-               panelTop: document.getElementById("panel").getBoundingClientRect().top, node: window.readerState.nodeId,
+    // (the tapped box may lie at the end of the page, where the board has let go: from the top)
+    const yTap = await page.evaluate(() => window.scrollY);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const foot = await page.evaluate(() => {
+      const b = document.getElementById("boardblock").getBoundingClientRect();
+      const bar = document.getElementById("mbar").getBoundingClientRect();
+      return { bottom: b.bottom, barTop: bar.top, pieces: document.querySelectorAll("#board use").length,
+               mini: document.getElementById("mini").classList.contains("on"),
                pressed: document.getElementById("mboard").getAttribute("aria-pressed") };
     });
-    check("the small board shows the position at 390 px", mini.on && mini.pieces > 0, mini);
+    check("the board shows the position at the foot of the window, just above the bar, at 390 px",
+          Math.abs(foot.bottom - foot.barTop) <= 1.5 && foot.pieces > 0 && !foot.mini && foot.pressed === "true", foot);
+    await page.evaluate((y) => window.scrollTo(0, y), yTap);
     await page.screenshot({ path: path.join(screens, "reader_390.png") });
     out.screenshots.push("reader_390.png");
     await page.click("#mfwd");
     await page.screenshot({ path: path.join(screens, "reader_390_board.png") });
     out.screenshots.push("reader_390_board.png");
-    await page.evaluate(() => document.getElementById("panel").scrollIntoView({ block: "start" }));
+    await page.click("#mmoves");
     await page.waitForTimeout(300);
-    const aside = await page.evaluate(() => document.getElementById("mini").classList.contains("on"));
-    check("the small board steps aside while the panel is in view", !aside, aside);
+    const moves = await page.evaluate(() => {
+      const b = document.getElementById("boardblock").getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom, line: document.getElementById("lsec").getBoundingClientRect().top,
+               tree: document.getElementById("tree").getBoundingClientRect().top, h: window.innerHeight };
+    });
+    check("Moves shows the board in its place below the page, the line's moves under it",
+          Math.abs(moves.top) <= 1 && moves.line >= moves.bottom - 1 && moves.tree < moves.h, moves);
+
+    // an iPhone 13 with its toolbars (390 x 664 visible): the board sticks to the foot of the
+    // window while the page scrolls by, lets go at the end of the page picture and sticks again
+    {
+      const ctx13 = await browser.newContext({ ...devices["iPhone 13"], viewport: { width: 390, height: 664 } });
+      const pp = await ctx13.newPage();
+      pp.on("pageerror", (e) => out.errors.push(String(e)));
+      pp.on("console", (m) => { if (m.type() === "error") out.errors.push(m.text()); });
+      await pp.goto(page.url().split("#")[0] + "#node=" + target);
+      await pp.waitForFunction((id) => window.readerState && window.readerState.nodeId === id, target);
+      await pp.waitForTimeout(300);
+      await pp.evaluate(() => window.scrollTo(0, 0));
+      await pp.waitForTimeout(100);
+      const g = () => pp.evaluate(() => {
+        const r = (id) => { const x = document.getElementById(id).getBoundingClientRect(); return { top: x.top, bottom: x.bottom }; };
+        return { y: window.scrollY, board: r("boardblock"), bar: r("mbar"), page: r("pagescroll"), line: r("lsec"),
+                 sw: document.documentElement.scrollWidth, w: window.innerWidth,
+                 stick: document.body.classList.contains("stickboard") };
+      });
+      const a = await g();
+      check("iPhone 13: at the top of the page the board's foot sits on the bar's top edge",
+            a.stick && Math.abs(a.board.bottom - a.bar.top) <= 1.5 && a.board.top > a.page.top, a);
+      check("iPhone 13: the board takes at most about 55% of the window's height",
+            (await pp.evaluate(() => document.querySelector("#board svg").getBoundingClientRect().height)) <= 0.56 * 664, a);
+      check("iPhone 13: no sideways scroll", a.sw <= a.w, a);
+      await pp.evaluate(() => window.scrollBy(0, 300));
+      await pp.waitForTimeout(150);
+      const b = await g();
+      check("iPhone 13: scrolling the page by 300 px moves the page and leaves the board where it was",
+            Math.abs(b.board.top - a.board.top) <= 1 && Math.abs((a.page.top - b.page.top) - 300) <= 1, { a, b });
+      // to the end of the page picture and past it
+      await pp.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await pp.waitForTimeout(150);
+      const c = await g();
+      check("iPhone 13: past the end of the page picture the board scrolls up with it, the move list below it",
+            c.board.bottom < c.bar.top - 50 && c.board.top >= c.page.bottom - 1 && c.line.top >= c.board.bottom - 1 &&
+            c.line.top < c.bar.top, c);
+      // the last line of the page can be brought just above the board before the board lets go
+      const release = await pp.evaluate(() => {
+        window.scrollTo(0, 0);
+        const ps = document.getElementById("pagescroll").getBoundingClientRect();
+        const top = document.getElementById("boardblock").getBoundingClientRect().top;
+        window.scrollTo(0, ps.bottom - top + 1);
+        const p2 = document.getElementById("pagescroll").getBoundingClientRect(), b2 = document.getElementById("boardblock").getBoundingClientRect();
+        return { pageBottom: p2.bottom, boardTop: b2.top };
+      });
+      check("iPhone 13: the page's last line comes above the board's top edge", release.pageBottom <= release.boardTop, release);
+      await pp.evaluate(() => window.scrollTo(0, 300));
+      await pp.waitForTimeout(150);
+      const d = await g();
+      check("iPhone 13: scrolling back up the board sticks again", Math.abs(d.board.top - b.board.top) <= 1, { b, d });
+      // a frame sequence while scrolling down the page and past it
+      const H = await pp.evaluate(() => document.documentElement.scrollHeight - window.innerHeight);
+      for (let i = 0; i < 8; i++) {
+        await pp.evaluate((y) => window.scrollTo(0, y), Math.round(H * i / 7));
+        await pp.waitForTimeout(80);
+        const name = "sticky_390x664_" + i + ".png";
+        await pp.screenshot({ path: path.join(screens, name) });
+        out.screenshots.push(name);
+      }
+      // Board hides the board at the foot: the page has the whole height, the board stays in its place
+      await pp.evaluate(() => window.scrollTo(0, 0));
+      await pp.tap("#mboard");
+      await pp.waitForTimeout(150);
+      const off = await g();
+      check("iPhone 13: Board hides the board at the foot of the window",
+            !off.stick && off.board.top >= off.page.bottom - 1 && off.board.top > off.bar.top &&
+            (await pp.$eval("#mboard", (e) => e.getAttribute("aria-pressed"))) === "false", off);
+      await pp.tap("#mboard");
+      await pp.waitForTimeout(150);
+      const on = await g();
+      check("iPhone 13: Board shows it again", on.stick && Math.abs(on.board.bottom - on.bar.top) <= 1.5, on);
+      // stepping through the line keeps the current move on the page above the board
+      await pp.evaluate(() => window.scrollTo(0, 0));
+      for (let i = 0; i < 6; i++) {
+        await pp.tap("#mfwd");
+        await pp.waitForTimeout(450);
+        const m = await pp.evaluate(() => {
+          const el = document.querySelector("#ov .mark.current");
+          if (!el) return null;
+          const r = el.getBoundingClientRect(), b = document.getElementById("boardblock").getBoundingClientRect();
+          return { top: r.top, bottom: r.bottom, boardTop: b.top, node: window.readerState.nodeId };
+        });
+        if (m) check("iPhone 13: the current move stays on the page above the board (" + i + ")",
+                     m.top >= 0 && m.bottom <= m.boardTop + 1, m);
+      }
+      // a correction: the sheet above the bar, a smaller board in the bar, the page above them
+      await pp.tap("#mpen");
+      const vis = await pp.evaluate(() => {
+        const b = document.getElementById("boardblock").getBoundingClientRect();
+        const el = [...document.querySelectorAll("#ov .mark")].find((e) => {
+          const r = e.getBoundingClientRect(); return r.top > 0 && r.bottom < b.top && r.width > 4; });
+        return el ? el.dataset.node : null;
+      });
+      check("iPhone 13: a move shows above the board to correct", !!vis, vis);
+      await pp.tap("#ov .mark[data-node='" + vis + "']");
+      await pp.waitForSelector("#fix:not([hidden])");
+      await pp.waitForTimeout(300);
+      const fx = await pp.evaluate((id) => {
+        const f = document.getElementById("fix").getBoundingClientRect(), bar = document.getElementById("mbar").getBoundingClientRect();
+        const m = document.querySelector("#mini.on svg"), mr = m ? m.getBoundingClientRect() : null;
+        const k = document.querySelector("#ov .mark[data-node='" + id + "']").getBoundingClientRect();
+        return { fixTop: f.top, fixBottom: f.bottom, barTop: bar.top, mini: mr && { top: mr.top, bottom: mr.bottom, w: mr.width },
+                 mark: { top: k.top, bottom: k.bottom }, sw: document.documentElement.scrollWidth, w: window.innerWidth,
+                 stick: document.body.classList.contains("stickboard") };
+      }, vis);
+      check("iPhone 13: a correction shows its sheet above the bar, a board beside the bar's controls and the move above them",
+            !fx.stick && Math.abs(fx.fixBottom - fx.barTop) <= 2 && fx.fixTop >= 100 && fx.mini && fx.mini.w >= 150 &&
+            fx.mini.top >= fx.barTop - 1 && fx.mini.bottom <= 664 + 1 && fx.mark.top >= 0 && fx.mark.bottom <= fx.fixTop &&
+            fx.sw <= fx.w, fx);
+      await pp.screenshot({ path: path.join(screens, "sticky_390x664_correction.png") });
+      out.screenshots.push("sticky_390x664_correction.png");
+      await pp.tap("#fixclose");
+      await pp.tap("#mpen");
+      await pp.waitForTimeout(200);
+      const back = await g();
+      check("iPhone 13: closing the correction brings the board back to the foot",
+            back.stick && Math.abs(back.board.bottom - back.bar.top) <= 1.5, back);
+      // the wide layouts keep the board at the head of the panel
+      for (const [w, h] of [[1280, 900], [1180, 820]]) {
+        await pp.setViewportSize({ width: w, height: h });
+        await pp.waitForTimeout(250);
+        const wide = await pp.evaluate(() => {
+          const panel = document.getElementById("panel"), r = panel.getBoundingClientRect();
+          const b = document.querySelector("#board svg").getBoundingClientRect();
+          return { first: panel.firstElementChild.id, foot: !!document.querySelector(".pagecol > .pagefoot"),
+                   left: b.left - r.left, top: b.top - r.top, w: b.width, pw: r.width,
+                   pos: getComputedStyle(document.getElementById("boardblock")).position };
+        });
+        check("at " + w + " px the board heads the panel on the right, as before",
+              wide.first === "boardblock" && wide.foot && wide.pos === "static" && Math.abs(wide.left - 25) <= 1 &&
+              Math.abs(wide.top - 16) <= 1 && Math.abs(wide.w - (wide.pw - 49)) <= 1, wide);
+      }
+      await ctx13.close();
+    }
 
     // back on the contents page, the diagram is left out there as well
     await page.goto(index);

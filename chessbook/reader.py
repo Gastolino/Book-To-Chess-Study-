@@ -445,6 +445,7 @@ cursor:pointer;z-index:5;line-height:0}
 border:1px solid var(--line);white-space:nowrap}
 .bmnote:empty{display:none}
 .bmnote .tb{margin-left:4px}
+.boardblock{display:flow-root}
 .mbar,.mini,.touch{display:none}
 @media (hover:none) and (pointer:coarse){.touch{display:block}.mouse{display:none}
 .mark{border-bottom:1px solid color-mix(in srgb,var(--accent) 45%,transparent)}}
@@ -455,13 +456,13 @@ border:1px solid var(--line);white-space:nowrap}
 .tools{width:100%;justify-content:space-between;gap:12px}
 .notes{padding-left:16px;padding-right:16px}
 .reader{grid-template-columns:minmax(0,1fr)}
-.pagecol{padding:16px 16px 24px}
+.pagecol{padding:16px 16px 8px}
 .key > *{grid-area:auto}
 .legend{display:none;visibility:visible}
 .reading .legend{display:flex}
 .reading .key .help{display:none}
-.panel{position:static;height:auto;display:block;overflow:visible;border-left:0;
-border-top:1px solid var(--line);padding:16px 16px 32px}
+.panel{position:static;height:auto;display:block;overflow:visible;border-left:0;padding:0 16px 32px}
+.panel > .pagefoot{border-top:1px solid var(--line);padding-top:12px}
 .panel > .treesec .tree,.panel > #infosec{overflow:visible;max-height:none}
 .boardwrap,.dpanel canvas.pic{max-width:none}
 body{padding-bottom:64px}
@@ -472,16 +473,29 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
 #mboard[aria-pressed="true"]{color:var(--accent)}
-.mini.on{display:block;flex:none;width:var(--mini)}
-.mbar{--mini:min(376px,calc(100vw - 32px),55vh)}
-.mbar.withboard{flex-direction:column;align-items:center;gap:4px}
-.mbar.withboard .mside{width:var(--mini);flex:none}
-.mbar.withboard .mbtns{margin-right:-6px}
-.mbar.withboard.small{--mini:188px;flex-direction:row;align-items:stretch;gap:16px}
-.mbar.withboard.small .mside{width:auto;flex:1;flex-direction:column;align-items:stretch;
-justify-content:space-between}
-.mbar.withboard.small .mtxt{flex:none;padding-top:4px}
-.mbar.withboard.small .mbtns{justify-content:flex-start;margin:0 0 0 -6px;flex-wrap:wrap}
+/* The board follows the page picture (the script moves it there from the panel) and, while
+   "Board" is on, stays at the foot of the window just above the bar as the page scrolls by
+   (position: sticky, so the browser moves it, smoothly); at the end of the page picture it
+   lets go and scrolls up with the page foot and the move list. */
+.pagescroll{margin-bottom:16px}
+.boardblock{margin:0 -16px;padding:8px 16px 0;border-top:1px solid var(--line);background:var(--bg)}
+.stickboard .boardblock{position:sticky;bottom:var(--barh,50px);z-index:8;overflow:hidden auto;
+max-height:calc(100vh - var(--barh,50px) - 96px)}
+.boardblock .boardrow{justify-content:center}
+.boardblock .boardrow > .boardwrap,.boardblock .dpanel canvas.pic,.boardblock .dpanel .boardwrap{
+max-width:min(100%,55vh)}
+.boardblock .dpanel{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.boardblock .dpanel > *{grid-column:1/-1}
+.boardblock .dpanel > .boardwrap{grid-column:1}
+.boardblock .dpanel > .boardwrap + .pic{grid-column:2}
+.boardblock .controls{margin-bottom:0}
+.boardblock .dpanel code{overflow-wrap:anywhere}
+/* while a correction is open a smaller board stays beside the bar's controls */
+.mini.on{display:block;flex:none;width:188px}
+.mbar.withboard{align-items:stretch}
+.mbar.withboard .mside{flex-direction:column;align-items:stretch;justify-content:space-between}
+.mbar.withboard .mtxt{flex:none;padding-top:4px}
+.mbar.withboard .mbtns{justify-content:flex-start;margin:0 0 0 -6px;flex-wrap:wrap}
 .mini svg,.mini canvas{display:block;width:100%;height:auto}
 .mini .co{display:none}}
 """ + REVIEW_CSS + ENGINE_CSS
@@ -493,8 +507,8 @@ const D = JSON.parse(document.getElementById("data").textContent);
 const IMG = JSON.parse(document.getElementById("images").textContent);
 window.READER = D;
 const $ = (id) => document.getElementById(id);
-const S = {page: null, node: null, line: null, flip: false, diagram: null, mini: null, panelSeen: false,
-  wanted: null};  // wanted: a move the hash asked for that this reading does not hold yet
+const S = {page: null, node: null, line: null, flip: false, diagram: null, mini: null,
+  wanted: null};  // mini: the "Board" button of the phone's bar (null: on while a move or diagram is shown)  // wanted: a move the hash asked for that this reading does not hold yet
 const imgCache = {};
 const IMG_KEEP = 4;  // decoded page pictures kept for the diagram crops: the last few pages only
 const SMALL = window.matchMedia("(max-width:700px)");
@@ -970,18 +984,24 @@ function highlightMark(scroll){
 }
 
 // Keep the current move in the part of the screen that is free: above the
-// board bar on a phone, and inside the enlarged page when it scrolls
+// board that stays at the foot of the window on a phone (and above the bar
+// and an open editor), and inside the enlarged page when it scrolls
 // sideways. The page moves only when the move leaves the middle of that
 // space, so stepping through a line does not make it jump.
 function revealMark(el){
-  // On a phone, while the big board below the page is in view, stepping
-  // through the moves keeps the reader at the board.
-  if (SMALL.matches && S.panelSeen) return;
   const bar = $("mbar");
   const barH = bar && getComputedStyle(bar).display !== "none" ? bar.offsetHeight : 0;
   if (!barH) { el.scrollIntoView({block: "nearest", inline: "nearest"}); return; }
   const r = el.getBoundingClientRect();
-  const free = window.innerHeight - barH - bottomCover();
+  let free = window.innerHeight - barH - bottomCover();
+  if (SMALL.matches && !bottomCover()) {
+    const b = $("boardblock").getBoundingClientRect();
+    const stuck = document.body.classList.contains("stickboard") && b.bottom >= free - 2;
+    // the board in its own place below the page is in view: stepping through the
+    // moves keeps the reader at the board and the move list
+    if (!stuck && b.top < free) return;
+    if (stuck) free = b.top;
+  }
   const cy = r.top + r.height / 2;
   if (cy < free * 0.2 || cy > free * 0.8) {
     // above an open editor the space is small: the page moves at once
@@ -1135,29 +1155,53 @@ function renderBoard(){
   renderMini();
   evShown();
 }
+function placeBoard(){
+  // on a phone the board follows the page picture, so that it can stay at the foot of the
+  // window while the page scrolls by (CSS sticky needs a parent that spans the page), and the
+  // line and its moves follow the board, with the page's foot (the lines on the page, the
+  // chapters) after them; on a wider screen the board heads the panel
+  const blk = $("boardblock"), ps = $("pagescroll"), panel = $("panel");
+  const foot = document.querySelector(".pagefoot"), col = document.querySelector(".pagecol");
+  if (SMALL.matches) {
+    if (blk.previousElementSibling !== ps) ps.after(blk);
+    if (foot.parentElement !== panel) panel.append(foot);
+  } else {
+    if (panel.firstElementChild !== blk) panel.prepend(blk);
+    if (foot.parentElement !== col) col.append(foot);
+  }
+}
+function toMoves(){
+  // "Moves" on a phone: the board in its place below the page, with the line's moves under it
+  const ps = $("pagescroll");
+  window.scrollTo({top: Math.max(0, ps.getBoundingClientRect().bottom + window.scrollY + 16), behavior: "auto"});
+}
 function renderMini(){
-  // on a phone the small board sits in the bar at the foot of the window while the page is in
-  // view, and steps aside when the panel with the large board comes into view
+  // on a phone the board below the page stays at the foot of the window, above the bar, while
+  // "Board" is on; while a correction is open a smaller board sits in the bar instead, beside
+  // its controls, so that the editor above the bar and the page above it both keep their room
   const mini = $("mini"), bar = $("mbar");
   let [kind, x] = boardFor();
   if (S.diagram && !S.node) { kind = "crop"; x = S.diagram; }
-  // while an editor of the Review view is open the small board stays, beside the page
   const editing = !!(RV.edit && document.getElementById("fix") && !$("fix").hidden);
   const want = S.mini === null ? !!(S.node || S.diagram || editing) : S.mini;
   $("mboard").setAttribute("aria-pressed", String(want));
-  const show = SMALL.matches && want && kind !== "empty" && (!S.panelSeen || editing) &&
-    !(RV.edit && RV.edit.kind === "diagram");
+  document.body.classList.toggle("stickboard", SMALL.matches && want && kind !== "empty" && !editing);
+  const show = SMALL.matches && want && kind !== "empty" && editing && !(RV.edit && RV.edit.kind === "diagram");
   mini.classList.toggle("on", show);
   bar.classList.toggle("withboard", show);
-  // the board is large while reading, and keeps to the side of the bar while a correction is open
-  bar.classList.toggle("small", show && editing);
   const box = $("minibox");
   if (!show) box.innerHTML = "";
   else if (kind === "svg") box.innerHTML = x;
   else { box.innerHTML = PIC; cropInto(box.querySelector("canvas"), x); }
-  // the end of the page can be scrolled above the bar (an open editor places itself: placeSheet)
-  if (!editing) document.body.style.paddingBottom = show ? bar.offsetHeight + 16 + "px" : "";
+  barHeight();
   paintBoards();
+}
+function barHeight(){
+  // the board stays just above the bar: its height, for the sticky board's place
+  // (to the fraction of a pixel, less one pixel under the bar's edge, so that no line of the
+  // page shows between them)
+  const h = $("mbar").getBoundingClientRect().height;
+  if (h) document.documentElement.style.setProperty("--barh", (h - 1) + "px");
 }
 
 /* ---------------------------------------------------------------- moves */
@@ -1635,6 +1679,7 @@ function readingState(){
 }
 window.readingState = readingState;
 function init(){
+  placeBoard();
   readingState();
   $("ov").addEventListener("click", (e) => {
     const b = e.target.closest("button");
@@ -1683,12 +1728,7 @@ function init(){
   $("mboard").addEventListener("click", () => {
     S.mini = !(S.mini === null ? !!(S.node || S.diagram) : S.mini); renderMini(); viewChanged();
   });
-  $("mmoves").addEventListener("click", () => $("panel").scrollIntoView({block: "start"}));
-  if ("IntersectionObserver" in window)
-    new IntersectionObserver((es) => {
-      const seen = es[es.length - 1].isIntersecting;
-      if (seen !== S.panelSeen) { S.panelSeen = seen; renderMini(); }
-    }, {rootMargin: "0px 0px -64px 0px"}).observe($("panel"));
+  $("mmoves").addEventListener("click", toMoves);
   // A tablet held upright gets a quiet note that the reader prefers the
   // tablet held sideways; turning it (or Hide) removes the note.
   (function(){
@@ -1779,9 +1819,9 @@ function init(){
   let resizing = 0;
   window.addEventListener("resize", () => {
     cancelAnimationFrame(resizing);
-    resizing = requestAnimationFrame(() => { sizeCoords(document); layoutPanel(false); });
+    resizing = requestAnimationFrame(() => { sizeCoords(document); layoutPanel(false); barHeight(); });
   });
-  SMALL.addEventListener && SMALL.addEventListener("change", () => { renderBoard(); layoutPanel(false); });
+  SMALL.addEventListener && SMALL.addEventListener("change", () => { placeBoard(); renderBoard(); layoutPanel(false); });
   // the browser may restore the state of the boxes when the reader comes back to this page: the
   // stored selection wins
   window.addEventListener("pageshow", () => { if (S.page) pageState(); if (S.diagram) diagramState(S.diagram); });
@@ -1873,6 +1913,7 @@ __PGNBTN__
 </div>
 </section>
 <aside class="panel" id="panel" aria-label="Board and moves">
+<div class="boardblock" id="boardblock" role="group" aria-label="Board">
 <div class="boardarea" id="boardarea">
 <div class="boardrow"><div class="evalbar" id="evalbar" aria-label="Evaluation" hidden><div class="ebar"><i></i></div><span class="enum num"></span></div>
 <div class="boardwrap" id="board"></div></div>
@@ -1888,6 +1929,7 @@ __PGNBTN__
 <button class="ib" id="bflip" title="Turn the board round" aria-label="Turn the board round">__ICON_FLIP__</button>
 <button class="ib" id="bcpu" aria-pressed="false" title="Analysis with Stockfish" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
 <button class="ib" id="bgear" aria-pressed="false" title="Analysis settings" aria-label="Analysis settings">__ICON_GEAR__</button>
+</div>
 </div>
 <section class="sec" id="evalsec" aria-label="Analysis" hidden>
 <div class="evhead"><p class="small muted evstatus" id="evstatus" role="status"></p><button class="tb small" id="evdeeper" hidden>Deeper</button></div>

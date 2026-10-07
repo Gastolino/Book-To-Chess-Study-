@@ -570,7 +570,8 @@ def test_reader_after_the_audit(little):
     assert "is now left out" in index and "is left out." in index
     assert "Use this diagram" in chapter
     for needle in ('id="usepage"', "usediag", "hashchange", "The text recognition read",
-                   "The program places this diagram after", 'id="mini"', "sideStep"):
+                   "The program places this diagram after", 'id="mini"', "sideStep",
+                   'id="boardblock"', "position:sticky;bottom:var(--barh"):
         assert needle in chapter, needle
     assert "The book prints" not in chapter
     data = script_json(chapter, "data")
