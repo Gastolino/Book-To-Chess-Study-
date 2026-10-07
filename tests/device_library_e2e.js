@@ -31,7 +31,8 @@
 //     for the library once the parts of its reading (Stage 1, the boards)
 //     are kept: opened again, the reading goes on from them, and once it is
 //     finished they make way for the stored reading; opened once more, the
-//     book draws no thumbnails (they are kept with the reading).
+//     book draws no thumbnails (they are kept with the reading); and with the
+//     network cut off, the app and the book open from the device.
 // Prints one JSON object {ok, checks, errors, timings, screenshots, notes};
 // the exit code is 1 when a check fails.
 const { chromium, devices } = require("playwright");
@@ -570,6 +571,16 @@ async function run() {
       const got = await c.page.evaluate(() => window.__got);
       check("a stored book draws no thumbnails again", !got.includes("thumbs"), got);
       check("and is not saved again", !(await c.page.evaluate(() => window.__sent)).includes("save"));
+      // offline: the app and the book open from the device (sw.js and the library)
+      await c.ctx.setOffline(true);
+      await openLibrary(c);
+      await whenReady(c);
+      await c.page.click("#books li.book[data-id='" + id + "'] .open");
+      await c.page.waitForFunction(() => document.body.dataset.book === "opened", null, { timeout: 600000 });
+      const offPage = await c.waitFrame(() => window.READER && window.readerState && window.readerState.page &&
+        document.getElementById("pageimg").naturalWidth > 0 && window.readerState.page, null, 300000);
+      check("offline, the app opens and the book shows its page", offPage > 0, offPage);
+      await c.ctx.setOffline(false);
       await c.close();
     }
 
