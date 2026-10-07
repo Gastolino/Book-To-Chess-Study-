@@ -641,6 +641,13 @@ async function openChapterOf(page, p) {
       check("iPad upright: the board takes about a third of the height, the page the larger part",
             up.board.height <= 0.36 * up.h && up.board.height >= 0.3 * up.h && up.page.width >= up.w - 60, up);
       check("iPad upright: no sideways scroll", up.wide <= 0, up.wide);
+      const top = await tp.evaluate(() => {
+        const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+        const b = r(".where .book"), h = r(".where h1"), t = r(".tools");
+        return { book: b, h1: h, tools: t, line: Math.abs(b.top - h.top) < 12 && b.height < 30 && h.height < 30 };
+      });
+      check("iPad upright: the book and the chapter on one line at the top, the controls under them",
+            top.line && top.tools.top >= Math.max(top.book.bottom, top.h1.bottom) - 1 && top.h1.left > top.book.right, top);
       await tp.screenshot({ path: path.join(screens, "reader_ipad_upright.png") });
       out.screenshots.push("reader_ipad_upright.png");
       // stepping through the line keeps the current move in view in the move list beside the board

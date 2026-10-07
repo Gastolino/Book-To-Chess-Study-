@@ -505,9 +505,12 @@ max-width:min(100%,55vh)}
    makes), so that page, position and moves show together; the move list scrolls in its own box,
    as tall as the board */
 @media (min-width:701px) and (max-width:1100px) and (orientation:portrait){
-.bar{flex-wrap:nowrap;padding:12px 24px}
-.where{flex-basis:auto}
-.tools{width:auto}
+/* the book and the chapter on one line across the top, the page's controls on the line under them */
+.bar{padding:12px 24px}
+.where{flex-wrap:nowrap;white-space:nowrap}
+.where .book{flex:0 1 auto;max-width:45%;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
+.where h1{flex:0 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
+.tools{gap:24px}
 .pagecol{padding:16px 24px 8px}
 .panel{padding:0 24px 32px}
 .notes{padding-left:24px;padding-right:24px}
