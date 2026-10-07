@@ -51,7 +51,8 @@ function check(name, cond, detail) {
 
     // the pencil: a thin line icon without a background, in the top bar while Show reading is on
     check("the pencil is hidden outside reading mode", await page.evaluate(() =>
-      !document.body.classList.contains("reading") && document.getElementById("penbtn").getClientRects().length === 0));
+      !document.body.classList.contains("reading") && (document.getElementById("penbtn").getClientRects().length === 0 ||
+        getComputedStyle(document.getElementById("penbtn")).visibility === "hidden")));
     await page.click("#showread");
     const pen = await page.evaluate(() => {
       const b = document.getElementById("penbtn"), svg = b.querySelector("svg"), r = b.getBoundingClientRect();

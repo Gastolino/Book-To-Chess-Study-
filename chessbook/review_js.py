@@ -1531,8 +1531,9 @@ function boardMove(src, m){
   // the move the line holds here: a step, as the arrow makes it
   const hit = at.children.find(c => D.nodes[c].uci === m[1] && decoded(D.nodes[c]));
   if (hit) { selectNode(hit, {scrollPage: true}); openIfFailed(hit); return; }
-  // a gap in the text: the move fills it
-  if (src.gap && samePos(gapMoves(src.gap)[0], src.fen)) {
+  // a gap in the text: the move fills it (a correction, so in reading mode only)
+  const gapHere = !!src.gap && samePos(gapMoves(src.gap)[0], src.fen);
+  if (gapHere && reading()) {
     BM.want = {line: at.line, steps: pathOf(src.at).concat([{san: m[0]}])};
     chooseGap(src.gap, m);
     return;
@@ -1564,13 +1565,18 @@ function boardMove(src, m){
         boardDone(src, m, [{san: m[0]}], "The main line now plays " + text + " instead of " + moveText(next.id, true) + "."); }]);
     }
   }
+  // correcting the book's line is a tool of reading mode: outside it a move on the board only adds
+  // a variation, and the chooser says where the corrections are
+  const fixable = gapHere || opts.length > 0;
+  if (!reading()) opts.length = 0;
   const anchor = anchorOf(src.at);
   if (anchor) opts.push(["bmadd", "Add a new variation", () => { addVariation(anchor, m[0]);
     boardDone(src, m, [{san: m[0]}], "You added " + text + " as a new variation."); }]);
   let h = "<div class=fh><h3>Your move <span class=n>" + esc(text) + "</span></h3></div>";
   h += "<p class='small muted'>" + (next ? (next.main ? "The book's line plays" : "The variation plays") +
     " <span class=n>" + esc(moveText(next.id, true)) + "</span> here." : "The line ends here.") +
-    (opts.length ? " Choose what your move does." : " The program has no printed move here to keep your move with.") + "</p>";
+    (opts.length ? " Choose what your move does." : " The program has no printed move here to keep your move with.") +
+    (fixable && !reading() ? " Show reading (the two squares at the top) offers to correct the book's line with it." : "") + "</p>";
   h += "<div class=boardacts>" + opts.map(o => "<button class=tb id=" + o[0] + ">" + o[1] + "</button>").join("") +
     "<button class=tb id=bmcancel>Cancel</button></div>";
   h += "<p class='fixmsg small' id=fixmsg role=status></p>";

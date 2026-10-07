@@ -337,6 +337,12 @@ and removing.
 
 ## Correcting what the program could not read
 
+The tools that correct the reading belong to reading mode: the pencil, Read a
+section and Review show in the reader's top bar (and the pencil in the bar at
+the foot of a phone screen) only while Show reading (the icon of two squares)
+is on. Outside it the page holds the book alone, and turning reading off ends
+whatever tool was at work.
+
 Each chapter reader has a Review button. It lists, in page order, every place
 where the program is unsure: diagrams with doubtful squares or no reading,
 moves chosen between several readings, moves it could not read, moves that
@@ -357,10 +363,11 @@ shows it on the page and on the board, with the choices to correct it:
   the book printed with that symbol (the eye on the page opens the same
   choice).
 
-A tap on a move that the program could not read (a red move, on the page or
-in the move list) opens its corrector at once, pencil or no pencil; on a
-phone it opens as a sheet above the bar at the foot of the screen. A tap on
-another move only chooses it. A piece moved on the board corrects a move as
+In reading mode, a tap on a move that the program could not read (a red
+move, on the page or in the move list) opens its corrector at once, pencil
+or no pencil; on a phone it opens as a sheet above the bar at the foot of the
+screen. A tap on another move, or on any move outside reading mode, only
+chooses it. A piece moved on the board corrects a move as
 well (see "Correcting by moving pieces on the board" below).
 
 Where the book's text lacks a move (the move list shows "…" in its place),
@@ -455,14 +462,16 @@ does depends on the line:
 
 - the move the line plays next (or a variation the book gives there) steps
   to it, as the arrow does;
-- where the book's text lacks a move, the move fills the gap, as the gap's
-  corrector does;
+- where the book's text lacks a move, the move fills the gap in reading mode,
+  as the gap's corrector does;
 - any other move opens a short choice, above the bar on a phone and below the
   board elsewhere: "Correct the main line: 12.Nf3 instead of 12.Nd2" makes
   the book's move read as yours, and the program reads the rest of the line
   from it; inside a variation the same choice reads "Correct this
   variation"; "Add a new variation" keeps your move as a variation of your
-  own, branching here; "Cancel" puts the board back.
+  own, branching here; "Cancel" puts the board back. Outside reading mode
+  the choice holds only "Add a new variation" and "Cancel", and says that
+  Show reading offers the corrections.
 
 A variation you added shows in the move list with a green dot before its
 first move and the words "Added by you". Further moves from its last position

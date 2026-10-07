@@ -9,7 +9,8 @@
 // On a desktop, with the mouse: a drag of the book's move steps to it; a tap on
 // a piece marks it and its squares, a second tap lets it go; a drop on a square
 // the piece cannot reach puts it back; a move the line does not hold opens the
-// chooser (correct the main line, add a variation, cancel), whose Cancel brings
+// chooser, which outside reading mode only adds a variation and in reading
+// mode also corrects (correct the main line, add a variation, cancel), whose Cancel brings
 // the board back; "Add a new variation" stores it ("added"), and the patch
 // chooses the new move, marked "Added by you"; a move from the end of that
 // variation makes it longer without a question; the Review list names it; its
@@ -134,7 +135,19 @@ function check(name, cond, detail) {
       !!document.querySelector("#board use[data-at='d7']") && !document.querySelector("#board use.lifted") &&
       !document.querySelector("#board .ghost")));
 
-    // another move: the chooser, by a tap on the piece and a tap on its square
+    // another move outside reading mode: the chooser adds a variation only, and says where the
+    // corrections of the book's line are
+    await click(page, B, "d7");
+    await click(page, B, "d6");
+    s = await state(page);
+    check("outside reading mode the chooser offers only a new variation and Cancel, and points to Show reading",
+          s.open && /Your move 2…d6/.test(s.fixText) && /Add a new variation/.test(s.fixText) && /Cancel/.test(s.fixText) &&
+          !/Correct the main line|Correct this variation/.test(s.fixText) && /Show reading/.test(s.fixText) &&
+          !(await page.$("#bmmain")), s.fixText);
+    await page.click("#bmcancel");
+
+    // in reading mode another move opens the whole chooser, by a tap on the piece and a tap on its square
+    await page.click("#showread");
     await click(page, B, "d7");
     await click(page, B, "d6");
     s = await state(page);
@@ -186,8 +199,7 @@ function check(name, cond, detail) {
     check("the patch chooses the move that makes it longer", s.san === "d4" && s.corrected === "added", s);
     await both(page, "boardmove_added_1280");
 
-    // the Review list names the variation (Review shows in reading mode)
-    await page.click("#showread");
+    // the Review list names the variation (Review shows in reading mode, which is on)
     await page.click("#reviewbtn");
     const rev = await page.evaluate(() => document.getElementById("revlist").innerText);
     check("the Review list names the variation", /Your variation after 2\.Nf3/.test(rev) && /Added by you/.test(rev), rev);
@@ -197,7 +209,6 @@ function check(name, cond, detail) {
     check("its item opens the variation's corrector", /You added 2…d6 3\.d4 on the board/.test(s.fixText) &&
       /Remove this variation/.test(s.fixText) && s.san === "d6", s.fixText);
     await page.click("#reviewbtn");
-    await page.click("#showread");
 
     // the corrector of a move of the variation removes it
     const d4 = await page.evaluate(() => Object.keys(READER.nodes).find(k => READER.nodes[k].corrected === "added" &&
@@ -225,8 +236,9 @@ function check(name, cond, detail) {
       s.fix.moves[I.nc6key].san === "d6", s.fix);
     check("the page says what changed", /The main line now plays 2…d6 instead of 2…Nc6/.test(s.msg), s.msg);
 
-    // correcting a variation of the book
+    // correcting a variation of the book (in reading mode, which a fresh page leaves off)
     await fresh(page);
+    await page.click("#showread");
     I = await ids(page);
     await goNode(page, I.bc5);
     await drag(page, B, "d2", "d4");
@@ -241,6 +253,7 @@ function check(name, cond, detail) {
     // a pawn that reaches the last rank asks for the piece
     await fresh(page, "#line=" + I.diagLine);
     await page.waitForFunction(() => window.readerState.nodeId && READER.nodes[window.readerState.nodeId].parent == null);
+    await page.click("#showread");
     await drag(page, B, "a7", "a8");
     s = await state(page);
     check("a promotion asks for the piece", /Promote the pawn/.test(s.fixText) &&

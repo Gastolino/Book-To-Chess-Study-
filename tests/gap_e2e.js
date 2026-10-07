@@ -6,7 +6,8 @@
 // Opens a chapter reader of the generated test book whose game lacks Black's
 // fifth move and White's sixth (tests/test_reader.py builds it, with the patch
 // that chessbook/live.py makes once the reader gives both moves), and checks,
-// with the pencil off: a tap on a red move on the page opens its corrector,
+// with the pencil off: outside reading mode a tap on a red move only chooses
+// it; in reading mode a tap on a red move on the page opens its corrector,
 // which says that the position is unknown because the text lacks a move
 // before it and offers the gap's corrector; the board shows the position
 // before the gap; the gap's corrector is titled "Give Black's move 5", lists
@@ -56,7 +57,7 @@ function check(name, cond, detail) {
     check("the pencil is off", await page.evaluate(() => !document.body.classList.contains("pencil")));
 
     // the Review list names the gap, and its item opens the gap's corrector (Review shows in
-    // reading mode; the taps after it come with reading mode off again)
+    // reading mode)
     await page.click("#showread");
     await page.click("#reviewbtn");
     const rev = await page.evaluate(() => document.getElementById("revlist").innerText);
@@ -65,9 +66,16 @@ function check(name, cond, detail) {
     await page.waitForFunction(() => /Give Black's move 5/.test((document.querySelector("#fix h3") || {}).textContent || ""));
     await page.click("#reviewbtn");
     check("closing Review closes the corrector", await page.evaluate(() => document.getElementById("fix").hidden));
-    await page.click("#showread");
 
-    // a tap on the red move after the gap opens its corrector at once
+    // outside reading mode a tap on the red move only chooses it (the correction tools are hidden)
+    await page.click("#showread");
+    await page.click(".mark[data-node='" + info.after + "']");
+    check("outside reading mode a tap on a red move only chooses it", await page.evaluate((id) =>
+      window.readerState.nodeId === id && document.getElementById("fix").hidden &&
+      !document.body.classList.contains("reading"), info.after));
+
+    // in reading mode a tap on the red move after the gap opens its corrector at once
+    await page.click("#showread");
     await page.click(".mark[data-node='" + info.after + "']");
     await page.waitForSelector("#fix:not([hidden])");
     let t = await fixText();
@@ -137,6 +145,7 @@ function check(name, cond, detail) {
     await page.reload();
     await page.waitForFunction((p) => window.readerState && window.readerState.page === p, info.page);
     const after = await page.evaluate((key) => Object.keys(READER.nodes).find(k => READER.nodes[k].key === key), info.key);
+    await page.click("#showread");
     await page.click(".mark[data-node='" + after + "']");
     await page.waitForSelector("#fix:not([hidden])");
     const phone = await page.evaluate(() => {

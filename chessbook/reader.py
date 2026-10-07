@@ -303,6 +303,14 @@ CHAPTER_CSS = r"""
 /* The tools that correct what the program read belong to reading mode: outside it the page holds
    only the book, and none of them shows (or acts on a tap) */
 body:not(.reading) .rtool{display:none}
+/* Show reading stays where it is when it is tapped, so that a second tap on the same spot turns
+   reading off again rather than turning on a tool that has just appeared there. In the wide bar,
+   which stands at the right, the reading tools come first and keep their room while hidden (the
+   chapter's title then wraps the same way in both modes); in the compact layout, which spreads
+   its rows across the width, the icon comes first and the tools that appear follow it. */
+@media (min-width:701px) and (orientation:landscape),(min-width:1101px){
+.tools .rtool{order:-1}
+body:not(.reading) .tools .rtool{display:inline-block;visibility:hidden}}
 .pnav{display:flex;align-items:center}
 .pnav .ib{padding:4px 6px}
 .pnav .ib svg{width:16px;height:16px}
@@ -361,12 +369,11 @@ cursor:pointer;min-width:0;min-height:0;overflow:visible;outline:0 solid transpa
 .diag{z-index:1}
 .mark{z-index:2}
 .mark.current,.diag.current{z-index:3}
-/* Outside reading mode the boxes draw nothing on the page, on any device, except the current move:
-   it is underlined in the bookmark's yellow, the one other use of that colour (DESIGN.md), so that
-   the place in the book stands out as the bookmark does. A pointer that can hover still finds the
-   box under it. */
+/* Outside reading mode the boxes draw nothing on the page, on any device and under a pointer too,
+   except the current move: it is underlined in the bookmark's yellow, the one other use of that
+   colour (DESIGN.md), so that the place in the book stands out as the bookmark does. A pointer over
+   a box turns to a hand, which says that a click chooses the move. */
 body:not(.reading) .mark.current{border-bottom:2px solid var(--bookmark)}
-@media (hover:hover){.mark:hover,.diag:hover{outline:1px solid var(--accent)}}
 /* In reading mode each box shows what the program made of it */
 .reading .diag.excluded{outline:1px dashed var(--muted)}
 .reading .mark.st-guessed,.reading .mark.st-ambiguous,.reading .mark.st-inserted{outline:1px solid var(--doubt)}
@@ -469,6 +476,9 @@ cursor:pointer;z-index:5;line-height:0}
 /* Inverted page: white print on black. The whole page box (the picture and
    everything drawn over it, boards included) is inverted as one. */
 .inverted .pagebox{-webkit-filter:invert(1);filter:invert(1)}
+/* except the bookmark's yellow, which keeps its meaning: the ribbon and the line under the current
+   move are inverted once more, back to their own colour */
+.inverted .ribbon,.inverted:not(.reading) .mark.current{-webkit-filter:invert(1);filter:invert(1)}
 #invbtn[aria-pressed="true"]{color:var(--accent)}
 .ribbon svg{display:block;width:100%;height:auto;fill:var(--bookmark)}
 .ribbon:hover svg{opacity:.85}
@@ -489,6 +499,7 @@ border:1px solid var(--line);white-space:nowrap}
 .where{flex-basis:100%;white-space:normal;flex-wrap:wrap;gap:0 12px}
 .where h1{white-space:normal}
 .tools{width:100%;justify-content:space-between;gap:12px}
+#showread{order:-1}
 .notes{padding-left:16px;padding-right:16px}
 .reader{grid-template-columns:minmax(0,1fr)}
 .pagecol{padding:16px 16px 8px}
@@ -1805,9 +1816,10 @@ function renderInfo(){
 }
 
 function openIfFailed(id){
-  // a move the program could not read (red in the move list) opens its corrector at once
+  // in reading mode, a move the program could not read (red in the move list) opens its corrector
+  // at once; outside it the correction tools are hidden, and a tap only chooses the move
   const n = D.nodes[id];
-  if (n && n.parent != null && n.status === "failed") openMove(id);
+  if (reading() && n && n.parent != null && n.status === "failed") openMove(id);
 }
 function selectNode(id, opts){
   opts = opts || {};
@@ -2047,6 +2059,10 @@ function setReading(on){
   if (PEN.on) setPencil(false);
   if (RV.on) setReview(false);
   if (RV.edit) closeFix();
+  // nor may one wait for the next tap: a join of lines ("Continue the line…") or the menu of a
+  // piece symbol (the section tool ends by itself, initRegion)
+  if (PEN.connect) { stopConnect(); say(""); }
+  closeSymMenu();
 }
 
 function setInverted(on){
@@ -2326,10 +2342,10 @@ CHAPTER_HTML = """<!doctype html>
 <span class="pnav"><button class="ib" id="prevpage" aria-label="Previous page" title="Previous page (Page Up)">__ICON_BACK__</button>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number"><span class="ptotal small muted" id="pagetotal"></span>
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
+<button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
 <button class="ib rtool" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
 <button class="ib rtool" id="regionbtn" aria-pressed="false" aria-label="Read a section of the page that the program missed" title="Read a section: drag across moves that the program missed">__ICON_SECTION__</button>
 <button class="tb rtool" id="reviewbtn" aria-pressed="false">Review</button>
-<button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
 <a class="nav" href="index.html">Contents</a>
 <button class="ib" id="bmbtn" aria-pressed="false" aria-label="Bookmark this page" title="Bookmark: a tap marks this page and the chosen move.">__ICON_BOOKMARK__</button>
 <button class="ib" id="invbtn" aria-pressed="false" aria-label="Invert the page: white text on black" title="Invert the page: white text on black.">__ICON_INVERT__</button>

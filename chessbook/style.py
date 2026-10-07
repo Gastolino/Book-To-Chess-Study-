@@ -176,9 +176,10 @@ ICONS = {
     "invert": "<circle cx='10' cy='10' r='6.5'/><path d='M10 3.5a6.5 6.5 0 0 0 0 13z' fill='currentColor' stroke='none'/>",
     # two filled squares, the second up and to the right of the first, overlapping by a quarter:
     # one path filled even-odd, so that the square they share is cut out. It stands for the
-    # program's reading laid over the page (Show reading). Squares of 9 match the other icons in
-    # size; their edges lie on half units, whole pixels on the iPad's and the Mac's screens
-    "reading": "<path d='M3.5 7.5h9v9h-9zM8 3h9v9H8z' fill='currentColor' fill-rule='evenodd' stroke='none'/>",
+    # program's reading laid over the page (Show reading). Squares of 8, offset by 4, fill the
+    # middle 12 by 12 of the box (a filled shape weighs more than the others' strokes), and every
+    # edge lies on a whole unit, so that it is sharp at one, two and three pixels to the unit
+    "reading": "<path d='M4 8h8v8H4zM8 4h8v8H8z' fill='currentColor' fill-rule='evenodd' stroke='none'/>",
 }
 
 
