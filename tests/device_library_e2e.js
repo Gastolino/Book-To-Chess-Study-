@@ -503,8 +503,11 @@ async function run() {
       /corrections in the file are newer/.test(won.said) && won.fix.corrections.glyphs[sym.sym] === piece, won);
 
     // ---------------------------------------------------------------- removing
-    const keptPics = await b.page.evaluate((id) => LIB.pagesCount(id), one.id);
-    check("the pictures of the pages shown are kept on the device", keptPics > 0, keptPics);
+    // (the pictures are stored as they are drawn: a busy machine stores them a little later)
+    const keptPics = await b.until(() => b.page.evaluate((id) => LIB.pagesCount(id).then((n) => n || null), one.id),
+                                   "the pictures of the pages shown in the device's store", 60000).catch(() => 0);
+    check("the pictures of the pages shown are kept on the device", keptPics > 0,
+          { keptPics, stats: await b.page.evaluate(() => Object.assign({ open: openChapter, id: LIB.current && LIB.current.id }, window.pictureStats)) });
     await b.page.click("#books li.book[data-id='" + one.id + "'] .remove");
     check("removing asks first", await b.page.evaluate((id) =>
       /Remove this book/.test(document.querySelector("#books li.book[data-id='" + id + "'] .confirm").textContent), one.id));
