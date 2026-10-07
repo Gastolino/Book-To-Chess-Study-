@@ -438,11 +438,9 @@ background:var(--muted)}
 .ribbon{position:absolute;top:0;width:4.5%;padding:0;margin:0;border:0;border-radius:0;background:none;
 cursor:pointer;z-index:5;line-height:0}
 .ribbon[hidden]{display:none}
-/* Inverted page: white print on black. The page picture is inverted and each
-   diagram region inverts what lies behind it a second time, so the boards keep
-   their true colours (white pieces stay white). */
-.inverted .pagebox img{filter:invert(1)}
-.inverted .diag{-webkit-backdrop-filter:invert(1);backdrop-filter:invert(1)}
+/* Inverted page: white print on black. The whole page box (the picture and
+   everything drawn over it, boards included) is inverted as one. */
+.inverted .pagebox{-webkit-filter:invert(1);filter:invert(1)}
 #invbtn[aria-pressed="true"]{color:var(--accent)}
 .ribbon svg{display:block;width:100%;height:auto;fill:var(--bookmark)}
 .ribbon:hover svg{opacity:.85}

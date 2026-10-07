@@ -263,7 +263,7 @@ def test_primer_reader_in_chromium(tmp_path, monkeypatch):
 def test_inverted_page_in_chromium(tmp_path):
     """The invert button beside the bookmark (tests/invert_e2e.js), on a
     desktop, an iPhone 13 and an iPad held sideways: white print on black,
-    diagrams in their true colours, and the choice kept across a reload."""
+    the diagrams inverted with the page, and the choice kept across a reload."""
     pdf = make_book(tmp_path / "little.pdf", second=True)
     book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
     out = tmp_path / "output" / "little" / "reader"
@@ -280,7 +280,7 @@ def test_inverted_page_in_chromium(tmp_path):
     assert res["errors"] == []
     names = {c["name"] for c in res["checks"]}
     assert {"the invert button sits beside the bookmark icon", "the page picture turns dark with light print",
-            "the diagram keeps its true colours", "the inverted page survives a reload",
+            "the diagram is inverted with the page", "the inverted page survives a reload",
             "the invert button shows within the screen"} <= names
 
 
