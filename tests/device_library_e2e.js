@@ -171,7 +171,7 @@ async function addBook(d, file) {
   const first = await d.waitFrame(() => window.READER && window.readerState && window.readerState.page && window.readerState, null, 1800000);
   check("a new book opens at its first page", first.page === 1, first);
   const contents = now() - t;
-  await d.page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent),
+  await d.page.waitForFunction(() => document.body.dataset.book === "read",
                                null, { timeout: 3600000 });
   const read = now() - t;
   const id = await d.page.evaluate(() => LIB.current.id);
@@ -191,7 +191,7 @@ async function openStored(d, id, place) {
   await d.instrument();
   const t = now();
   await d.page.click("#books li.book[data-id='" + id + "'] .open");
-  await d.page.waitForFunction(() => /opened from your library/.test(document.getElementById("took").textContent),
+  await d.page.waitForFunction(() => document.body.dataset.book === "opened",
                                null, { timeout: 600000 });
   const contents = now() - t;
   const at = await d.waitFrame((p) => window.READER && window.READER.chapter.file === p.chapter &&
@@ -423,7 +423,7 @@ async function run() {
     await b.instrument();
     const t = now();
     await addFile(b, file1);
-    await b.page.waitForFunction(() => /opened from your library/.test(document.getElementById("took").textContent),
+    await b.page.waitForFunction(() => document.body.dataset.book === "opened",
                                  null, { timeout: 600000 });
     timing("adding the book file of " + path.basename(book1) + ": until the contents (s)", now() - t);
     const atB = await b.waitFrame((p) => window.READER && window.READER.chapter.file === p.chapter &&
@@ -516,7 +516,7 @@ async function run() {
         await openLibrary(s);
         for (const f of [file2, file1]) {
           await addFile(s, f);
-          await s.page.waitForFunction(() => /opened from your library/.test(document.getElementById("took").textContent),
+          await s.page.waitForFunction(() => document.body.dataset.book === "opened",
                                        null, { timeout: 600000 });
           await s.page.click("#another");
           await s.page.waitForFunction(() => document.body.classList.contains("library"));

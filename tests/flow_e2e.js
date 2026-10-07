@@ -200,7 +200,7 @@ async function run(browser, which) {
   check("the chapter files of the app hold no pictures", kept === 0, kept);
 
   // ---------------------------------------------------------------- the work ends
-  await page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent), null, { timeout: 3600000 });
+  await page.waitForFunction(() => document.body.dataset.book === "read", null, { timeout: 3600000 });
   await page.waitForFunction(() => !document.getElementById("busy").classList.contains("on"), null, { timeout: 600000 });
   check("the small book is gone when the work is done", await page.evaluate(() =>
     getComputedStyle(document.getElementById("busy")).visibility === "hidden"));

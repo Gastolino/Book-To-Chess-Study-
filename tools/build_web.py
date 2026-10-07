@@ -418,7 +418,10 @@ worker.onmessage = (e) => {
     bookChapters = m.chapters || [];
     PICS.book(LIB.on && LIB.current && !LIB.current.ephemeral ? LIB.current.id : null, m.pages);
     prepared = {};
-    $("took").textContent = m.restored ? LIB.openedIn() : "Reading the book";
+    // the line shows work only: a book opened from the library has none, and the body's data-book
+    // says how it came (for the tests)
+    $("took").textContent = m.restored ? "" : "Reading the book";
+    document.body.dataset.book = m.restored ? "opened" : "reading";
     outdated(m.outdated);
     const words = resuming ? resumed(m) : null;
     let place = againPlace || (LIB.on ? LIB.takePlace() : null) || (words !== null || resumeOwn ? SESSION.place() : null);
@@ -440,7 +443,11 @@ worker.onmessage = (e) => {
   } else if (m.type === "done") {
     loading = false;
     prepared = {};
-    if (!m.restored) $("took").textContent = (resumeWords ? resumeWords + ", " : "") + "read in " + Math.round(m.seconds) + " seconds";
+    if (!m.restored) {
+      $("took").textContent = resumeWords;
+      document.body.dataset.book = "read";
+      document.body.dataset.seconds = String(Math.round(m.seconds));
+    }
     resumeWords = "";
     working(false);
     if (m.html && openChapter === "index.html") show("index.html", "", m.html);

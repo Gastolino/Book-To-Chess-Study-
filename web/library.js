@@ -1083,7 +1083,7 @@ const LIB = (() => {
     busy = true;
     working(true);
     const name = safeName(b.fileName);
-    api.current = { id: b.id, book: b, name, restored: false, position: null, t0: Date.now(), ephemeral: !!given,
+    api.current = { id: b.id, book: b, name, restored: false, position: null, ephemeral: !!given,
                     at: at || null };
     if (!given) {
       // the record: the book is open from now on (the place follows once the reader shows)
@@ -1145,14 +1145,6 @@ const LIB = (() => {
     const p = cur ? cur.place : null;
     if (cur) cur.place = null;
     return p || null;
-  };
-
-  // The top bar's words for a book opened from its stored reading.
-  api.openedIn = function () {
-    const t0 = api.current && api.current.t0;
-    const k = Math.max(1, Math.round((Date.now() - (t0 || 0)) / 1000));
-    return t0 ? "opened from your library in " + k + (k === 1 ? " second" : " seconds")
-              : "opened from your library";
   };
 
   function safeName(fileName) {
@@ -1222,11 +1214,7 @@ const LIB = (() => {
     store.putReading(cur.id, m.bytes, m.version, m.size)
       .then((book) => {
         cur.book.reading = book.reading;
-        if (api.current === cur) {
-          status(store.kind === "device"
-            ? "The book is in your library on this device: it opens next time without being read again."
-            : "The book is in your library: any device opens it without reading it again.");
-        }
+        // kept quietly: only a failure is told
       })
       .catch((err) => {
         if (store.kind === "server" && tries < 4) setTimeout(() => sendReading(cur, m, tries + 1), 5000 * (tries + 1));

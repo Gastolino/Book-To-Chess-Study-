@@ -120,7 +120,7 @@ async function addBook(d, file) {
                                null, { timeout: 300000 });
   await d.page.setInputFiles("#file", file);
   await d.page.waitForSelector("#view", { state: "visible", timeout: 1800000 });
-  await d.page.waitForFunction(() => /read in \d+ seconds/.test(document.getElementById("took").textContent),
+  await d.page.waitForFunction(() => document.body.dataset.book === "read",
                                null, { timeout: 3600000 });
   const read = now() - t;
   const took = await d.page.evaluate(() => document.getElementById("took").textContent);
@@ -250,7 +250,7 @@ async function run() {
     await b.instrument();
     const t = now();
     await b.page.click("#books li.book[data-id='" + one.id + "'] .open");
-    await b.page.waitForFunction(() => /opened from your library/.test(document.getElementById("took").textContent),
+    await b.page.waitForFunction(() => document.body.dataset.book === "opened",
                                  null, { timeout: 600000 });
     timing("second device: opening " + path.basename(book1) + " from the library, until the reading opens (s)", now() - t);
     note("second device: the driver opened the stored reading in " +
