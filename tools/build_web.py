@@ -486,6 +486,9 @@ worker.onmessage = (e) => {
     // the final reading changed the chapters: the open one opens again
     wantOpen = m.chapter;
     worker.postMessage({ type: "chapter", name: m.chapter, small: window.matchMedia("(max-width: 700px)").matches });
+  } else if (m.type === "words" || m.type === "region") {
+    // the reader's section of a page: the words around a tap, or the program's reading of it
+    toView(m.type === "words" ? { words: m } : { regionRead: m });
   } else if (m.type === "patch") {
     prepared = {};
     patched(m);
@@ -503,6 +506,11 @@ worker.onmessage = (e) => {
     openChapter = m.name;
     show(m.name, m.hash, m.html);
   } else if (m.type === "error") {
+    if (m.during === "words" || m.during === "region") {
+      // the reader says why the section was not read, and the reader may type its moves
+      toView({ regionFailed: m.text, id: m.id });
+      return;
+    }
     working(false);
     if (m.during === "correct" || m.during === "correct-more") {
       // the reader says so too, instead of waiting for a patch that does not come
@@ -778,6 +786,11 @@ window.addEventListener("message", (e) => {
   }
   if (e.data && e.data.pictureShown) {
     if (swapping && e.source === swapping.frame.contentWindow) swapping.swap();
+    return;
+  }
+  if (e.data && (e.data.words || e.data.region)) {
+    // the reader asks for the words of a spot of a page, or for the program's reading of a section
+    worker.postMessage(Object.assign({ type: e.data.words ? "words" : "region" }, e.data.words || e.data.region));
     return;
   }
   LIB.fromReader(e.data);

@@ -178,6 +178,71 @@ def test_a_variation_added_on_the_board_reaches_the_open_chapter(tmp_path, monke
     assert driver.STATE["book"]["stats"]["corrected"]["added_moves"] == 0
 
 
+def test_the_driver_reads_a_section_of_a_page(tmp_path, monkeypatch):
+    """The reader's "Read a section": words() gives the words of the text layer
+    around a tap (the selection snaps to the one under it), and read_region()
+    reads the words of a section as moves with the book's own decoder and
+    glyph model, from the position after (or before) a move, legal there,
+    best first. A section read by the reader then reaches the open chapter
+    as a patch, with its box on the page."""
+    import json
+    import chess
+    import pymupdf
+    driver = _driver(tmp_path, monkeypatch)
+    from test_assemble import make_book
+    from test_corrections import GARBLED, NOTE
+    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE)
+    driver.process(str(pdf), lambda *_: None)
+    with pymupdf.open(pdf) as doc:
+        box = {w[4]: [round(v, 1) for v in w[:4]] for w in doc[3].get_text("words")}
+    a, b = box["2.tLlf3"], box["tLlc6"]
+    # words(): the word under a tap, with its box, and those near it
+    cx, cy = (a[0] + a[2]) / 2, (a[1] + a[3]) / 2
+    got = json.loads(driver.words(4, cx - 4, cy - 4, cx + 4, cy + 4))
+    assert got == [{"text": "2.tLlf3", "box": a, "inside": True}]
+    near = json.loads(driver.words(4, cx - 4, cy - 4, cx + 4, cy + 4, 20))
+    assert [w["text"] for w in near if w["inside"]] == ["2.tLlf3"]
+    assert {"e5", "tLlc6"} <= {w["text"] for w in near if not w["inside"]}
+    assert json.loads(driver.words(99, 0, 0, 10, 10)) == []
+    # read_region(): "2.tLlf3 tLlc6", garbled knights, after 1...e5
+    book = driver.STATE["book"]
+    e5_id, e5 = next((k, n) for k, n in book["nodes"].items() if n["san"] == "e5" and n["main"]
+                     and n["page"] == 4)
+    rect = [a[0] - 1, a[1] - 1, b[2] + 1, b[3] + 1]
+    out = json.loads(driver.read_region(4, json.dumps(rect), e5_id, "after"))
+    assert out["text"] == "2.tLlf3 tLlc6" and out["fen"] == e5["fen"]
+    assert out["candidates"][0]["san"] == ["Nf3", "Nc6"]
+    for c in out["candidates"]:
+        board = chess.Board(e5["fen"])
+        for san in c["san"]:
+            board.push_san(san)             # every reading is legal from the position
+    # by the move's token key and by the position itself, the same reading
+    by_key = json.loads(driver.read_region(4, json.dumps(rect), e5["key"], "after"))
+    by_fen = json.loads(driver.read_region(4, json.dumps(rect), e5["fen"], "after"))
+    assert by_key["candidates"] == by_fen["candidates"] == out["candidates"]
+    # before 2.tLlf3: the moves start from the position before it
+    nf3_id = next(c for c in e5["children"] if book["nodes"][c]["main"])
+    before = json.loads(driver.read_region(4, json.dumps(rect), nf3_id, "before"))
+    assert before["fen"] == e5["fen"] and before["candidates"] == out["candidates"]
+    # a section of prose reads as no move
+    prose = json.loads(driver.read_region(4, json.dumps(box["attack."]), e5_id, "after"))
+    assert prose["text"] == "attack." and prose["candidates"] == []
+    with pytest.raises(ValueError):
+        driver.read_region(4, json.dumps(rect), "n999999", "after")
+    # a section the reader read after the game's last move (8.tLlc3) and attached to it: the patch
+    # holds the move, in the main line, and its box on the page (the section's, as it prints no move)
+    name = next(c["file"] for c in book["chapters"] if c["start"] <= 4 <= c["end"])
+    driver.chapter(name, lambda *_: None)
+    last = next(n for n in book["nodes"].values() if n["main"] and n["raw"] == "tLlc3")
+    entry = {"san": ["Nb4"], "page": 4, "rect": box["attack."], "main": True}
+    res = json.loads(driver.correct(json.dumps({"version": 1, "added": {last["key"]: [entry]}}), name))
+    patch = res["patch"]
+    assert patch["corrections"]["added"][last["key"]] == [entry]
+    (nid, node), = [(k, n) for k, n in patch["nodes"].items() if n.get("region")]
+    assert node["san"] == "Nb4" and node["main"] and node["region"] == {"page": 4, "rect": box["attack."]}
+    assert [m["bbox"] for m in patch["pages"]["4"]["marks"] if m["node"] == nid] == [box["attack."]]
+
+
 GPA = ROOT / "corpus" / "gpa.pdf"
 
 
