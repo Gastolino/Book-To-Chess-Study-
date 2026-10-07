@@ -91,19 +91,24 @@ engine's lines are rows of notation, the suggested move at weight 500.
 
 ## The sign of work
 
-A revolving book seen along its spine: four pages fanned about the centre a
-quarter turn apart, like the blades of a pinwheel. Each page is hinged on one
-half of the spine, runs along the edge for its own length and sweeps back to
-the centre in a quarter circle; its face is a chequer of three by three
-squares in the two board colours, with hairline edges in the secondary
-colour, square at the corners; in the dark scheme, where those colours lie
-close together, the edges are thin gaps in the page background instead
-(`chessbook/style.py`, `book_svg`). While the app works, the pages turn over
-one at a time, each a quarter turn clockwise about the spine in 0.4 s, the
-next starting as the one before lands, so that the four swirl round the
-book; then the book rests (a transform only, 2 s a round with its rest of
-0.4 s). With reduced motion it stands still, whole, and while it is hidden
-its pages rest. On the start page it stands 80 px wide, with room for
+A revolving book, after the drawing the reader chose: six flat pages about
+the spine. Across the top, a page cut on the diagonal (a right triangle) left
+of the spine and a quarter disc right of it; across the middle, a wide band
+of two pages that the spine parts, the left one hollowed by a quarter circle
+and the right one cut on the diagonal; under them, a page each side of the
+spine, the left one bounded by two quarter circles, the right one a
+parallelogram. Each page's face is a chequer (squares a third of the quarter
+disc's radius, on one grid for the whole book); thin gaps in the page
+background part the pages. On the light page the chequer is the darker
+board colour and the secondary text colour, so that the pages stand out
+from the white; in the dark scheme it is the two board colours
+(`chessbook/style.py`, `book_svg`, `--book-light` and `--book-dark`). While
+the app works, the pages turn in one after the other, 0.2 s apart and in
+their order clockwise round the spine: each swings in a quarter turn
+clockwise about the middle of the spine as it fades in, rests, then swings on
+another quarter turn clockwise as it fades out, so that the book swirls
+(a transform and the opacity only, 2.4 s a round). With reduced motion it
+stands still, whole, and while it is hidden its pages rest. On the start page it stands 80 px wide, with room for
 a turning page above a 2px bar in the accent colour on a hairline track (the
 part done, where the app knows it, else a sliding segment), with the words
 of the work under it in the secondary colour; in the reader it stands 24 px

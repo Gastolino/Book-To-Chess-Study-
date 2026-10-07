@@ -57,58 +57,68 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def test_the_book_icon_is_a_revolving_book_of_four_chequered_pages():
-    """The sign of work and the app's icon: four pages fanned about the centre
-    a quarter turn apart, each a chequer of 3 by 3 squares in the board
-    colours, and (moving) four more pages that turn about the centre, each a
-    quarter turn clockwise, one after the other; with reduced motion they are
-    hidden and the book stands whole. web/icon.svg is the still book as
-    tools/make_icons.py draws it."""
+def test_the_book_icon_is_the_revolving_book_of_six_chequered_pages():
+    """The sign of work and the app's icon, after the drawing the reader chose:
+    six pages about the spine (a triangle and a quarter disc across the top, a
+    band of two pages across the middle, a page on each side of the spine under
+    it), each a face in the lighter tone with the chequer's dark squares cut to
+    it and thin gaps in the background between the pages; moving, each page
+    turns in by a quarter turn clockwise about the middle of the spine, fading
+    in, one after the other 0.2 s apart, rests, and goes on clockwise, fading
+    out; with reduced motion the book stands whole. web/icon.svg is the still
+    book as tools/make_icons.py draws it."""
     import re
     from chessbook import style
     still, svg = style.book_svg(animated=False), style.book_svg()
-    # the view box is a square about the spine's centre, so that the pages turn about (0, 0)
+    # the view box is a square about the middle of the spine, so that the pages turn about (0, 0)
     x, y, w, h = (float(v) for v in re.search(r'viewBox="([^"]+)"', svg).group(1).split())
     assert w == h and x + w / 2 == 0 and y + h / 2 == 0
-    # a page: its face in the light colour, its dark squares, its edge; the same page four times,
-    # turned by a quarter each time
-    page = re.compile(r'<path d="([^"]+)" fill="var\(--board-light\)"/>'
-                      r'<path d="([^"]+)" fill="var\(--board-dark\)"/>'
-                      r'<path d="([^"]+)" fill="none" stroke="var\(--muted\)"[^>]*/>')
+    page = re.compile(r'<path d="([^"]+)" fill="var\(--book-light\)"/>'
+                      r'<path d="([^"]+)" fill="var\(--book-dark\)" fill-rule="evenodd"/>'
+                      r'<path d="([^"]+)" fill="none" stroke="var\(--bg\)" stroke-width="[\d.]+"/>')
     pages = page.findall(still)
-    assert len(pages) == 4 and len(set(pages)) == 1
-    assert re.findall(r'<g transform="rotate\((\d+)\)">', still) == ["90", "180", "270"]
-    face, squares, edge = pages[0]
-    assert face == edge and face.startswith("M0 0V-") and "A" in face     # hinged on the spine, a curved edge
-    # 3 by 3 squares: four dark ones, the two far ones cut by the curve; the other five are the face's
-    assert squares.count("M") == 4 and squares.count("A") == 2
-    assert 'class="leaf"' not in still
-    # moving: the still book and four turning pages over it, the same page again, each starting
-    # 0.4 s after the one before, from its own quarter; drawn last page first, so that a page
-    # that starts again shows under the one that lands on its place
-    leaves = re.findall(r'(?:<g transform="rotate\((\d+)\)">)?<g class="leaf" style="animation-delay:([\d.]+)s">'
-                        r'(.*?)</g>', svg)
-    assert [(turn or "0", float(delay)) for turn, delay, _ in leaves] == [
-        ("270", 1.2), ("180", 0.8), ("90", 0.4), ("0", 0.0)]
-    assert all(page.fullmatch(body) for _, _, body in leaves)
-    assert svg.startswith(still[:still.index("</svg>")])
-    # each turns a quarter turn clockwise about the spine's centre in 0.4 s of a 2 s round, so that
-    # one page turns at a time (the next starts as it lands); only a transform moves, so that the
-    # turn is cheap on a phone; with reduced motion they are hidden
+    assert len(pages) == 6 and 'class="leaf"' not in still
+    assert all(face == edge and squares.count("M") >= 2 for face, squares, edge in pages)
+
+    def box(d):
+        # the corners and the ends of the arcs (an arc's last two numbers are its end point)
+        points = []
+        for cmd, args in re.findall(r"([MLA])([^MLAZ]*)", d):
+            v = [float(t) for t in args.split()]
+            points.append((v[-2], v[-1]))
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        return min(xs), min(ys), max(xs), max(ys)
+    boxes = [box(face) for face, _, _ in pages]
+    # clockwise from the top left: the triangle and the quarter disc above the band, left and right of
+    # the spine; the band's right page; the page under it, right of the spine; the page left of the
+    # spine under the band; the band's left page
+    tri, disc, right, low_right, low_left, left = boxes
+    top_of_band = right[1]
+    assert tri[2] <= 0 and disc[0] >= 0 and tri[3] <= top_of_band and disc[3] <= top_of_band
+    assert right[0] >= 0 and left[2] <= 0 and right[2] > disc[2] and left[0] < tri[0]
+    assert low_right[0] >= 0 and low_left[2] <= 0 and low_right[3] > right[3] and low_left[3] > left[3]
+    # straight edges on the triangle and the right-hand pages, quarter circles on the others
+    assert ["A" in face for face, _, _ in pages] == [False, True, False, False, True, True]
+    # moving: the same six pages, each in its own group, starting 0.2 s apart in that order
+    leaves = re.findall(r'<g class="leaf" style="animation-delay:([\d.]+)s">(.*?)</g>', svg)
+    assert [float(d) for d, _ in leaves] == [0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    assert [page.fullmatch(body).groups() for _, body in leaves] == pages
+    # each turns about the middle of the spine (the origin), a quarter turn in and a quarter turn on,
+    # clockwise, fading in and out; only a transform and the opacity move
     rule = re.search(r"\.bookicon \.leaf\{([^}]*)\}", style.BOOK_CSS).group(1)
     assert "transform-box:view-box" in rule and "transform-origin:0 0" in rule
-    assert re.search(r"animation:leaf 2s \S+ infinite", rule)
+    assert re.search(r"animation:leaf 2.4s \S+ infinite", rule)
     frames = re.search(r"@keyframes leaf\{(.*?)\}\n", style.BOOK_CSS).group(1)
-    assert set(re.findall(r"\{(\w+):", frames)) == {"transform"}
-    assert re.findall(r"([\d.]+)%\{transform:rotate\((-?\d+)deg\)\}", frames) == [
-        ("0", "0"), ("20", "90"), ("100", "90")]
-    assert re.search(r"@media \(prefers-reduced-motion:reduce\)\{\.bookicon \.leaf\{animation:none;"
-                     r"visibility:hidden\}\}", style.BOOK_CSS)
-    # the edges square at the corners (DESIGN.md), and gaps in the background in the dark scheme
-    assert "stroke-linejoin" not in svg
-    gap = '.bookicon path[fill="none"]{stroke:var(--bg);stroke-width:1.5px}'
-    assert '@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) ' + gap + "}" in style.BOOK_CSS
-    assert ':root[data-theme="dark"] ' + gap in style.BOOK_CSS
+    assert set(re.findall(r"[{;](\w+):", frames)) == {"transform", "opacity"}
+    assert re.findall(r"([\d.]+)%\{transform:rotate\((-?\d+)deg\);opacity:([\d.]+)\}", frames) == [
+        ("0", "-90", "0"), ("14", "0", "1"), ("72", "0", "1"), ("86", "90", "0"), ("100", "90", "0")]
+    assert "@media (prefers-reduced-motion:reduce){.bookicon .leaf{animation:none}}" in style.BOOK_CSS
+    # the chequer's tones: on the light page the darker board tone and the secondary text colour, in
+    # the dark scheme the board's own tones
+    assert ":root{--book-light:var(--board-dark);--book-dark:var(--muted)}" in style.BOOK_CSS
+    dark = "{--book-light:var(--board-light);--book-dark:var(--board-dark)}"
+    assert '@media (prefers-color-scheme:dark){:root:not([data-theme="light"])' + dark + "}" in style.BOOK_CSS
+    assert ':root[data-theme="dark"]' + dark in style.BOOK_CSS
     sys.path.insert(0, str(ROOT / "tools"))
     import make_icons
     assert (ROOT / "web" / "icon.svg").read_text(encoding="utf-8").strip() == make_icons.source_svg()
@@ -152,8 +162,8 @@ def test_book_flow_end_to_end(tmp_path):
     assert res["ok"], (res.get("failure"), failed, res["errors"])
     assert res["errors"] == []
     names = {c["name"] for c in res["checks"]}
-    assert {"while the app starts, the start page shows the revolving book: four pages of 3 by 3 squares, and four that turn",
-            "the turning pages turn a quarter turn each about the centre, clockwise, one after the other, then rest",
+    assert {"while the app starts, the start page shows the revolving book: six chequered pages, each turning in",
+            "the pages turn in one after the other about the middle of the spine, all clockwise, and the book stands whole",
             "with reduced motion the pages do not turn and the book stands whole",
             "a new book opens at its first page",
             "on a chapter's last page a swipe slides the page out and the place of the next page in",

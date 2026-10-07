@@ -1,6 +1,6 @@
 """Render the app's icons from one SVG source, web/icon.svg: the revolving
-book, four pages fanned about the spine, each a chequer of 3 by 3 squares
-(chessbook/style.py, book_svg), still, on the page background of DESIGN.md's
+book, six chequered pages about the spine (chessbook/style.py, book_svg),
+still, in the light page's tones for the book, on the page background of DESIGN.md's
 light tokens (a Home Screen icon cannot follow the dark scheme).
 
     python3 tools/make_icons.py            render web/icons/*.png and favicon.svg
@@ -29,8 +29,10 @@ LIGHT = {"bg": "#fbfbfa", "light": "#ecebe6", "dark": "#bdbab2", "line": "#6f6f6
 def source_svg():
     """web/icon.svg as style.book_svg draws it: square, with a margin."""
     from chessbook import style
-    svg = style.book_svg(cls="icon", animated=False, light=LIGHT["light"], dark=LIGHT["dark"],
-                         line=LIGHT["line"], bg=LIGHT["bg"], pad=8)
+    # the chequer in the light page's tones for the book (style.BOOK_CSS: the darker board tone and
+    # the secondary text colour), the gaps in the background
+    svg = style.book_svg(cls="icon", animated=False, light=LIGHT["dark"], dark=LIGHT["line"],
+                         line=LIGHT["bg"], bg=LIGHT["bg"], pad=4)
     # the background reaches far beyond the view box, so that a wider view (maskable) keeps it
     return re.sub(r'<rect x="[^"]+" y="[^"]+" width="[^"]+" height="[^"]+" fill="#fbfbfa"/>',
                   '<rect x="-1000" y="-1000" width="2000" height="2000" fill="#fbfbfa"/>', svg, count=1)
@@ -60,11 +62,12 @@ def render(svg, size):
 def pictures(svg):
     """Every PNG icon drawn from the icon's SVG, as {file name: PNG bytes}."""
     out = {f"icon-{size}.png": render(svg, size) for size in (180, 192, 512)}
-    # the browser tab's icon is tiny: the book fills more of it
-    out["icon-32.png"] = render(widened(svg, 0.84), 32)
-    # the book is 48 of the icon's 64 units wide, 75 %: widened by 1.4 it is 54 % wide, inside
-    # the middle 60 %, and its corners (34 units from the centre) keep inside the safe circle
-    out["icon-maskable-512.png"] = render(widened(svg, 1.4), 512)
+    # the browser tab's icon is tiny: the book fills more of it (the view box of 62.4 units, the book
+    # 54.4 tall, narrowed to 57.4 so that the book still fits whole)
+    out["icon-32.png"] = render(widened(svg, 0.92), 32)
+    # the book is 54.4 of the icon's 62.4 units tall: widened by 1.5 it is 58 % tall, inside the
+    # middle 60 %, and its farthest corners (32 units from the centre) keep inside the safe circle
+    out["icon-maskable-512.png"] = render(widened(svg, 1.5), 512)
     return out
 
 

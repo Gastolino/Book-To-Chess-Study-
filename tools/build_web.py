@@ -995,7 +995,7 @@ LIB.start(SESSION.pending()).then((on) => {
 # Added to the Home Screen of an iPhone or iPad, the app opens on its own
 # (without Safari's bars) and keeps its library apart from Safari, which may
 # clear the storage of a site left unused for a week.
-# The icons are the revolving book with four chequered pages (tools/make_icons.py
+# The icons are the revolving book with six chequered pages (tools/make_icons.py
 # renders them from web/icon.svg).
 MANIFEST = {"name": "Chess Book Reader", "short_name": "Chess books", "start_url": "./", "scope": "./",
             "display": "standalone", "background_color": "#fbfbfa", "theme_color": "#fbfbfa",

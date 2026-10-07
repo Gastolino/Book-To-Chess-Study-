@@ -101,7 +101,7 @@ async function run(browser, which) {
     const svg = document.querySelector("#loader .bookicon");
     const leaves = svg ? [...svg.querySelectorAll(".leaf")] : [];
     // a page is drawn as its face, its dark squares and its edge (the one path without a fill)
-    const dark = svg ? [...svg.querySelectorAll('path[fill="var(--board-dark)"]')] : [];
+    const dark = svg ? [...svg.querySelectorAll('path[fill="var(--book-dark)"]')] : [];
     return { shown: document.getElementById("loader").classList.contains("on") &&
                getComputedStyle(document.getElementById("loader")).display !== "none",
              width: svg ? svg.getBoundingClientRect().width : 0,
@@ -112,58 +112,69 @@ async function run(browser, which) {
              bar: getComputedStyle(document.getElementById("bar")).height,
              words: document.getElementById("status").textContent };
   });
-  // four still pages and four turning ones; a page of 3 by 3 squares has four dark squares
-  check("while the app starts, the start page shows the revolving book: four pages of 3 by 3 squares, and four that turn",
-    loader.shown && loader.pages === 8 && loader.turning === 4 && loader.inLeaf.every((n) => n === 3) &&
-    loader.squares.length === 8 && loader.squares.every((n) => n === 4) &&
+  // six pages, each turning in on its own; each page's face carries dark squares of the chequer
+  check("while the app starts, the start page shows the revolving book: six chequered pages, each turning in",
+    loader.shown && loader.pages === 6 && loader.turning === 6 && loader.inLeaf.every((n) => n === 3) &&
+    loader.squares.length === 6 && loader.squares.every((n) => n >= 2) &&
     loader.anim.every((a) => a === "leaf"), loader);
   check("the book is about 72 to 96 pixels wide, over a 2 pixel bar, with the words under it",
     loader.width >= 72 && loader.width <= 96 && loader.bar === "2px" && loader.words.length > 0, loader);
-  // the book's animations held at moments of a round: where each turning page's spine lands on
-  // the screen, and which way the page's top end points (clockwise from the top, in degrees)
+  // the book's animations held at moments of a round: where each page's pivot lands on the screen,
+  // which way the page's own "up" points (clockwise from the top, in degrees) and how opaque it is
   const turns = await page.evaluate(() => {
     const svg = document.querySelector("#loader .bookicon"), box = svg.getBoundingClientRect();
     const cx = box.x + box.width / 2, cy = box.y + box.height / 2, r = svg.viewBox.baseVal.width / 2;
     const anims = svg.getAnimations({ subtree: true });
     const leaves = [...svg.querySelectorAll(".leaf")];
     const round = parseFloat(getComputedStyle(leaves[0]).animationDuration);
-    const turn = round * anims[0].effect.getKeyframes()[1].offset;
+    const offsets = anims[0].effect.getKeyframes().map((k) => k.offset);
     const at = (t) => {
       for (const a of anims) { a.pause(); a.currentTime = t * 1000; }
       return leaves.map((g) => {
         const m = g.getScreenCTM(), o = new DOMPoint(0, 0).matrixTransform(m);
         const top = new DOMPoint(0, -r).matrixTransform(m);
-        return { off: Math.hypot(o.x - cx, o.y - cy),
+        return { off: Math.hypot(o.x - cx, o.y - cy), opacity: parseFloat(getComputedStyle(g).opacity),
                  angle: Math.round((Math.atan2(top.x - o.x, o.y - top.y) * 180 / Math.PI + 360) % 360) };
       });
     };
-    const res = { round, turn, n: anims.length, delays: leaves.map((g) => parseFloat(getComputedStyle(g).animationDelay)),
-                  start: [], middle: [], end: [], rest: null };
-    res.delays.forEach((d, i) => {
-      res.start.push(at(d)[i]);
-      res.middle.push(at(d + turn / 2)[i]);
-      res.end.push(at(d + turn)[i]);
+    const delays = leaves.map((g) => parseFloat(getComputedStyle(g).animationDelay));
+    const res = { round, offsets, n: anims.length, delays, start: [], middle: [], landed: [], gone: [], whole: null,
+                  where: [] };
+    const land = offsets[1] * round, leave = offsets[3] * round;
+    delays.forEach((d, i) => {
+      res.start.push(at(d + 0.001)[i]);
+      res.middle.push(at(d + land / 2)[i]);
+      res.landed.push(at(d + land)[i]);
+      res.gone.push(at(d + leave)[i]);
     });
-    res.rest = at(round - 0.05);
+    // a moment when every page has come in and none has gone on yet: the whole book
+    res.whole = at(Math.max(...delays) + land + 0.02);
+    // where each page lies about the middle of the spine (clockwise from the top, in degrees)
+    res.where = leaves.map((g) => {
+      const b = g.getBBox(), x = b.x + b.width / 2, y = b.y + b.height / 2;
+      return Math.round((Math.atan2(x, -y) * 180 / Math.PI + 360) % 360);
+    });
     for (const a of anims) a.play();
     return res;
   });
   {
-    const k = turns.delays.map((d) => Math.round(d / 0.4));
-    const sorted = [...turns.delays].sort((a, b) => a - b);
-    const ok = turns.n === 4 && turns.round >= 1.6 && turns.round <= 2.4 &&
-      // one at a time: each starts 0.4 s after the one before, as it lands, and all four have turned
-      // before the round ends, so that the book rests a moment
-      sorted.every((d, i) => Math.abs(d - 0.4 * i) < 0.01) && sorted[3] + turns.turn < turns.round - 0.2 &&
-      sorted.every((d, i) => i === 0 || d >= sorted[i - 1] + turns.turn - 0.01) &&
-      [...turns.start, ...turns.middle, ...turns.end, ...turns.rest].every((p) => p.off < 0.5) &&
-      // each page starts from its own quarter, a quarter after the page that turned before it,
-      // and turns a quarter turn clockwise, to rest on the next page until its next turn
-      turns.start.every((p, i) => p.angle === (90 * k[i]) % 360) &&
-      turns.middle.every((p, i) => p.angle > 90 * k[i] + 20 && p.angle < 90 * k[i] + 70) &&
-      turns.end.every((p, i) => p.angle === (90 * k[i] + 90) % 360) &&
-      turns.rest.every((p, i) => p.angle === (90 * k[i] + 90) % 360);
-    check("the turning pages turn a quarter turn each about the centre, clockwise, one after the other, then rest",
+    const order = turns.delays.map((d, i) => [d, i]).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
+    const ok = turns.n === 6 && turns.round >= 1.6 && turns.round <= 3 &&
+      // one after the other, 0.2 s apart, and in the order of their places clockwise round the spine
+      order.every((i, k) => Math.abs(turns.delays[i] - 0.2 * k) < 0.01) &&
+      order.every((i, k) => k === 0 || (turns.where[i] - turns.where[order[0]] + 360) % 360 >
+                                       (turns.where[order[k - 1]] - turns.where[order[0]] + 360) % 360) &&
+      // each turns about the middle of the spine
+      [...turns.start, ...turns.middle, ...turns.landed, ...turns.gone, ...turns.whole].every((p) => p.off < 0.5) &&
+      // it comes in from a quarter turn back, turning clockwise, and fades in as it comes
+      turns.start.every((p) => p.angle === 270 && p.opacity < 0.05) &&
+      turns.middle.every((p) => p.angle > 280 && p.angle < 350 && p.opacity > 0.2 && p.opacity < 0.95) &&
+      turns.landed.every((p) => p.angle === 0 && p.opacity > 0.99) &&
+      // it goes on clockwise by another quarter turn, fading out
+      turns.gone.every((p) => p.angle === 90 && p.opacity < 0.05) &&
+      // and for a moment the whole book stands
+      turns.whole.every((p) => p.angle === 0 && p.opacity > 0.99);
+    check("the pages turn in one after the other about the middle of the spine, all clockwise, and the book stands whole",
       ok, turns);
   }
   await both("flow_start_loading");
@@ -171,12 +182,12 @@ async function run(browser, which) {
   const still = await page.evaluate(() => {
     const svg = document.querySelector("#loader .bookicon"), leaves = [...svg.querySelectorAll(".leaf")];
     return { anim: leaves.map((g) => getComputedStyle(g).animationName),
-             hidden: leaves.every((g) => getComputedStyle(g).visibility === "hidden"),
-             shown: [...svg.querySelectorAll('path[fill="none"]')].filter((p) =>
-               getComputedStyle(p).visibility === "visible").length };
+             whole: leaves.every((g) => getComputedStyle(g).visibility === "visible" &&
+                                        parseFloat(getComputedStyle(g).opacity) === 1 &&
+                                        ["none", "matrix(1, 0, 0, 1, 0, 0)"].includes(getComputedStyle(g).transform)) };
   });
   check("with reduced motion the pages do not turn and the book stands whole",
-    still.anim.length === 4 && still.anim.every((a) => a === "none") && still.hidden && still.shown === 4, still);
+    still.anim.length === 6 && still.anim.every((a) => a === "none") && still.whole, still);
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.waitForFunction(() => typeof ready !== "undefined" && ready === true, null, { timeout: 300000 });
   check("the book and the bar go when the app is ready", await page.evaluate(() =>
@@ -200,7 +211,7 @@ async function run(browser, which) {
              leaf: b.querySelectorAll(".leaf").length, loading };
   });
   check("while the book is read, the small book shows at the right of the top bar, just left of Library",
-    busy.on && busy.vis === "visible" && busy.leaf === 4 && busy.w <= 30 && busy.gap >= 0 && busy.gap <= 20 &&
+    busy.on && busy.vis === "visible" && busy.leaf === 6 && busy.w <= 30 && busy.gap >= 0 && busy.gap <= 20 &&
     busy.libRight <= 17, busy);
   // the small book takes its room whether it shows or not: the page does not move
   const shift = await page.evaluate(async () => {

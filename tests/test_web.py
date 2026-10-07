@@ -377,9 +377,9 @@ def test_the_icons_are_the_revolving_book_at_their_sizes():
     """The app's icons (tools/make_icons.py) are the revolving book that
     chessbook/style.py draws: web/icon.svg is that drawing, still, on the page
     background, and favicon.svg the same; every PNG is there at its size and is
-    web/icon.svg as it renders now; the book is the same after a quarter turn,
-    with both board colours in it; and the maskable icon keeps it inside the
-    middle 60 % and inside the circle that any mask keeps."""
+    web/icon.svg as it renders now; the book's chequer is in both of its tones
+    (the darker board tone and the secondary text colour); and the maskable icon
+    keeps it inside the middle 60 % and inside the circle that any mask keeps."""
     import struct
     import cv2
     import numpy as np
@@ -402,9 +402,8 @@ def test_the_icons_are_the_revolving_book_at_their_sizes():
         now = cv2.imdecode(np.frombuffer(drawn[name], np.uint8), cv2.IMREAD_COLOR).astype(int)
         assert np.abs(now - pics[name]).mean() < 2, name
     big = pics["icon-512.png"]
-    assert np.abs(np.rot90(big) - big).mean() < 0.5
     share = lambda img, rgb: (np.abs(img - np.array(rgb[::-1])).max(axis=2) <= 6).mean()  # noqa: E731
-    assert share(big, (0xbd, 0xba, 0xb2)) > 0.12 and share(big, (0xec, 0xeb, 0xe6)) > 0.12
+    assert share(big, (0xbd, 0xba, 0xb2)) > 0.12 and share(big, (0x6f, 0x6f, 0x6c)) > 0.12
     # the maskable icon: what differs from the background lies in the middle 60 %, and within 40 %
     # of the icon's width from its centre
     mask = pics["icon-maskable-512.png"]
