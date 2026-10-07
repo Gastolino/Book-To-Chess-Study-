@@ -165,6 +165,8 @@ ICONS = {
     "gear": "<circle cx='10' cy='10' r='3'/><path d='M10 2.5v3M10 14.5v3M3.5 6.25l2.6 1.5M13.9 12.25l2.6 1.5"
             "M3.5 13.75l2.6-1.5M13.9 7.75l2.6-1.5'/>",
     "bookmark": "<path d='M5.5 3.5h9v13l-4.5-3.3-4.5 3.3z'/>",
+    # a circle, the left half filled: the page shown in reverse
+    "invert": "<circle cx='10' cy='10' r='6.5'/><path d='M10 3.5a6.5 6.5 0 0 0 0 13z' fill='currentColor' stroke='none'/>",
 }
 
 

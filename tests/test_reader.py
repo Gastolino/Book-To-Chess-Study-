@@ -260,6 +260,31 @@ def test_primer_reader_in_chromium(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_inverted_page_in_chromium(tmp_path):
+    """The invert button beside the bookmark (tests/invert_e2e.js), on a
+    desktop, an iPhone 13 and an iPad held sideways: white print on black,
+    diagrams in their true colours, and the choice kept across a reload."""
+    pdf = make_book(tmp_path / "little.pdf", second=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    out = tmp_path / "output" / "little" / "reader"
+    reader.build_reader(book, pdf, out)
+    screens = ROOT / "output" / "screens"
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "invert_e2e.js"), str(out), str(screens)],
+                          capture_output=True, text=True, env=env, timeout=600)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    assert res["errors"] == []
+    names = {c["name"] for c in res["checks"]}
+    assert {"the invert button sits beside the bookmark icon", "the page picture turns dark with light print",
+            "the diagram keeps its true colours", "the inverted page survives a reload",
+            "the invert button shows within the screen"} <= names
+
+
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
 def test_bookmarks_in_chromium(tmp_path):
     """Setting, keeping and removing bookmarks (tests/bookmark_e2e.js) on the
     generated book, on a desktop, an iPhone 13 and an iPad held sideways: the

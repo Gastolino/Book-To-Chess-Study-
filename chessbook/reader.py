@@ -438,6 +438,12 @@ background:var(--muted)}
 .ribbon{position:absolute;top:0;width:4.5%;padding:0;margin:0;border:0;border-radius:0;background:none;
 cursor:pointer;z-index:5;line-height:0}
 .ribbon[hidden]{display:none}
+/* Inverted page: white print on black. The page picture is inverted and each
+   diagram region inverts what lies behind it a second time, so the boards keep
+   their true colours (white pieces stay white). */
+.inverted .pagebox img{filter:invert(1)}
+.inverted .diag{-webkit-backdrop-filter:invert(1);backdrop-filter:invert(1)}
+#invbtn[aria-pressed="true"]{color:var(--accent)}
 .ribbon svg{display:block;width:100%;height:auto;fill:var(--bookmark)}
 .ribbon:hover svg{opacity:.85}
 .ribbon:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
@@ -1648,6 +1654,12 @@ function setReading(on){
   try { localStorage.setItem("chessbook-reading", on ? "1" : "0"); } catch (e) { /* no storage */ }
 }
 
+function setInverted(on){
+  document.body.classList.toggle("inverted", on);
+  $("invbtn").setAttribute("aria-pressed", String(on));
+  try { localStorage.setItem("chessbook-invert", on ? "1" : "0"); } catch (e) { /* no storage */ }
+}
+
 /* ---------------------------------------------------------------- wiring */
 let pendingView = null;
 function fromHash(){
@@ -1791,6 +1803,10 @@ function init(){
   $("bmbtn").addEventListener("click", toggleBookmark);
   $("mbm").addEventListener("click", toggleBookmark);
   $("ribbon").addEventListener("click", removeBookmark);
+  $("invbtn").addEventListener("click", () => setInverted(!document.body.classList.contains("inverted")));
+  { let inv = false;
+    try { inv = localStorage.getItem("chessbook-invert") === "1"; } catch (e) { inv = false; }
+    setInverted(inv); }
   // a bookmark set or removed in another page of this book (the contents page, another tab)
   window.addEventListener("storage", (e) => { if (e.key === MARKS.key) { MARKS.reload(); if (S.page) bookmarkState(); } });
   const pgn = $("pgnbtn");
@@ -1872,6 +1888,7 @@ CHAPTER_HTML = """<!doctype html>
 <button class="tb" id="showread" aria-pressed="false">Show reading</button>
 <a class="nav" href="index.html">Contents</a>
 <button class="ib" id="bmbtn" aria-pressed="false" aria-label="Bookmark this page" title="Bookmark: a tap marks this page and the chosen move.">__ICON_BOOKMARK__</button>
+<button class="ib" id="invbtn" aria-pressed="false" aria-label="Invert the page: white text on black" title="Invert the page: white text on black.">__ICON_INVERT__</button>
 __PGNBTN__
 </nav>
 </header>
@@ -2140,6 +2157,7 @@ def chapter_html(book, ch, images, pgn_text, pgn_info, engine=False):
         "__ICON_CPU__": style.icon("cpu"),
         "__ICON_GEAR__": style.icon("gear"),
         "__ICON_BOOKMARK__": style.icon("bookmark"),
+        "__ICON_INVERT__": style.icon("invert"),
         "__PIECES__": _pieces_defs(),
         "__EYE__": EYE_SVG,
         "__SELJS__": SELECTION_JS,
