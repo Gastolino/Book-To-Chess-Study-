@@ -13,7 +13,9 @@
 //   - adds BOOK_PDF: the book opens at its first page in the reader while it is read, with the
 //     small book at the top right of the top bar, which leaves the page where it is when it shows
 //     and goes; a tap on it says what the program does; it is gone when the work is done;
-//   - turns the pages: a swipe on the last page of a chapter shows the first page of the next;
+//   - turns the pages: a swipe on the enlarged last page of a chapter slides the page out and the
+//     place of the next page in, and the next chapter's reader shows that page enlarged, at its top
+//     left;
 //     typing a page number goes to that page in whatever chapter holds it; the pictures come
 //     ten pages at a time, and a page whose picture has not come shows a light placeholder of
 //     its size that fills in when it comes;
@@ -180,17 +182,43 @@ async function run(browser, which) {
   if (ch.end < first.count) {
     await inFrame((p) => { location.hash = "#page=" + p; }, ch.end);
     await waitFrame((p) => window.readerState.page === p, ch.end);
-    // a swipe from right to left on the last page of the chapter
+    // the page enlarged and at its right edge, so that a swipe to the left turns it
     await inFrame(() => {
+      const bar = document.getElementById("mbar");
+      (getComputedStyle(bar).display !== "none" ? document.getElementById("mzoom") : document.getElementById("zoom")).click();
+      const ps = document.getElementById("pagescroll");
+      ps.scrollLeft = ps.scrollWidth;
+    });
+    // a swipe from right to left on the last page of the chapter
+    const turned = await inFrame(() => {
       const box = document.getElementById("pagescroll"), r = box.getBoundingClientRect();
       const y = r.top + Math.min(r.height / 2, 200);
       const touch = (x) => new Touch({ identifier: 1, target: box, clientX: x, clientY: y });
       box.dispatchEvent(new TouchEvent("touchstart", { touches: [touch(r.right - 20)], changedTouches: [touch(r.right - 20)], bubbles: true }));
       box.dispatchEvent(new TouchEvent("touchend", { touches: [], changedTouches: [touch(r.left + 20)], bubbles: true }));
+      return { turning: box.classList.contains("turning"), stage: !!document.querySelector(".turnstage"),
+               sheet: document.getElementById("pagebox").classList.contains("waiting") };
     });
+    check("on a chapter's last page a swipe slides the page out and the place of the next page in",
+          turned.turning && turned.stage && turned.sheet, turned);
     const nx = await waitFrame((c) => window.READER && window.READER.chapter.file !== c.file && window.readerState.page &&
       { page: window.readerState.page, file: window.READER.chapter.file }, ch, 300000);
     check("a swipe on the last page of a chapter shows the first page of the next chapter", nx.page === ch.end + 1, { nx, ch });
+    // the next chapter's reader shows that page enlarged, at its top left
+    await waitFrame(() => !document.getElementById("pagebox").classList.contains("waiting"), null, 300000);
+    await page.waitForTimeout(600);
+    const at = await inFrame(() => {
+      const ps = document.getElementById("pagescroll");
+      return { zoom: ps.classList.contains("zoom"), sl: ps.scrollLeft, hash: location.hash,
+               top: document.getElementById("pagebox").getBoundingClientRect().top };
+    });
+    check("the next chapter's reader shows the page enlarged where the turn left it, at its top left",
+          at.zoom && at.sl === 0 && Math.abs(at.top) <= 1.5 && /turn=1/.test(at.hash), at);
+    await shot("flow_chapter_turn");
+    await inFrame(() => {
+      const bar = document.getElementById("mbar");
+      (getComputedStyle(bar).display !== "none" ? document.getElementById("mzoom") : document.getElementById("zoom")).click();
+    });
   } else note("one chapter only: no swipe across chapters");
   // a page number typed: the page, in whatever chapter holds it, with a placeholder until its picture comes
   await page.evaluate(() => {

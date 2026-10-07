@@ -105,6 +105,20 @@ with the line's title and the move list, and the page's foot (the lines on
 the page, the chapters) comes last. Pages must work at
 390px width with a 16px side margin and no horizontal scroll.
 
+## Turning the page
+
+A swipe across the page moves it with the finger; let go past a quarter of
+its width (or flicked), it slides out the way it was swiped while the next
+page slides in from the other edge, the two as one strip with a 24 px gap,
+in about 300 ms on an easing curve, and below that it springs back. The page
+arrows and Page Up and Page Down turn with the same slide. Only transforms
+move. A page whose picture has not come slides in as its light sheet, and
+the picture fades in over it. On an enlarged page the reading goes on at the
+next page's top left after a turn forward and at the previous page's bottom
+right after a turn back, above the board and the bar at the foot of the
+window. With reduced motion nothing slides or fades: the page changes at
+once.
+
 ## Writing on the pages
 
 Formal written English addressed to a reader who does not program. Every

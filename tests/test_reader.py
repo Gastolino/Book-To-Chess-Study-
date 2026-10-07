@@ -259,6 +259,82 @@ def test_primer_reader_in_chromium(tmp_path, monkeypatch):
     _read_again_from_the_command_line(res, tmp_path, monkeypatch)
 
 
+TURN_CHECKS = {
+    "during a swipe the page box moves with the finger", "on release the next page slides in",
+    "the slide ends on the next page", "a short swipe stays on the page",
+    "a vertical scroll that starts on the page scrolls the window and does not turn the page",
+    "an enlarged page that can still scroll sideways scrolls first",
+    "at its edge the enlarged page follows the finger",
+    "enlarged, a turn forward ends at the next page's top left",
+    "enlarged, a turn back ends at the previous page's bottom right, above the board and the bar",
+    "with reduced motion the page changes at once", "the page arrow turns with the slide",
+    "enlarged, Page Down ends at the next page's top left",
+    "enlarged, Page Up ends at the previous page's bottom right",
+    "with reduced motion the arrow keys change the page at once", "no console errors"}
+
+
+def _turn_e2e(out, page, screens):
+    """Runs tests/turn_e2e.js on a reader and returns its result, every check passed."""
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "turn_e2e.js"), str(out), str(page), str(screens)],
+                          capture_output=True, text=True, env=env, timeout=900)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    # (the places in full: a landing a pixel off says little without them)
+    assert res["ok"], json.dumps({"failure": res.get("failure"), "failed": failed, "errors": res["errors"]})
+    assert proc.returncode == 0
+    assert res["errors"] == []
+    names = {c["name"] for c in res["checks"]}
+    assert TURN_CHECKS <= names, TURN_CHECKS - names
+    # by touch on an iPhone 13 and an iPad held upright and sideways, by the keys on a desktop
+    assert {c["mode"] for c in res["checks"]} >= {"iphone13", "ipad_upright", "ipad_sideways", "desktop"}
+    for shot in res["screenshots"]:
+        assert (Path(screens) / shot).stat().st_size > 10000, shot
+    return res
+
+
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_page_turn_in_chromium(tmp_path):
+    """The page turn (tests/turn_e2e.js) on the Primer's reader, or on the
+    generated book when the Primer is missing: the page follows the finger and
+    slides out while the next one slides in, a short swipe springs back, a
+    vertical scroll does not turn the page, an enlarged page lands at the next
+    page's top left and the previous page's bottom right, and with reduced
+    motion the page changes at once; on an iPhone 13, an iPad held upright and
+    sideways, and a desktop."""
+    if PDF.exists():
+        _ensure_primer_reader()
+        out, page = PRIMER_READER, 250
+    else:
+        pdf = make_book(tmp_path / "little.pdf", second=True)
+        book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+        out = tmp_path / "output" / "little" / "reader"
+        reader.build_reader(book, pdf, out)
+        page = 5
+    _turn_e2e(out, page, ROOT / "output" / "screens" / "turn")
+
+
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_page_turn_into_the_next_chapter_in_chromium(tmp_path):
+    """The page turn on the generated book with two chapters (tests/turn_e2e.js),
+    and a turn from the first chapter's last page into the second chapter's
+    reader and back, the page enlarged: the place of the next page slides in,
+    and the other reader shows the page there, at its top left after a turn
+    forward and at its bottom right after a turn back."""
+    pdf = make_book(tmp_path / "little.pdf", second=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    out = tmp_path / "output" / "little" / "reader"
+    reader.build_reader(book, pdf, out)
+    res = _turn_e2e(out, 5, ROOT / "output" / "screens" / "turn_chapters")
+    names = {c["name"] for c in res["checks"] if c["mode"] == "chapters"}
+    assert {"past the chapter's last page, the place of the next page slides in",
+            "the next chapter's reader shows its first page enlarged, at its top left",
+            "before the first page of a chapter, the place of the previous page slides in",
+            "a turn back shows the previous chapter's last page enlarged, at its bottom right where its place was"} <= names
+
+
 @pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
 def test_inverted_page_in_chromium(tmp_path):
     """The invert button beside the bookmark (tests/invert_e2e.js), on a
