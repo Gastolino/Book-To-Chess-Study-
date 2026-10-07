@@ -615,6 +615,61 @@ async function openChapterOf(page, p) {
       await ctx13.close();
     }
 
+    // an iPad held upright (820 x 1180): the compact layout, with the line's title and moves beside
+    // the board at the foot of the window, the board about a third of the height; held sideways,
+    // the panel beside the page as before
+    {
+      const pad = await browser.newContext({ viewport: { width: 820, height: 1180 }, deviceScaleFactor: 2,
+                                             isMobile: true, hasTouch: true });
+      const tp = await pad.newPage();
+      tp.on("pageerror", (e) => out.errors.push(String(e)));
+      tp.on("console", (m) => { if (m.type() === "error") out.errors.push(m.text()); });
+      await tp.goto(page.url().split("#")[0] + "#node=" + target);
+      await tp.waitForFunction((id) => window.readerState && window.readerState.nodeId === id, target);
+      await tp.waitForTimeout(300);
+      const up = await tp.evaluate(() => {
+        const r = (id) => document.getElementById(id).getBoundingClientRect();
+        return { side: !!document.getElementById("side"), stick: document.body.classList.contains("stickboard"),
+                 board: r("board"), tree: r("tree"), bar: r("mbar"), block: r("boardblock"), page: r("pagescroll"),
+                 barShown: getComputedStyle(document.getElementById("mbar")).display !== "none",
+                 treeIn: document.getElementById("side").contains(document.getElementById("tree")),
+                 wide: document.documentElement.scrollWidth - window.innerWidth, h: window.innerHeight, w: window.innerWidth };
+      });
+      check("iPad upright: the board at the foot of the window, above the bar, with the moves beside it",
+            up.side && up.treeIn && up.stick && up.barShown && Math.abs(up.block.bottom - up.bar.top) <= 1.5 &&
+            up.tree.left >= up.board.right && up.tree.top < up.board.bottom && up.tree.width > 250, up);
+      check("iPad upright: the board takes about a third of the height, the page the larger part",
+            up.board.height <= 0.36 * up.h && up.board.height >= 0.3 * up.h && up.page.width >= up.w - 60, up);
+      check("iPad upright: no sideways scroll", up.wide <= 0, up.wide);
+      await tp.screenshot({ path: path.join(screens, "reader_ipad_upright.png") });
+      out.screenshots.push("reader_ipad_upright.png");
+      // stepping through the line keeps the current move in view in the move list beside the board
+      for (let i = 0; i < 4; i++) await tp.click("#bfwd");
+      const cur = await tp.evaluate(() => {
+        const t = document.getElementById("tree").getBoundingClientRect(), c = document.querySelector("#tree .mv.cur");
+        const r = c ? c.getBoundingClientRect() : null;
+        return r && { inside: r.top >= t.top - 1 && r.bottom <= t.bottom + 1 };
+      });
+      check("iPad upright: the current move shows in the move list beside the board", cur && cur.inside, cur);
+      // held sideways: the panel beside the page, the moves back in it
+      await tp.setViewportSize({ width: 1180, height: 820 });
+      await tp.waitForTimeout(400);
+      const side = await tp.evaluate(() => ({ side: !!document.getElementById("side"),
+        inPanel: document.getElementById("panel").contains(document.getElementById("tree")) &&
+                 document.getElementById("panel").contains(document.getElementById("lsec")) &&
+                 document.getElementById("panel").contains(document.getElementById("evalsec")),
+        first: document.getElementById("panel").firstElementChild.id,
+        bar: getComputedStyle(document.getElementById("mbar")).display }));
+      check("iPad sideways: the panel beside the page holds the board and the moves again",
+            !side.side && side.inPanel && side.first === "boardblock" && side.bar === "none", side);
+      // and upright again
+      await tp.setViewportSize({ width: 820, height: 1180 });
+      await tp.waitForTimeout(400);
+      check("iPad upright again: the moves beside the board", await tp.evaluate(() =>
+        !!document.getElementById("side") && document.getElementById("side").contains(document.getElementById("tree"))));
+      await pad.close();
+    }
+
     // back on the contents page, the diagram is left out there as well
     await page.goto(index);
     await page.waitForSelector(".pg", { state: "attached" });

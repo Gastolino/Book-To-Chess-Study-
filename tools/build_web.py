@@ -737,13 +737,13 @@ function patched(m) {
     toView({ progress: "Your piece choice is applied to the whole book." });
   } else status("");
 }
-// On a phone the top bar goes away while the reader scrolls down the page, and comes back as
-// soon as it scrolls up (or reaches the top); the reader's frame takes the room meanwhile. A
-// failure in the bar keeps it shown. Wider screens keep it: their reader has a panel beside the
-// page, sized to the window.
+// On a phone, and a tablet held upright (the reader's compact layout), the top bar goes away
+// while the reader scrolls down the page, and comes back as soon as it scrolls up (or reaches
+// the top); the reader's frame takes the room meanwhile. A failure in the bar keeps it shown.
+// Wider screens keep it: their reader has a panel beside the page, sized to the window.
 const TOPBAR = (() => {
   let lastY = 0, away = false;
-  const phone = window.matchMedia("(max-width: 700px)");
+  const phone = window.matchMedia("(max-width: 700px), (max-width: 1100px) and (orientation: portrait)");
   function set(a) {
     if (a === away) return;
     away = a;

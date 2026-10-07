@@ -308,8 +308,6 @@ CHAPTER_CSS = r"""
 .notes p:empty,.notes:not(:has(p:not(:empty))){display:none}
 .reader{display:grid;grid-template-columns:minmax(0,1fr) 50vw;align-items:start}
 .pagecol{min-width:0;padding:24px 32px 40px 24px}
-.turnhint{margin:0 0 12px}
-.turnhint .tb{margin-left:8px}
 .offpage{margin:0 0 16px;padding-left:12px;border-left:1px solid var(--doubt)}
 .offpage:empty,.diagnote:empty{display:none}
 .diagnote{margin:0 0 16px}
@@ -453,7 +451,9 @@ border:1px solid var(--line);white-space:nowrap}
 .mbar,.mini,.touch{display:none}
 @media (hover:none) and (pointer:coarse){.touch{display:block}.mouse{display:none}
 .mark{border-bottom:1px solid color-mix(in srgb,var(--accent) 45%,transparent)}}
-@media (max-width:700px){
+/* the compact layout: phones, and tablets held upright (one column, the board at the foot of the
+   window, the bar under it) */
+@media (max-width:700px),(max-width:1100px) and (orientation:portrait){
 .bar{flex-wrap:wrap;padding:12px 16px}
 .where{flex-basis:100%;white-space:normal;flex-wrap:wrap;gap:0 12px}
 .where h1{white-space:normal}
@@ -500,6 +500,33 @@ max-width:min(100%,55vh)}
 .mbar.withboard .mbtns{justify-content:flex-start;margin:0 0 0 -6px;flex-wrap:wrap}
 .mini svg,.mini canvas{display:block;width:100%;height:auto}
 .mini .co{display:none}}
+/* a tablet held upright: the compact layout with the room it has. The board at the foot of the
+   window has the line's title, the analysis and the move list beside it (#side, which the script
+   makes), so that page, position and moves show together; the move list scrolls in its own box,
+   as tall as the board */
+@media (min-width:701px) and (max-width:1100px) and (orientation:portrait){
+.bar{flex-wrap:nowrap;padding:12px 24px}
+.where{flex-basis:auto}
+.tools{width:auto}
+.pagecol{padding:16px 24px 8px}
+.panel{padding:0 24px 32px}
+.notes{padding-left:24px;padding-right:24px}
+.boardblock{margin:0 -24px;padding:12px 24px 0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+column-gap:24px;align-items:start}
+.boardblock > .boardarea{grid-column:1;grid-row:1}
+.boardblock > .controls{grid-column:1;grid-row:2}
+/* the board takes about a third of the height, so that the page keeps the larger part of the screen */
+.boardblock .boardrow > .boardwrap,.boardblock .dpanel .boardwrap,.boardblock .dpanel canvas.pic{max-width:min(100%,34vh)}
+#side{grid-column:2;grid-row:1 / span 2;align-self:stretch;position:relative;min-height:160px}
+#side > .sidein{position:absolute;inset:0;display:flex;flex-direction:column;overflow:hidden}
+#side .sec{flex:none;padding:0 0 8px;border-top:0}
+#side .sec + .sec{border-top:1px solid var(--line);padding-top:8px}
+#side #evalsec{max-height:40%;overflow:auto}
+#side .treesec{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+#side .treesec .tree{flex:1 1 auto;min-height:0;overflow:auto}
+.mbar{padding:10px 24px}
+.mbtns{gap:0 20px}
+.mini.on{width:260px}}
 """ + REVIEW_CSS + ENGINE_CSS
 
 CHAPTER_JS = r"""
@@ -513,7 +540,10 @@ const S = {page: null, node: null, line: null, flip: false, diagram: null, mini:
   wanted: null};  // mini: the "Board" button of the phone's bar (null: on while a move or diagram is shown)  // wanted: a move the hash asked for that this reading does not hold yet
 const imgCache = {};
 const IMG_KEEP = 4;  // decoded page pictures kept for the diagram crops: the last few pages only
-const SMALL = window.matchMedia("(max-width:700px)");
+// the compact layout (one column, the board at the foot of the window): phones, and tablets held
+// upright, which also put the line's moves beside the board (TABLET)
+const SMALL = window.matchMedia("(max-width:700px), (max-width:1100px) and (orientation:portrait)");
+const TABLET = window.matchMedia("(min-width:701px) and (max-width:1100px) and (orientation:portrait)");
 const ROW = 25.5;  // the height of one row of the move list: 15px type at line height 1.7
 window.readerState = {fen: null, nodeId: null, page: null};
 const kinds = {};
@@ -1183,6 +1213,29 @@ function placeBoard(){
     if (panel.firstElementChild !== blk) panel.prepend(blk);
     if (foot.parentElement !== col) col.append(foot);
   }
+  placeSide();
+}
+function placeSide(){
+  // a tablet held upright: the analysis, the line's title and its moves beside the board; elsewhere
+  // back in the panel, in their own order (the analysis before the settings, the line and its
+  // moves before the comment)
+  const blk = $("boardblock"), tree = $("tree").parentElement;
+  let side = $("side");
+  if (TABLET.matches) {
+    if (!side) {
+      side = document.createElement("div");
+      side.id = "side";
+      side.innerHTML = "<div class=sidein></div>";
+      blk.append(side);
+    }
+    const inner = side.firstElementChild;
+    for (const el of [$("evalsec"), $("lsec"), tree]) if (el.parentElement !== inner) inner.append(el);
+  } else if (side) {
+    $("evset").before($("evalsec"));
+    $("infosec").before($("lsec"));
+    $("infosec").before(tree);
+    side.remove();
+  }
 }
 function toMoves(){
   // "Moves" on a phone: the board in its place below the page, with the line's moves under it
@@ -1766,22 +1819,6 @@ function init(){
     S.mini = !(S.mini === null ? !!(S.node || S.diagram) : S.mini); renderMini(); viewChanged();
   });
   $("mmoves").addEventListener("click", toMoves);
-  // A tablet held upright gets a quiet note that the reader prefers the
-  // tablet held sideways; turning it (or Hide) removes the note.
-  (function(){
-    const tablet = matchMedia("(pointer: coarse)").matches &&
-      Math.min(screen.width, screen.height) >= 700;
-    const upright = matchMedia("(orientation: portrait)");
-    let hidden = false;
-    try { hidden = localStorage.getItem("chessbook-turnhint") === "off"; } catch (e) { hidden = false; }
-    const show = () => { $("turnhint").hidden = !(tablet && upright.matches && !hidden); };
-    $("turnhide").addEventListener("click", () => {
-      hidden = true; show();
-      try { localStorage.setItem("chessbook-turnhint", "off"); } catch (e) { /* no storage */ }
-    });
-    if (upright.addEventListener) upright.addEventListener("change", show);
-    show();
-  })();
   // A horizontal swipe on the page turns it. An enlarged page that can still
   // scroll that way scrolls first, and turns only at its edge.
   (function(){
@@ -1860,6 +1897,7 @@ function init(){
     resizing = requestAnimationFrame(() => { sizeCoords(document); layoutPanel(false); barHeight(); });
   });
   SMALL.addEventListener && SMALL.addEventListener("change", () => { placeBoard(); renderBoard(); layoutPanel(false); });
+  TABLET.addEventListener && TABLET.addEventListener("change", () => { placeBoard(); renderBoard(); layoutPanel(false); });
   // the browser may restore the state of the boxes when the reader comes back to this page: the
   // stored selection wins
   window.addEventListener("pageshow", () => { if (S.page) pageState(); if (S.diagram) diagramState(S.diagram); });
@@ -1917,7 +1955,6 @@ __PGNBTN__
 <div class="notes small"><p id="pagemsg" role="status"></p><p class="muted" id="selnote" role="status"></p></div>
 <main class="reader">
 <section class="pagecol" aria-label="Book page">
-<p class="turnhint small muted" id="turnhint" hidden>The reader works best with the tablet held sideways. <button class="tb" id="turnhide" type="button">Hide</button></p>
 <p class="offpage small" id="offpage"></p>
 <p class="diagnote small muted" id="diagnote"></p>
 <p class="provnote small muted" id="provnote">The program is still reading the book. The moves of this chapter are a first reading, made with what the program had learnt when it reached them. When it has read the whole book, the final reading replaces them here, and the page and the chosen move stay where they are.</p>
