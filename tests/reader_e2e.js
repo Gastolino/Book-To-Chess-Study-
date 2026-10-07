@@ -408,6 +408,8 @@ async function openChapterOf(page, p) {
       return { arrows: !!document.querySelector("#mbar #mback, #mbar #mfwd"), x: z.left, right: z.right, w: z.width,
                pressed: document.getElementById("mzoom").getAttribute("aria-pressed") };
     });
+    check("on the phone, Enlarge page under the page gives way to the bar's magnifier",
+          await page.evaluate(() => getComputedStyle(document.getElementById("zoom")).display === "none"));
     check("the phone bar holds a magnifier and no move arrows",
           !bar.arrows && bar.x >= 0 && bar.right <= 390 && bar.w >= 24 && bar.pressed === "false", bar);
     await page.click("#mzoom");

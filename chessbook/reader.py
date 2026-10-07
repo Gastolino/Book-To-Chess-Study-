@@ -477,6 +477,8 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
 #mboard[aria-pressed="true"],#mzoom[aria-pressed="true"]{color:var(--accent)}
+/* the bar's magnifier enlarges the page: the button under the page is for wider screens */
+#zoom{display:none}
 /* The board follows the page picture (the script moves it there from the panel) and, while
    "Board" is on, stays at the foot of the window just above the bar as the page scrolls by
    (position: sticky, so the browser moves it, smoothly); at the end of the page picture it
