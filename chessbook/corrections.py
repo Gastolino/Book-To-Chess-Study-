@@ -17,7 +17,10 @@ selection (selection.py), and in the browser under
      "gaps":       {"7:28,664:e5": {"san": ["Bd7"]}},
      "added":      {"201:118,342:Nf3": [{"san": ["Nc6", "Bb5"]},
                                         {"san": ["d6"], "note": "Quieter."}],
-                    "201:80,300:e4":   [{"san": ["d4", "d5"], "before": true}]},
+                    "201:80,300:e4":   [{"san": ["d4", "d5"], "before": true}],
+                    "202:40,610:Rd1":  [{"san": ["Qe4", "Kd7"], "page": 202,
+                                         "rect": [310.2, 66.5, 352.8, 79.8],
+                                         "text": "Qe4 Kd7", "main": true}]},
      "note": "Corrections made in the book reader."}
 
 diagrams     a diagram id (selection.py) and the position it shows; it wins
@@ -67,6 +70,20 @@ added        the key of a move of a line and the variations the reader added
              stored whole (the shared moves and its own). The moves are
              played while they are legal; the rest of a variation is left
              out, with the reason.
+             An entry with "page" and "rect" holds moves that the book
+             prints in a section of a page where the program found none
+             (the reader's "Read a section"): "rect" is the section,
+             [x0, y0, x1, y1] in PDF points on that page (the coordinates
+             of the page's marks), "text" what the program read there (the
+             browser app reads it; the reader may type the moves instead)
+             and {"main": true} continues the main line when the move the
+             key names ends it (the moves form a variation otherwise, and
+             always with "before"). "first" counts the moves at the start
+             of "san" that come before the section (moves the reader added
+             earlier, which the section goes on from), when there are any.
+             Each move read from the section has a box on the page: the
+             box of its printed word when the section prints as many moves
+             as it gives, else one box, the section's, for its first move.
 
 The corrections are applied after the book is assembled, by replaying the
 lines they touch (assemble._Builder.apply_fix), so that the browser app can
@@ -195,12 +212,41 @@ def normalise(data):
                 entry["before"] = True
             if isinstance(e, dict) and e.get("note"):
                 entry["note"] = str(e["note"])
+            if isinstance(e, dict) and (e.get("page") is not None or e.get("rect") is not None):
+                entry.update(_section(key, e, len(entry["san"]), entry.get("before")))
             if entry not in kept:
                 kept.append(entry)
         if kept:
             out["added"][key] = kept
     if data.get("note"):
         out["note"] = str(data["note"])
+    return out
+
+
+def _section(key, e, moves, before):
+    """The section of a page that an "added" entry was read from, in
+    canonical form: {"page", "rect", "text"?, "first"?, "main"?}, its keys in
+    the order in which the browser writes them. The rectangle keeps a tenth
+    of a point, as the browser stores it."""
+    try:
+        page = int(e.get("page"))
+        rect = [round(float(v), 1) for v in e.get("rect")]
+    except (TypeError, ValueError):
+        page, rect = 0, []
+    if isinstance(e.get("page"), bool) or page < 1 or len(rect) != 4 or \
+            rect[2] <= rect[0] or rect[3] <= rect[1]:
+        raise ValueError(f"The section of a page given at {key!r} is not a page number and a "
+                         "rectangle [x0, y0, x1, y1] with x1 > x0 and y1 > y0.")
+    out = {"page": page, "rect": rect}
+    if e.get("text"):
+        out["text"] = str(e["text"])
+    first = e.get("first") or 0
+    if not isinstance(first, int) or isinstance(first, bool) or not 0 <= first < moves:
+        raise ValueError(f"The section read at {key!r} gives no move of its own.")
+    if first:
+        out["first"] = first
+    if e.get("main") and not before:
+        out["main"] = True
     return out
 
 

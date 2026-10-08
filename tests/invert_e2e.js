@@ -6,7 +6,8 @@
 //
 // On a desktop window: checks that the invert button sits beside the bookmark
 // icon, that a tap turns the page picture dark with light print, that the
-// diagrams are inverted with the rest of the page, that the choice survives a reload and that a second tap turns it off. Then
+// diagrams are inverted with the rest of the page, that the line under the current move and the
+// ribbon keep the bookmark's yellow, that the choice survives a reload and that a second tap turns it off. Then
 // on an iPhone 13 and an iPad held sideways: the button lies within the
 // screen, the tap works, and no sideways scroll appears. Prints one JSON
 // object with the results; the exit code is 1 when a check fails.
@@ -75,6 +76,26 @@ async function look(page, sel) {
     return { mean: sum / (px.length / 4), grid };
   }, png);
 }
+// the share of the pixels of a part of the screen in the bookmark's yellow (#f2b705) and in its
+// inverse (#0d48fa), each within a small distance
+async function hues(page, clip) {
+  const png = (await page.screenshot({ clip })).toString("base64");
+  return page.evaluate(async (png) => {
+    const img = new Image();
+    img.src = "data:image/png;base64," + png;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.width; c.height = img.height;
+    const g = c.getContext("2d");
+    g.drawImage(img, 0, 0);
+    const px = g.getImageData(0, 0, c.width, c.height).data;
+    const near = (i, r, gg, b) => Math.abs(px[i] - r) + Math.abs(px[i + 1] - gg) + Math.abs(px[i + 2] - b) < 60;
+    let yellow = 0, blue = 0;
+    for (let i = 0; i < px.length; i += 4) { if (near(i, 242, 183, 5)) yellow++; if (near(i, 13, 72, 250)) blue++; }
+    const n = px.length / 4;
+    return { yellow: yellow / n, blue: blue / n, n };
+  }, png);
+}
 const pressed = (page) => page.evaluate(() => ({
   on: document.body.classList.contains("inverted"),
   pressed: document.getElementById("invbtn").getAttribute("aria-pressed"),
@@ -107,6 +128,28 @@ const pressed = (page) => page.evaluate(() => ({
     const diagAfter = await look(page, "#ov .diag");
     check("the diagram is inverted with the page", Math.abs(diagAfter.mean - (255 - diagBefore.mean)) < 12,
           { before: diagBefore.mean, after: diagAfter.mean });
+    // the bookmark's yellow stays yellow on the inverted page: the line under the current move
+    // (outside reading mode) and the ribbon, read from the screen's pixels
+    const mark = await page.evaluate(() => {
+      const el = [...document.querySelectorAll("#ov .mark[data-node]")].find((e) => e.getBoundingClientRect().width > 8);
+      return el ? el.dataset.mark : null;
+    });
+    check("the page holds a move to choose", !!mark, mark);
+    await page.click("#ov .mark[data-mark='" + mark + "']");
+    await page.mouse.move(2, 2);
+    const foot = await page.evaluate((i) => {
+      const r = document.querySelector("#ov .mark[data-mark='" + i + "']").getBoundingClientRect();
+      return { x: r.left + 2, y: r.bottom - 2, width: r.width - 4, height: 2 };
+    }, mark);
+    const line = await hues(page, foot);
+    check("on the inverted page the current move is underlined in the bookmark's yellow, not its inverse",
+          line.yellow > 0.6 && line.blue === 0, line);
+    await page.click("#bmbtn");
+    const rib = await page.evaluate(() => { const r = document.querySelector("#ribbon svg").getBoundingClientRect();
+      return { x: r.left + r.width * 0.2, y: r.top + 2, width: r.width * 0.6, height: r.height * 0.5 }; });
+    const ribbon = await hues(page, rib);
+    check("on the inverted page the ribbon stays yellow", ribbon.yellow > 0.6 && ribbon.blue === 0, ribbon);
+    await page.click("#bmbtn");
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: path.join(screens, "invert_1280_light.png") });
     out.screenshots.push("invert_1280_light.png");

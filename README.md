@@ -115,6 +115,14 @@ and move last read, and a bookmark opens it at the bookmark. The contents
 in the reader's top bar; **Back to page 31** at the top, or the browser's
 back, returns to the page.
 
+The app's top bar holds one line: the book's name, the small book that shows
+while the program works, and **Library** in the right-hand corner. A note,
+**Back to page 31** and **Read again** take a line under it when they are
+there. The reader's own bar under it names the chapter. On a phone, and on
+an iPad held upright, the top bar slides away as the page scrolls down, so
+that the page has the room, and slides back only when the page is scrolled
+all the way to its top; scrolling up part of the way leaves it away.
+
 The front matter is read like the rest of the book: its pages are ticked in
 the contents, and the moves of an introduction (its games and diagrams) are
 read. Its table of contents gives no moves: a sequence that the program
@@ -131,6 +139,17 @@ going back from a chapter's first page shows the last page of the chapter
 before. The page counter counts the whole book ("47 of 386"), and a page
 number typed into it opens that page in whatever chapter holds it.
 
+A page turns by sliding: during a swipe the page follows the finger, and let
+go past a quarter of its width (or flicked) it slides out while the next
+page slides in from the other edge; a shorter swipe puts it back. The arrows
+and Page Up and Page Down turn with the same slide. On an enlarged page the
+reading goes on where it naturally does: a turn forward shows the next
+page's top left, and a turn back the previous page's bottom right, just
+above the board at the foot of the screen. A turn into the next chapter
+does the same: the place of the next page slides in, and the next chapter
+shows that page there. With the system's setting for reduced motion the
+page changes at once.
+
 The pictures of the pages are drawn ten pages at a time: the ten pages
 around the page shown first, then the ten after them, then the ten before.
 A page whose picture has not come yet shows a light sheet of its size, which
@@ -146,16 +165,17 @@ pictures are kept on each device as well, not on the site.
 ### The sign of work
 
 While the app starts, and while a book is read before its first page shows,
-the start page shows an open book whose two pages are chequered like a
-board, with a page turning over, above a thin bar that fills as far as the
-work has come where the app knows it, and the words of the work under it.
-In the reader, the same small book stands at the right of the top bar while
-the program works (reading the moves, drawing pages, saving the reading); a
+the start page shows a revolving book: six pages about the spine, each
+chequered like a board, that turn in one after the other, each swinging a
+quarter turn clockwise about the spine, so that they swirl round it. It stands above a thin bar that fills as far as the work has come
+where the app knows it, with the words of the work under it.
+In the reader, the same small book stands in the top bar, just left of
+**Library**, while the program works (reading the moves, drawing pages, saving the reading); a
 tap on it says what it is doing, and it goes when the work is done. With
-reduced motion set on the device, the page does not turn. The book with its
-two chequered pages is also the app's icon (`web/icon.svg`;
-`tools/make_icons.py` draws the icons of the Home Screen, the manifest and
-the browser tab).
+reduced motion set on the device, the pages do not turn and the book stands
+still. The book with its four chequered pages is also the app's icon
+(`web/icon.svg`; `tools/make_icons.py` draws the icons of the Home Screen,
+the manifest and the browser tab).
 
 ### Your library on each device
 
@@ -197,10 +217,12 @@ note of where the reader was (the book, the chapter, the page, the move and
 how far the page and the move list were scrolled), written a moment after
 each change and at once when the app goes to the background. When the app
 starts again within a day, it skips the library page and opens that book at
-that place from its stored reading, with one line in the top bar ("Back to
-The Soviet Chess Primer, page 31") and the **Library** link beside it. A
-book whose reading was not finished when the system closed the app is read
-again, from the same page, and the line says so. The place last read is
+that place from its stored reading. While it opens, one line says where it
+goes back to ("Back to The Soviet Chess Primer, page 31"), with the
+**Library** link beside it, and a slip under the top bar says it again for a
+few seconds once the page shows. A book whose reading was not finished when
+the system closed the app is read again, from the same page, and a line
+under the top bar says so. The place last read is
 written to the library at once as well when the app goes to the background,
 so nothing is lost. **Library** forgets the note. On a site where the
 browser keeps no library (a private window), the start page says that the
@@ -254,9 +276,9 @@ gives "The Alekhine Defence").
 
 The book can be read while it is processed. As soon as the program knows the
 book's chapters (a few seconds), the book opens at its first page, and every
-page can be turned and swiped. The top bar says how far the
-reading has come ("Reading the moves: chapter 3 of 11") above a thin moving
-line. The moves then appear chapter by chapter, the first chapters first; a
+page can be turned and swiped. A thin line moves along the foot of the top
+bar, and a tap on the small book beside **Library** says how far the reading
+has come ("Reading the moves: chapter 3 of 11"). The moves then appear chapter by chapter, the first chapters first; a
 chapter that the reader opens is read before the others. These first readings
 use what the program has learnt so far, and reading mode ("Show reading") says
 so. When the program has read the whole book (its glyph passes, the figurines
@@ -314,6 +336,12 @@ and removing.
 
 ## Correcting what the program could not read
 
+The tools that correct the reading belong to reading mode: the pencil, Read a
+section and Review show in the reader's top bar (and the pencil in the bar at
+the foot of a phone screen) only while Show reading (the icon of two squares)
+is on. Outside it the page holds the book alone, and turning reading off ends
+whatever tool was at work.
+
 Each chapter reader has a Review button. It lists, in page order, every place
 where the program is unsure: diagrams with doubtful squares or no reading,
 moves chosen between several readings, moves it could not read, moves that
@@ -334,10 +362,11 @@ shows it on the page and on the board, with the choices to correct it:
   the book printed with that symbol (the eye on the page opens the same
   choice).
 
-A tap on a move that the program could not read (a red move, on the page or
-in the move list) opens its corrector at once, pencil or no pencil; on a
-phone it opens as a sheet above the bar at the foot of the screen. A tap on
-another move only chooses it. A piece moved on the board corrects a move as
+In reading mode, a tap on a move that the program could not read (a red
+move, on the page or in the move list) opens its corrector at once, pencil
+or no pencil; on a phone it opens as a sheet above the bar at the foot of the
+screen. A tap on another move, or on any move outside reading mode, only
+chooses it. A piece moved on the board corrects a move as
 well (see "Correcting by moving pieces on the board" below).
 
 Where the book's text lacks a move (the move list shows "…" in its place),
@@ -379,6 +408,35 @@ the moves printed after it find the line gone on). The other choices stay:
 another move of a line, "Continue a line…" with a tap on any move, or "Not
 a variation".
 
+Moves that the book prints but the program found nowhere (no box on the
+page) are read with "Read a section", the dashed rectangle beside the
+pencil in reading mode (and in the bar at the foot of a tablet's screen).
+With it on, a drag across the moves draws a rectangle round them, a tap
+takes the word under the finger, and a finger that goes up or down the page
+scrolls it; with the pencil on, a tap on the page where no box stands does
+the same (on a phone the pencil in the bar at the foot of the screen is the
+way in further down the page). The rectangle keeps its place on the page when
+the page is enlarged; its corners change its size and a drag inside it moves
+it, while a tap on it chooses the move printed under it. The sheet that opens
+says what the program reads there (in the browser app, which reads the page's
+text with the book's own reading of its piece symbols) and offers its
+readings as buttons, a reading that drops a piece the text prints marked
+"unsure"; when the moves read without doubt only on the other side of the
+chosen move (a printed "Qe4" is White's move), it says so and offers to put
+them there. While no reading is sure, the moves legal next are buttons to
+tap. The sheet takes the moves typed in standard notation, checked move by
+move as they are typed: a move that is not legal is named with the reason.
+The moves go after the chosen move or before it, as alternatives to it;
+after the last move of the main line they continue the main line, or form a
+variation, as you choose. Moves at the start of the section that the line
+plays itself stay the line's own, and the rest go on after them. A tap on
+another move, on the page or in the move list, chooses that move instead. The moves
+then stand in the move list and in the PGN, each with a box on the page (the
+box of its printed word when the section prints as many moves, else the
+rectangle), and a tap on a box with the pencil opens the section again to
+change or remove it. A reader built from the command line shows such moves
+at once; the next run writes them into the book.
+
 In the browser app every correction applies at once: the worker replays only
 the lines it touches and sends the open chapter its changes, so the board,
 the move list, the outlines on the page and the Review list change while the
@@ -411,14 +469,16 @@ does depends on the line:
 
 - the move the line plays next (or a variation the book gives there) steps
   to it, as the arrow does;
-- where the book's text lacks a move, the move fills the gap, as the gap's
-  corrector does;
+- where the book's text lacks a move, the move fills the gap in reading mode,
+  as the gap's corrector does;
 - any other move opens a short choice, above the bar on a phone and below the
   board elsewhere: "Correct the main line: 12.Nf3 instead of 12.Nd2" makes
   the book's move read as yours, and the program reads the rest of the line
   from it; inside a variation the same choice reads "Correct this
   variation"; "Add a new variation" keeps your move as a variation of your
-  own, branching here; "Cancel" puts the board back.
+  own, branching here; "Cancel" puts the board back. Outside reading mode
+  the choice holds only "Add a new variation" and "Cancel", and says that
+  Show reading offers the corrections.
 
 A variation you added shows in the move list with a green dot before its
 first move and the words "Added by you". Further moves from its last position

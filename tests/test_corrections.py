@@ -558,3 +558,220 @@ def test_added_variations_apply_live_as_a_fresh_build(clean):
     assert book["stats"]["corrected"]["added_moves"] == fresh["stats"]["corrected"]["added_moves"] == 2
     live.apply(state, book, {})
     assert not [t for t in game_tree(book) if t[3] == "added"]
+
+
+# ------------------------------------------------------------------ sections of a page the reader read
+
+# a note that names a move without its number, which the program reads in no line
+MISSED = "White can also try Qe4 here."
+
+
+@pytest.fixture(scope="module")
+def missed(tmp_path_factory):
+    """The little book whose note after 7...Ke6 names 8.Qe4 without a number: the
+    program finds no move there, and the game ends with 8.Nc3."""
+    from test_assemble import make_book as mk
+    tmp = tmp_path_factory.mktemp("missed")
+    pdf = mk(tmp / "missed.pdf", note7=MISSED)
+    state = {}
+    book = build_book(pdf, output_dir=tmp / "output", books_dir=tmp / "books", state=state)
+    return tmp, pdf, book, state
+
+
+def word_box(pdf, page, word):
+    """The box of a printed word, in PDF points, as the text layer gives it."""
+    import pymupdf
+    with pymupdf.open(pdf) as doc:
+        return [round(v, 1) for v in next(w[:4] for w in doc[page - 1].get_text("words") if w[4] == word)]
+
+
+def grown(box, by=1.5):
+    return [round(box[0] - by, 1), round(box[1] - by, 1), round(box[2] + by, 1), round(box[3] + by, 1)]
+
+
+def marks_of(book, page, nid):
+    return [m for m in book["pages"][page - 1]["marks"] if m["node"] == nid]
+
+
+def test_section_entries_round_trip(tmp_path):
+    data = {"added": {"4:232,80:Nc3": [
+        {"san": ["Nb4", "Qe4"], "page": "4", "rect": [225.04, 92.46, 380, 105.81], "text": "White has",
+         "main": True},
+        {"san": ["Qe4"], "page": 4, "rect": [307, 65, 327.2, 81.3], "before": True, "main": True},
+        {"san": ["Nb4", "Qe4", "Kd7"], "page": 4, "rect": [300, 60, 330, 80], "first": 2}]}}
+    fix = fixes.normalise(data)
+    a, b, c = fix["added"]["4:232,80:Nc3"]
+    assert a == {"san": ["Nb4", "Qe4"], "page": 4, "rect": [225.0, 92.5, 380.0, 105.8], "text": "White has",
+                 "main": True}
+    # the keys in the order in which the browser writes them, so that it tells a stored entry from a new one
+    assert list(a) == ["san", "page", "rect", "text", "main"]
+    # alternatives before a move never continue the main line
+    assert b == {"san": ["Qe4"], "before": True, "page": 4, "rect": [307.0, 65.0, 327.2, 81.3]}
+    assert c["first"] == 2 and "main" not in c
+    assert fixes.count(fix)["added"] == 1
+    path = fixes.save(fix, tmp_path / "corrections.json")
+    assert fixes.normalise(json.loads(path.read_text(encoding="utf-8"))) == fix
+    assert fixes.parse_corrections_text("Mine:\n```json\n" + json.dumps(fix) + "\n```")["added"] == fix["added"]
+    # the browser's stored form, read back by the app's worker, is the same
+    stored = json.loads(json.dumps({"corrections": fix}))["corrections"]
+    assert fixes.normalise(stored) == fix
+    for bad in ({"page": 4, "rect": [10, 10, 20]}, {"page": 4, "rect": [30, 10, 20, 20]},
+                {"page": 0, "rect": [10, 10, 20, 20]}, {"page": "four", "rect": [10, 10, 20, 20]},
+                {"page": True, "rect": [10, 10, 20, 20]}, {"rect": [10, 10, 20, 20]},
+                {"page": 4, "rect": [10, 10, 20, 20], "first": 1}):
+        with pytest.raises(ValueError):
+            fixes.normalise({"added": {"4:232,80:Nc3": [dict({"san": ["Nb4"]}, **bad)]}})
+
+
+def test_a_section_after_the_last_move_continues_the_main_line(missed):
+    tmp, pdf, book, _ = missed
+    g = line_titled(book, "Smith - Jones")
+    nc3 = book["nodes"][main_line(book, g)[-1]]
+    assert nc3["san"] == "Nc3" and not book["unattached"]
+    # the section holds no printed move ("White has a strong attack."): its box stands for its moves
+    rect = word_box(pdf, 4, "attack.")
+    fixed = rebuild(tmp, pdf, {"added": {nc3["key"]: [{"san": ["Nb4", "Qe4"], "page": 4, "rect": rect,
+                                                       "main": True}]}})
+    g = line_titled(fixed, "Smith - Jones")
+    ids = main_line(fixed, g)
+    line = [fixed["nodes"][i] for i in ids]
+    assert [n["san"] for n in line] == SANS[:-1] + ["Nc3", "Nb4", "Qe4"]
+    nb4, qe4 = line[-2:]
+    assert all(n["main"] and n["corrected"] == "added" and n["region"] == {"page": 4, "rect": rect}
+               for n in (nb4, qe4))
+    assert nb4["number"] == 8 and nb4["black"] and qe4["number"] == 9 and not qe4["black"]
+    assert g["moves"] == 17 and g["status"] == "ok"
+    (m,) = marks_of(fixed, 4, ids[-2])
+    assert m["bbox"] == rect and m["corrected"] == "added" and m["status"] == "ok" and not m.get("key")
+    assert not marks_of(fixed, 4, ids[-1])
+    # the PGN plays them in the game, marked as the reader's
+    from chessbook import pgnout
+    text, written = pgnout.chapter_pgn(fixed, 1)[:2]
+    flat = " ".join(text.split())
+    assert "8. Nc3 { White has a strong attack. } 8... Nb4 { Added by the reader from the page. } 9. Qe4 1-0" \
+        in flat, text
+    assert pgnout.validate(text, written) == []
+    # they count as corrections, not as moves the program read
+    assert fixed["stats"]["corrected"]["added_moves"] == 2
+    assert fixed["stats"]["moves"] == book["stats"]["moves"]
+
+
+def test_a_section_before_a_move_adds_alternatives_with_a_box_per_move(missed):
+    tmp, pdf, book, _ = missed
+    g = line_titled(book, "Smith - Jones")
+    nc3 = book["nodes"][main_line(book, g)[-1]]
+    word = word_box(pdf, 4, "Qe4")
+    fixed = rebuild(tmp, pdf, {"added": {nc3["key"]: [{"san": ["Qe4"], "page": 4, "rect": grown(word),
+                                                       "text": "Qe4", "before": True, "main": True}]}})
+    qid, q = next((k, n) for k, n in fixed["nodes"].items() if n.get("region"))
+    assert q["san"] == "Qe4" and not q["main"] and q["added_before"] and q["number"] == 8 and not q["black"]
+    parent = fixed["nodes"][q["parent"]]
+    assert parent["san"] == "Ke6" and [fixed["nodes"][c]["san"] for c in parent["children"]] == ["Nc3", "Qe4"]
+    # the section prints one move: its box is the box of the printed word
+    (m,) = marks_of(fixed, 4, qid)
+    assert m["bbox"] == word and q["bbox"] == word
+    # the page's marks stay in reading order: the box after 7...Ke6 and before 8.Nc3
+    order = [x["raw"] for x in fixed["pages"][3]["marks"] if x["line"] == g["id"]]
+    assert order.index("Qe4") == order.index("Ke6") + 1
+    from chessbook import pgnout
+    flat = " ".join(pgnout.chapter_pgn(fixed, 1)[0].split())
+    assert "( 8. Qe4 { Added by the reader from the page. } )" in flat
+
+
+def test_a_section_after_a_move_inside_the_line_is_a_variation(missed):
+    tmp, pdf, book, _ = missed
+    nf3 = book["nodes"][node_with(book, "Nf3", main=True)]["key"]
+    fixed = rebuild(tmp, pdf, {"added": {nf3: [{"san": ["d6", "d4"], "page": 4, "rect": [40, 400, 200, 420],
+                                                "main": True}]}})
+    d6 = fixed["nodes"][node_with(fixed, "d6", corrected="added")]
+    assert not d6["main"] and d6["region"]["page"] == 4
+    assert fixed["nodes"][d6["parent"]]["san"] == "Nf3"
+    assert [fixed["nodes"][c]["san"] for c in d6["children"]] == ["d4"]
+    g = line_titled(fixed, "Smith - Jones")
+    assert [fixed["nodes"][i]["san"] for i in main_line(fixed, g)] == SANS[:-1] + ["Nc3"]
+
+
+def test_a_move_of_a_section_that_is_not_legal_is_left_out_with_the_reason(missed):
+    tmp, pdf, book, _ = missed
+    g = line_titled(book, "Smith - Jones")
+    nc3_id = main_line(book, g)[-1]
+    key = book["nodes"][nc3_id]["key"]
+    sect = {"page": 4, "rect": [300, 60, 330, 80]}
+    # a move of the wrong side: it is Black's move after 8.Nc3
+    fixed = rebuild(tmp, pdf, {"added": {key: [dict(sect, san=["Qe4"], main=True)]}})
+    assert not any(n.get("region") for n in fixed["nodes"].values())
+    assert fixed["nodes"][nc3_id]["added_stale"] == (
+        "The moves you read on the page after 8.Nc3 start with Qe4, which is not a legal move for Black "
+        "there, so the program leaves them out.")
+    # a later move: the moves before it are played
+    fixed = rebuild(tmp, pdf, {"added": {key: [dict(sect, san=["Nb4", "Zz9"], main=True)]}})
+    assert [n["san"] for n in fixed["nodes"].values() if n.get("region")] == ["Nb4"]
+    assert "go on with Zz9, which is not a move in standard notation, so the program leaves out the " \
+        "moves from it on." in fixed["nodes"][nc3_id]["added_stale"]
+    assert len([m for p in fixed["pages"] for m in p["marks"] if m.get("corrected") == "added"]) == 1
+
+
+def test_a_printed_piece_move_read_as_a_pawn_move_is_unsure(missed):
+    """region.read(): "Qe4" printed after 8.Nc3, where it is Black's move, reads
+    only as the pawn move 8...e4 by dropping the queen the text prints; that
+    reading is offered as unsure. From the position before 8.Nc3, where it is
+    White's move, the same text reads as 8.Qe4 without doubt."""
+    from chessbook import region
+    from chessbook.assemble import _Decoder
+    from chessbook.movetext import GlyphModel
+    tmp, pdf, book, _ = missed
+    g = line_titled(book, "Smith - Jones")
+    nc3 = book["nodes"][main_line(book, g)[-1]]
+    ke6 = book["nodes"][nc3["parent"]]
+    dec = _Decoder(GlyphModel(seed=True), book.get("letters"))
+    after = region.read(dec, nc3["fen"], "try Qe4 here.")
+    assert after and all(c["unsure"] >= 1 for c in after), after
+    assert region.read(dec, ke6["fen"], "try Qe4 here.")[0] == {"san": ["Qe4"], "cost": 0.0, "unsure": 0}
+    # a clean reading still counts as sure
+    assert region.read(dec, nc3["fen"], "Nb4")[0]["unsure"] == 0
+
+
+def test_sections_survive_a_rebuild_and_apply_live(missed):
+    """The corrections file keeps a section, and the browser app's worker
+    applies it to the assembled book with the result of a fresh build;
+    taking the correction away takes its moves and boxes away."""
+    import copy
+    from chessbook import live
+    tmp, pdf, book, state = missed
+    g = line_titled(book, "Smith - Jones")
+    nc3 = book["nodes"][main_line(book, g)[-1]]
+    fix = {"added": {nc3["key"]: [{"san": ["Nb4"], "page": 4, "rect": grown(word_box(pdf, 4, "attack.")),
+                                   "main": True},
+                                  {"san": ["Qe4"], "page": 4, "rect": grown(word_box(pdf, 4, "Qe4")),
+                                   "before": True}]}}
+    path = fixes.corrections_path(pdf, tmp / "books")
+    fixes.save(fix, path)
+    try:
+        saved = build_book(pdf, output_dir=tmp / "output", books_dir=tmp / "books")
+    finally:
+        path.unlink()
+    fresh = rebuild(tmp, pdf, fix)
+    assert game_tree(saved) == game_tree(fresh)
+    # (depth first: 8.Nc3 and the move after it, then the alternative to 8.Nc3)
+    assert [t[1] for t in game_tree(fresh) if t[3] == "added"] == ["Nb4", "Qe4"]
+
+    def page_marks(b):
+        return [(m["raw"], m["bbox"], m.get("corrected")) for m in b["pages"][3]["marks"]]
+    assert page_marks(saved) == page_marks(fresh)
+    # live, in the app's worker
+    book = copy.deepcopy(book)
+    ch = book["chapters"][1]
+    old = reader.chapter_data(book, ch, "")
+    res = live.apply(state, book, fix)
+    assert 4 in res["pages"]
+    assert game_tree(book) == game_tree(fresh) and page_marks(book) == page_marks(fresh)
+    assert line_titled(book, "Smith - Jones")["moves"] == 16
+    patch, new = live.chapter_patch(book, ch, old)
+    nb4 = next(k for k, n in new["nodes"].items() if n["san"] == "Nb4")
+    assert patch["nodes"][nb4]["region"]["page"] == 4 and patch["nodes"][nb4]["main"]
+    assert any(m["node"] == nb4 for m in patch["pages"]["4"]["marks"])
+    # removed: the moves and their boxes go
+    live.apply(state, book, {})
+    assert not [t for t in game_tree(book) if t[3] == "added"]
+    assert not any(m.get("corrected") == "added" for m in book["pages"][3]["marks"])
+    assert line_titled(book, "Smith - Jones")["moves"] == 15

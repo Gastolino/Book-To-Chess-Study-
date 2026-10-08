@@ -9,11 +9,17 @@
 // window.readerState shows that move's position, steps with the arrow keys
 // (also right after choosing a line under "On this page", with no move
 // chosen, along a long line whose current move must stay in view, and from a
-// main move whose game goes on only in variations), checks that move boxes
-// stay hidden until hover, that "Show reading" outlines only the boxes that
-// need attention without moving the page and keeps the focus outline, that
-// hover and the current move look different in the move list, clicks a
-// diagram and leaves it out of the selection (also on a page that is left
+// main move whose game goes on only in variations), checks that outside
+// reading mode no box draws a line, under the pointer either, but the current
+// move's 2px underline in the bookmark's yellow, that the pencil and Review
+// are hidden there, that a tap on a move the program could not read only
+// chooses it there and that turning reading off ends a join of lines, that
+// the Show reading icon keeps its place when tapped on an iPhone and an iPad, that "Show reading" (an icon pressed
+// while on) outlines only the boxes that need attention without moving the
+// page, keeps the focus outline and shows the pencil and Review, that turning
+// it off turns the pencil off and closes Review (also on an iPhone 13, with a
+// correction open), that hover and the current move look different in the
+// move list, clicks a diagram and leaves it out of the selection (also on a page that is left
 // out), checks that a box keeps its page, that the contents page shows the
 // change and keeps its ticks after the Back button, checks the phone layout
 // at 390x844 (no sideways scroll, a board as wide as the page, no jump of the
@@ -56,6 +62,74 @@ const rgbOf = (page, prop) => page.evaluate((prop) => {
   const probe = document.createElement("i"); probe.style.color = v; document.body.appendChild(probe);
   const rgb = getComputedStyle(probe).color; probe.remove(); return rgb;
 }, prop);
+
+// How the boxes over the page are drawn, from their computed style: the lines (outline, border,
+// text decoration) each box other than the current move shows, the lines of the current move, and
+// whether the correction tools and the Show reading icon show, with its state and name.
+const boxLook = (page) => page.evaluate(() => {
+  const seen = (w, st, c) => parseFloat(w) > 0 && st !== "none" && st !== "hidden" && c !== "rgba(0, 0, 0, 0)";
+  const lines = (el) => {
+    const cs = getComputedStyle(el), out = [];
+    if (seen(cs.outlineWidth, cs.outlineStyle, cs.outlineColor))
+      out.push("outline " + cs.outlineWidth + " " + cs.outlineStyle + " " + cs.outlineColor);
+    for (const side of ["Top", "Right", "Bottom", "Left"])
+      if (seen(cs["border" + side + "Width"], cs["border" + side + "Style"], cs["border" + side + "Color"]))
+        out.push("border-" + side.toLowerCase() + " " + cs["border" + side + "Width"] + " " +
+                 cs["border" + side + "Style"] + " " + cs["border" + side + "Color"]);
+    if (cs.textDecorationLine !== "none") out.push("text-decoration " + cs.textDecorationLine);
+    return out;
+  };
+  const others = [];
+  let boxes = 0;
+  for (const el of document.querySelectorAll("#ov .mark:not(.current), #ov .diag")) {
+    boxes++;
+    const l = lines(el);
+    if (l.length) others.push((el.dataset.node || el.dataset.diagram || el.dataset.seq || "") + " " + el.className + ": " + l.join(", "));
+  }
+  const cur = document.querySelector("#ov .mark.current"), cs = cur && getComputedStyle(cur);
+  // (the wide bar keeps a hidden tool's room: hidden is out of the layout or not visible)
+  const shown = (id) => { const el = document.getElementById(id);
+    return el.getClientRects().length > 0 && getComputedStyle(el).visibility === "visible"; };
+  const sr = document.getElementById("showread");
+  return { reading: document.body.classList.contains("reading"), boxes, others,
+           current: cur && { lines: lines(cur), foot: [cs.borderBottomWidth, cs.borderBottomStyle, cs.borderBottomColor],
+                             outline: [cs.outlineWidth, cs.outlineStyle, cs.outlineColor] },
+           pen: shown("penbtn"), review: shown("reviewbtn"), mpen: shown("mpen"),
+           showread: { shown: shown("showread"), pressed: sr.getAttribute("aria-pressed"), label: sr.getAttribute("aria-label"),
+                       title: sr.title, text: sr.textContent.trim(), icon: !!sr.querySelector("svg path[fill-rule='evenodd']"),
+                       color: getComputedStyle(sr).color } };
+});
+
+// Show reading keeps its place when it is tapped: a second tap on the same spot turns reading off
+// again (rather than a tool that appeared there), and the page under the bar does not move.
+async function showReadStays(page, label) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(150);
+  const where = () => page.evaluate(() => {
+    const r = document.getElementById("showread").getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height, page: document.getElementById("pagebox").getBoundingClientRect().top,
+             reading: document.body.classList.contains("reading") };
+  });
+  const a = await where();
+  const cx = a.x + a.w / 2, cy = a.y + a.h / 2;
+  await page.touchscreen.tap(cx, cy);
+  await page.waitForTimeout(200);
+  const b = await where();
+  await page.touchscreen.tap(cx, cy);
+  await page.waitForTimeout(200);
+  const end = await page.evaluate(() => ({ reading: document.body.classList.contains("reading"),
+    pencil: document.body.classList.contains("pencil"), region: document.body.classList.contains("rgdraw") }));
+  const same = (k) => Math.abs(a[k] - b[k]) < 0.5;
+  check(label + ": Show reading keeps its place when tapped, and a second tap on it turns reading off",
+        !a.reading && b.reading && same("x") && same("y") && same("w") && !end.reading && !end.pencil && !end.region,
+        { a, b, end });
+  check(label + ": Show reading moves nothing on the page", same("page"), { before: a.page, after: b.page });
+}
+
+// the current move's look in reading mode: a solid outline in the accent colour (1.5px in the
+// style sheet; Chromium rounds outline widths down to whole device pixels, so 1px at 1x)
+const accentOutline = (cur, accent) => !!cur && parseFloat(cur.outline[0]) >= 1 && cur.outline[1] === "solid" &&
+  cur.outline[2] === accent;
 
 // open the chapter of the contents page that holds a PDF page
 async function openChapterOf(page, p) {
@@ -143,9 +217,9 @@ async function openChapterOf(page, p) {
     const sel = "#ov .mark[data-node='" + target + "']";
     const hidden = await page.$eval(sel, (el) => getComputedStyle(el).outlineWidth);
     await page.hover(sel);
-    const hovered = await page.$eval(sel, (el) => [getComputedStyle(el).outlineWidth, getComputedStyle(el).outlineStyle]);
-    check("a move box stays hidden until the pointer is over it",
-          hidden === "0px" && hovered[0] !== "0px" && hovered[1] === "solid", { hidden, hovered });
+    const hovered = await page.$eval(sel, (el) => [getComputedStyle(el).outlineWidth, getComputedStyle(el).cursor]);
+    check("outside reading mode a move box draws nothing under the pointer either, which turns to a hand",
+          hidden === "0px" && hovered[0] === "0px" && hovered[1] === "pointer", { hidden, hovered });
     const before = st.fen;
     await page.click(sel);
     st = await page.evaluate(() => window.readerState);
@@ -160,6 +234,31 @@ async function openChapterOf(page, p) {
     const markCur = await page.$$eval("#ov .mark.current", (els) => els.map((e) => e.dataset.node));
     check("the page highlights the move's box", markCur.includes(target), markCur);
     out.clicked = { node: target, fen: st.fen };
+
+    // reading mode off (the default): the page is the book alone. No box draws a line except the
+    // current move's, a 2px underline in the bookmark's yellow; the correction tools are hidden, and
+    // Show reading is an icon that says what it does
+    const accent0 = await rgbOf(page, "--accent"), yellow = await rgbOf(page, "--bookmark");
+    await page.mouse.move(5, 5);
+    const plain = await boxLook(page);
+    check("outside reading mode no box on the page draws a line but the current move's",
+          !plain.reading && plain.boxes > 5 && plain.others.length === 0, plain.others.slice(0, 5));
+    check("outside reading mode the current move is underlined 2px in the bookmark's yellow, and nothing more",
+          plain.current && plain.current.foot.join() === ["2px", "solid", yellow].join() &&
+          plain.current.lines.length === 1, { current: plain.current, yellow });
+    check("outside reading mode the pencil and Review are hidden", !plain.pen && !plain.review && !plain.mpen, plain);
+    check("Show reading is an icon of two squares, named and not pressed",
+          plain.showread.shown && plain.showread.icon && plain.showread.text === "" &&
+          plain.showread.pressed === "false" && plain.showread.label === "Show reading" &&
+          plain.showread.title === "Show reading" && plain.showread.color !== accent0, plain.showread);
+    // the box stays a button to tap
+    check("outside reading mode a box still takes a click", await page.evaluate(() => {
+      const el = [...document.querySelectorAll("#ov .mark[data-node]:not(.current)")].find((e) => {
+        const r = e.getBoundingClientRect(); return r.width > 4 && r.height > 4 && r.top >= 0 && r.bottom <= window.innerHeight; });
+      if (!el) return false;
+      const r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return el.tagName === "BUTTON" && hit === el;
+    }));
 
     // the move list: the current move is the list's one Tab stop, and hover differs from it
     const accent = await rgbOf(page, "--accent");
@@ -216,6 +315,26 @@ async function openChapterOf(page, p) {
     check("Show reading outlines only the boxes that need attention and explains them in words",
           shown.on && shown.okWidth === "0px" && shown.otherWidth !== "0px" && shown.legend && shown.words, shown);
     check("Show reading moves nothing on the page", Math.abs(shown.top - top0) < 1, { top0, top: shown.top });
+    await page.mouse.move(5, 5);
+    const rd = await boxLook(page);
+    check("in reading mode the boxes are outlined as before, the current move in the accent colour without the yellow line",
+          rd.reading && rd.others.length > 0 && rd.current && accentOutline(rd.current, accent0) &&
+          rd.current.foot[0] === "0px", { others: rd.others.length, current: rd.current });
+    check("in reading mode the pencil and Review show", rd.pen && rd.review, rd);
+    const hov = await page.evaluate(() => {
+      const el = [...document.querySelectorAll("#ov .mark.st-ok[data-node]:not(.current)")].find((e) => {
+        const r = e.getBoundingClientRect(); return r.width > 4 && r.top >= 0 && r.bottom <= window.innerHeight; });
+      return el ? el.dataset.mark : null;
+    });
+    await page.hover("#ov .mark[data-mark='" + hov + "']");
+    const hovRead = await page.$eval("#ov .mark[data-mark='" + hov + "']", (el) =>
+      [getComputedStyle(el).outlineWidth, getComputedStyle(el).outlineStyle, getComputedStyle(el).outlineColor]);
+    check("in reading mode the pointer outlines the box under it", hovRead[0] !== "0px" && hovRead[1] === "solid" &&
+          hovRead[2] === accent0, hovRead);
+    await page.mouse.move(5, 5);
+    check("the Show reading icon is pressed, in the accent colour, and named Hide reading",
+          rd.showread.pressed === "true" && rd.showread.label === "Hide reading" && rd.showread.title === "Hide reading" &&
+          rd.showread.color === accent0, rd.showread);
     await page.keyboard.press("Shift");
     await page.focus("#ov .mark[data-mark='" + shown.otherSel + "']");
     const focused = await page.evaluate((i) => {
@@ -226,10 +345,31 @@ async function openChapterOf(page, p) {
     check("with Show reading on, a focused box shows the blue focus outline",
           focused.visible && focused.color === accent && focused.style === "solid", focused);
     await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    // the pencil, a tool of reading mode, goes off with it
+    await page.click("#penbtn");
+    check("the pencil turns on in reading mode", await page.evaluate(() => document.body.classList.contains("pencil") &&
+      document.getElementById("penbtn").getAttribute("aria-pressed") === "true"));
     await page.click("#showread");
     const hiddenAgain = await page.evaluate(() => ({ on: document.body.classList.contains("reading"),
       width: getComputedStyle(document.querySelector("#ov .mark.st-ok:not(.current)")).outlineWidth }));
     check("Hide reading hides the outlines again", !hiddenAgain.on && hiddenAgain.width === "0px", hiddenAgain);
+    await page.mouse.move(5, 5);
+    const penOff = await boxLook(page);
+    check("turning reading off with the pencil on turns the pencil off and hides the tools",
+          await page.evaluate(() => !document.body.classList.contains("pencil") &&
+            document.getElementById("penbtn").getAttribute("aria-pressed") === "false") &&
+          !penOff.pen && !penOff.review && penOff.others.length === 0 && penOff.showread.pressed === "false" &&
+          penOff.showread.label === "Show reading", penOff);
+    // and Review closes with it
+    await page.click("#showread");
+    await page.click("#reviewbtn");
+    check("Review opens in reading mode", await page.evaluate(() => !document.getElementById("review").hidden));
+    await page.click("#showread");
+    const revOff = await page.evaluate(() => ({ reading: document.body.classList.contains("reading"),
+      review: !document.getElementById("review").hidden, reviewing: document.body.classList.contains("reviewing"),
+      pressed: document.getElementById("reviewbtn").getAttribute("aria-pressed"), fix: !document.getElementById("fix").hidden }));
+    check("turning reading off closes Review", !revOff.reading && !revOff.review && !revOff.reviewing &&
+          revOff.pressed === "false" && !revOff.fix, revOff);
 
     // a line under "On this page" gives the focus back, so the arrow keys step through moves
     const lineId = await page.evaluate(() => window.READER.nodes[window.readerState.nodeId].line);
@@ -492,6 +632,17 @@ async function openChapterOf(page, p) {
       await pp.waitForTimeout(300);
       await pp.evaluate(() => window.scrollTo(0, 0));
       await pp.waitForTimeout(100);
+      // a touch screen, reading mode off: no line under the moves but the current one, in the
+      // bookmark's yellow, and no correction tool in the bars
+      const p390 = await boxLook(pp);
+      check("iPhone 13: outside reading mode no box on the page draws a line but the current move's",
+            !p390.reading && p390.boxes > 5 && p390.others.length === 0, p390.others.slice(0, 5));
+      check("iPhone 13: outside reading mode the current move is underlined 2px in the bookmark's yellow",
+            p390.current && p390.current.foot.join() === ["2px", "solid", yellow].join() && p390.current.lines.length === 1,
+            p390.current);
+      check("iPhone 13: outside reading mode the pencils and Review are hidden, Show reading shows",
+            !p390.pen && !p390.review && !p390.mpen && p390.showread.shown && p390.showread.pressed === "false", p390);
+      await showReadStays(pp, "iPhone 13");
       const g = () => pp.evaluate(() => {
         const r = (id) => { const x = document.getElementById(id).getBoundingClientRect(); return { top: x.top, bottom: x.bottom }; };
         return { y: window.scrollY, board: r("boardblock"), bar: r("mbar"), page: r("pagescroll"), line: r("lsec"),
@@ -565,7 +716,19 @@ async function openChapterOf(page, p) {
         if (m) check("iPhone 13: the current move stays on the page above the board (" + i + ")",
                      m.top >= 0 && m.bottom <= m.boardTop + 1, m);
       }
-      // a correction: the sheet above the bar, a smaller board in the bar, the page above them
+      // a correction: the sheet above the bar, a smaller board in the bar, the page above them. The
+      // pencil shows in reading mode (and Show reading moves nothing on the page, so the window
+      // goes back to where it was)
+      const yRead = await pp.evaluate(() => window.scrollY);
+      await pp.tap("#showread");
+      await pp.evaluate((y) => window.scrollTo(0, y), yRead);
+      await pp.waitForTimeout(150);
+      const r390 = await boxLook(pp);
+      check("iPhone 13: in reading mode the boxes are outlined or underlined as before, the current move in the accent colour",
+            r390.reading && r390.others.length > 0 && r390.current &&
+            accentOutline(r390.current, accent0), { others: r390.others.length, current: r390.current });
+      check("iPhone 13: in reading mode the pencil shows in the bar, and Show reading is pressed",
+            r390.mpen && r390.pen && r390.showread.pressed === "true" && r390.showread.label === "Hide reading", r390);
       await pp.tap("#mpen");
       const vis = await pp.evaluate(() => {
         const b = document.getElementById("boardblock").getBoundingClientRect();
@@ -597,6 +760,26 @@ async function openChapterOf(page, p) {
       const back = await g();
       check("iPhone 13: closing the correction brings the board back to the foot",
             back.stick && Math.abs(back.board.bottom - back.bar.top) <= 1.5, back);
+      // turning reading off while the pencil is on and a correction is open: the pencil goes off and
+      // the correction closes, so that nothing hidden acts on a tap
+      await pp.tap("#mpen");
+      await pp.evaluate((id) => document.querySelector("#ov .mark[data-node='" + id + "']").click(), vis);
+      await pp.waitForSelector("#fix:not([hidden])");
+      await pp.tap("#showread");
+      await pp.waitForTimeout(200);
+      const off390 = await pp.evaluate(() => ({ reading: document.body.classList.contains("reading"),
+        pencil: document.body.classList.contains("pencil"), pressed: document.getElementById("mpen").getAttribute("aria-pressed"),
+        fix: !document.getElementById("fix").hidden, mpen: document.getElementById("mpen").getClientRects().length > 0,
+        stick: document.body.classList.contains("stickboard"),
+        icon: [document.getElementById("showread").matches(":hover"), getComputedStyle(document.getElementById("showread")).color] }));
+      check("iPhone 13: turning reading off with the pencil on turns it off and closes the correction",
+            !off390.reading && !off390.pencil && off390.pressed === "false" && !off390.fix && !off390.mpen && off390.stick, off390);
+      // (the tapped icon keeps :hover on a touch screen, and must not look pressed for it)
+      check("iPhone 13: the Show reading icon just tapped off is not in the accent colour", off390.icon[1] !== accent0, off390.icon);
+      await pp.evaluate(() => window.scrollTo(0, 0));
+      await pp.waitForTimeout(150);
+      await pp.screenshot({ path: path.join(screens, "plain_390x664.png") });
+      out.screenshots.push("plain_390x664.png");
       // the wide layouts keep the board at the head of the panel
       for (const [w, h] of [[1280, 900], [1180, 820]]) {
         await pp.setViewportSize({ width: w, height: h });
@@ -641,8 +824,20 @@ async function openChapterOf(page, p) {
       check("iPad upright: the board takes about a third of the height, the page the larger part",
             up.board.height <= 0.36 * up.h && up.board.height >= 0.3 * up.h && up.page.width >= up.w - 60, up);
       check("iPad upright: no sideways scroll", up.wide <= 0, up.wide);
+      const top = await tp.evaluate(() => {
+        const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+        const b = r(".where .book"), h = r(".where h1"), t = r(".tools");
+        return { book: b, h1: h, tools: t, line: Math.abs(b.top - h.top) < 12 && b.height < 30 && h.height < 30 };
+      });
+      check("iPad upright: the book and the chapter on one line at the top, the controls under them",
+            top.line && top.tools.top >= Math.max(top.book.bottom, top.h1.bottom) - 1 && top.h1.left > top.book.right, top);
+      const pPad = await boxLook(tp);
+      check("iPad upright: outside reading mode only the current move is drawn, underlined in the bookmark's yellow, " +
+            "and no pencil shows", !pPad.reading && pPad.others.length === 0 && pPad.current &&
+            pPad.current.foot.join() === ["2px", "solid", yellow].join() && !pPad.mpen && !pPad.pen && !pPad.review, pPad);
       await tp.screenshot({ path: path.join(screens, "reader_ipad_upright.png") });
       out.screenshots.push("reader_ipad_upright.png");
+      await showReadStays(tp, "iPad upright");
       // stepping through the line keeps the current move in view in the move list beside the board
       for (let i = 0; i < 4; i++) await tp.click("#bfwd");
       const cur = await tp.evaluate(() => {
@@ -662,12 +857,65 @@ async function openChapterOf(page, p) {
         bar: getComputedStyle(document.getElementById("mbar")).display }));
       check("iPad sideways: the panel beside the page holds the board and the moves again",
             !side.side && side.inPanel && side.first === "boardblock" && side.bar === "none", side);
+      await showReadStays(tp, "iPad sideways");
       // and upright again
       await tp.setViewportSize({ width: 820, height: 1180 });
       await tp.waitForTimeout(400);
       check("iPad upright again: the moves beside the board", await tp.evaluate(() =>
         !!document.getElementById("side") && document.getElementById("side").contains(document.getElementById("tree"))));
       await pad.close();
+    }
+
+    // outside reading mode the correction tools leave the taps alone: a tap on a move the program
+    // could not read only chooses it, and a join of lines started in reading mode ("Continue the
+    // line…") ends when reading goes off, so that the next tap on a move chooses that move
+    {
+      const fp = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      fp.on("pageerror", (e) => out.errors.push(String(e)));
+      fp.on("console", (m) => { if (m.type() === "error") out.errors.push(m.text()); });
+      const base = page.url().split("#")[0];
+      await fp.goto(base);
+      await fp.waitForFunction(() => window.READER && window.readerState);
+      const failed = await fp.evaluate(() => Object.keys(READER.nodes).filter((id) => {
+        const n = READER.nodes[id];
+        return n.status === "failed" && n.parent != null && n.key && READER.pages[n.page] &&
+          READER.pages[n.page].marks.some((m) => m.node === id);
+      }).map((id) => [id, READER.nodes[id].page]));
+      check("the chapter holds a move the program could not read", failed.length > 0, failed.length);
+      const look = () => fp.evaluate(() => ({ node: window.readerState.nodeId, reading: document.body.classList.contains("reading"),
+        fix: !document.getElementById("fix").hidden, joining: document.body.classList.contains("joining"),
+        connect: Object.keys(JSON.parse(window.correctionsText()).connect || {}).length }));
+      let joined = false;
+      for (const [fid, pg] of failed) {
+        await fp.evaluate((pg) => { location.hash = "#page=" + pg; }, pg);
+        await fp.waitForFunction((pg) => window.readerState.page === pg, pg);
+        await fp.click("#ov .mark[data-node='" + fid + "']");
+        const plainTap = await look();
+        check("outside reading mode a tap on a move the program could not read only chooses it",
+              plainTap.node === fid && !plainTap.reading && !plainTap.fix, plainTap);
+        await fp.click("#showread");
+        // (in reading mode the eye of an unread piece symbol may stand over the box's middle)
+        await fp.evaluate((fid) => document.querySelector("#ov .mark[data-node='" + fid + "']").click(), fid);
+        const readTap = await look();
+        check("in reading mode the same tap opens its corrector", readTap.reading && readTap.fix, readTap);
+        if (!(await fp.$("#joinline"))) { await fp.click("#showread"); continue; }
+        await fp.click("#joinline");
+        check("Continue the line… waits for a tap", (await look()).joining);
+        await fp.click("#showread");
+        const other = await fp.evaluate((fid) => {
+          const el = [...document.querySelectorAll("#ov .mark.st-ok[data-node]")].find((e) => e.dataset.node !== fid &&
+            READER.nodes[e.dataset.node].key);
+          return el ? el.dataset.node : null;
+        }, fid);
+        await fp.click("#ov .mark[data-node='" + other + "']");
+        const after = await look();
+        check("after Hide reading the next tap on a move chooses it, and joins no line",
+              !after.reading && !after.joining && after.node === other && after.connect === 0 && !after.fix, { other, after });
+        joined = true;
+        break;
+      }
+      check("a move the program could not read offers Continue the line…", joined);
+      await fp.close();
     }
 
     // back on the contents page, the diagram is left out there as well

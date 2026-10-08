@@ -44,7 +44,8 @@ function check(name, cond, detail) {
     await page.evaluate((p) => { location.hash = "#page=" + p; }, u.page);
     await page.waitForFunction((p) => window.readerState.page === p, u.page);
 
-    // the Review list lists it
+    // the Review list lists it (Review and the pencil show in reading mode)
+    await page.click("#showread");
     await page.click("#reviewbtn");
     await page.waitForSelector("#revlist button[data-kind='seq']");
     const item = await page.evaluate(() => {

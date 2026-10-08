@@ -1,7 +1,8 @@
 """The legal moves of a position, in the browser.
 
 CHESS_JS gives legalMoves(fen) -> [[SAN, UCI], ...] sorted by SAN, as
-reader.legal_moves() does in Python, after(fen, uci) -> the FEN after a move
+reader.legal_moves() does in Python, after(fen, uci) -> the FEN after a move,
+whyNot(fen, san) -> why a typed move is not legal there ("" when it is),
 and inCheck(fen) -> whether the side to move is in check, so that the chapter reader can offer
 the legal moves of any position (the pencil corrects any move, not only the
 moves the program was unsure of) without the build listing them for every
@@ -158,6 +159,54 @@ const CJ = (function(){
     try { p = parse(f); } catch (e) { return false; }
     return inCheck(p, p.turn === "w");
   }
-  return {legalMoves, after, inCheck: sideInCheck};
+  // Why a move typed in standard notation (English letters; check signs and annotations left
+  // out) is not legal in a position: one sentence for the reader, or "" when it is legal.
+  const NAMES = {k: "king", q: "queen", r: "rook", b: "bishop", n: "knight", p: "pawn"};
+  const loose = (s) => s.replace(/[+#x=]/g, "").toLowerCase();
+  function whyNot(f, t){
+    let p;
+    try { p = parse(f); } catch (e) { return "The position is unknown."; }
+    const w = p.turn === "w", side = w ? "White" : "Black", other = w ? "Black" : "White";
+    const all = legal(p), sans = all.map(m => san(p, m, all));
+    if (sans.some(s => loose(s) === loose(t))) return "";
+    const c = /^O-O(-O)?$/.exec(t);
+    if (c) {
+      const s = w ? 60 : 4, long = !!c[1];
+      if (p.castle.indexOf(w ? (long ? "Q" : "K") : (long ? "q" : "k")) < 0)
+        return side + " can no longer castle on that side, because the king or the rook has moved.";
+      if (inCheck(p, w)) return side + "'s king is in check, so it cannot castle.";
+      if ((long ? [s - 1, s - 2, s - 3] : [s + 1, s + 2]).some(x => p.b[x]))
+        return "A piece stands between " + side + "'s king and rook.";
+      return side + "'s king would cross a square that " + other + " attacks.";
+    }
+    const m = /^([KQRBN])?([a-h])?([1-8])?(x)?([a-h][1-8])(?:=?([QRBN]))?$/.exec(t);
+    if (!m) return "“" + t + "” is not a move in standard notation, such as Nf3, exd5, O-O or e8=Q.";
+    const kind = (m[1] || "P").toLowerCase(), to = m[5], name = NAMES[kind];
+    const toSq = (8 - parseInt(to[1], 10)) * 8 + FILES.indexOf(to[0]);
+    if (!p.b.some(x => mine(p, x) && x.toLowerCase() === kind)) return side + " has no " + name + " on the board.";
+    if (mine(p, p.b[toSq])) return "A " + side.toLowerCase() + " piece already stands on " + to + ".";
+    const fits = (mv) => p.b[mv.from].toLowerCase() === kind && mv.to === toSq &&
+      (!m[2] || FILES[mv.from & 7] === m[2]) && (!m[3] || String(8 - (mv.from >> 3)) === m[3]);
+    const reach = pseudo(p).filter(fits);
+    if (!reach.length) {
+      // a move of the other side: the reader may have chosen the move before or after the one meant
+      const q = Object.assign({}, p, {turn: w ? "b" : "w", ep: "-"});
+      const theirs = legal(q);
+      if (theirs.some(mv => loose(san(q, mv, theirs)) === loose(t)))
+        return "It is " + side + "'s move here, and " + t + " is a move for " + other + ".";
+      return "No " + side.toLowerCase() + " " + name + " can " + (m[4] ? "capture on " : "go to ") + to + " here.";
+    }
+    if (kind === "p" && (to[1] === "8" || to[1] === "1") && !m[6])
+      return "A pawn that reaches the last rank is promoted: write " + t + "=Q, for example.";
+    const ok = reach.filter(mv => !inCheck(play(p, mv), w));
+    if (!ok.length) return t + " would leave " + side + "'s king in check.";
+    if (ok.length > 1) {
+      const named = Array.from(new Set(ok.map(mv => san(p, mv, all))));
+      return "More than one " + side.toLowerCase() + " " + name + " can go to " + to + ": write " +
+        named.slice(0, -1).join(", ") + " or " + named[named.length - 1] + ".";
+    }
+    return t + " is not a legal move for " + side + " here.";
+  }
+  return {legalMoves, after, inCheck: sideInCheck, whyNot};
 })();
 """

@@ -64,6 +64,9 @@ line-height:0;color:var(--doubt);display:none}
 .eye.fixed{color:var(--ok)}
 .eye:hover{color:var(--accent)}
 .eye::before{content:"";position:absolute;left:50%;top:50%;width:32px;height:28px;transform:translate(-50%,-50%)}
+/* with the pencil on, a tap on a move opens its corrector, which also names the symbol: the eye
+   then takes only the taps on its own drawing, and the rest of the move is the pencil's */
+.pencil .eye::before{display:none}
 .reading .eye{display:block}
 .reading .mark.fixed,.k.fixed{outline:1px solid var(--ok)}
 .k.fixed{border-color:var(--ok)}
@@ -361,10 +364,11 @@ function itemState(it){
   }
   if (it.kind === "added") {
     const f = FIX.get("added", it.key), at = nodeByKey(it.key);
+    const how = f && f.every(e => e.rect) ? "Read by you on the page" : "Added by you";
     if (FIX.pending("added", it.key))
-      return f ? ["corrected", "Added by you. " + pend] : ["corrected", "You removed your variation. " + pend];
+      return f ? ["corrected", how + ". " + pend] : ["corrected", "You removed your variation. " + pend];
     if (at && D.nodes[at].added_stale) return ["failed", D.nodes[at].added_stale];
-    return ["corrected", "Added by you"];
+    return ["corrected", how];
   }
   if (it.kind === "move") {
     const n = D.nodes[it.node];
@@ -478,6 +482,8 @@ function closeFix(){
   S.preview = null;
   $("panel").classList.remove("editing-diagram");
   for (const el of document.querySelectorAll(".mark.seqcur")) el.classList.remove("seqcur");
+  // a section of the page being read goes with its sheet
+  if (RG.sel || RG.draw) regionClosed();
   placeSheet();
   renderBoard();
 }
@@ -486,8 +492,12 @@ function placeSheet(){
   const box = $("fix"), bar = $("mbar");
   if (SMALL.matches && !box.hidden) {
     box.style.bottom = bar.offsetHeight + "px";
-    // leave room above the editor for the page, so that the item stays in view
-    box.style.maxHeight = Math.max(220, window.innerHeight - bar.offsetHeight - 200) + "px";
+    // leave room above the editor for the page, so that the item stays in view: on a tablet held
+    // upright the diagram editor takes half the window at most, so that the diagram it corrects,
+    // taller than a move, stands whole above it
+    const room = TABLET.matches && RV.edit && RV.edit.kind === "diagram" ? Math.round(window.innerHeight * 0.5) :
+      window.innerHeight - bar.offsetHeight - 200;
+    box.style.maxHeight = Math.max(220, room) + "px";
     document.body.style.paddingBottom = (bar.offsetHeight + box.offsetHeight) + "px";
   } else { box.style.bottom = ""; box.style.maxHeight = ""; document.body.style.paddingBottom = ""; }
 }
@@ -992,6 +1002,8 @@ function openSymMenu(btn){
 function closeSymMenu(){ const m = $("symmenu"); if (m) { m.hidden = true; m.innerHTML = ""; } }
 
 function afterFix(){
+  // (the reader opened from a file shows the sections read on its pages at once)
+  regionRefresh();
   liveApply();
   if (RV.on) {
     const keep = RV.cur;
@@ -1037,9 +1049,11 @@ function pageEyes(){
     ov.appendChild(b);
   });
   paintFixes();
+  // the section of the page being read, when it is on this page
+  regionPaint();
 }
 /* ---------------- the pencil: correct anything on the page, and join or split lines */
-const PEN = {on: false, connect: null};
+const PEN = {on: false, connect: null, wasReading: null};  // wasReading: reading mode was on when the pencil came on
 function lineFixWords(part, v){
   if (part === "connect") return "Joined by you to a line after another move.";
   if (v && v.remove) return "Taken out of the line by you.";
@@ -1160,10 +1174,21 @@ function setPencil(on){
   say(on ? "Pencil on: a tap on a move, a diagram or a sequence on the page opens its correction. " +
     "A second tap on the pencil ends it." : "");
   if (!on && RV.edit && !RV.on) closeFix();
+  // the pencil is a tool of reading mode, as Review is: on, it shows the reading; off, it leaves
+  // the page as it found it
+  if (on) {
+    PEN.wasReading = reading();
+    if (!PEN.wasReading) { setReading(true); renderInfo(); layoutPanel(false); }
+  } else if (PEN.wasReading === false) {
+    PEN.wasReading = null;
+    setReading(false); renderInfo(); layoutPanel(false);
+  }
 }
 function penClick(b){
   // the pencil's tap on the page: true when it handled the tap
   if (PEN.connect && b.dataset.node) { finishConnect(b.dataset.node); return true; }
+  // while a section of the page is read, a tap on a move chooses the move its moves go with
+  if (regionOpen() && b.dataset.node) { selectNode(b.dataset.node, {fromPage: true}); return true; }
   if (!PEN.on || b.dataset.eye) return false;
   if (b.dataset.node) { const id = b.dataset.node; selectNode(id, {fromPage: true}); openMove(id); return true; }
   if (b.dataset.seq) { openSeq(b.dataset.seq); return true; }
@@ -1373,13 +1398,17 @@ function anchorOf(at){
 }
 const isPrefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i]);
 function storeAdded(key, entries){
-  // the variations stored at one printed move: no duplicates, and none that another one holds whole
+  // the variations stored at one printed move: no duplicates, and none that another one holds whole;
+  // the moves read from a section of a page keep their own entry (with the section), and one whose
+  // own moves are all gone is no entry
   const out = [];
+  const section = (e) => e.rect ? e.page + ":" + e.rect.join(",") : "";
   for (const e of entries) {
-    if (!e.san.length) continue;
+    if (!e.san.length || (e.first && e.first >= e.san.length)) continue;
     const before = !!e.before;
-    if (entries.some(o => o !== e && !!o.before === before && o.san.length > e.san.length && isPrefix(e.san, o.san))) continue;
-    if (out.some(o => !!o.before === before && o.san.join(" ") === e.san.join(" "))) continue;
+    if (!e.rect && entries.some(o => o !== e && !o.rect && !!o.before === before && o.san.length > e.san.length &&
+        isPrefix(e.san, o.san))) continue;
+    if (out.some(o => !!o.before === before && section(o) === section(e) && o.san.join(" ") === e.san.join(" "))) continue;
     out.push(e);
   }
   FIX.set("added", key, out.length ? out : null);
@@ -1394,7 +1423,8 @@ function addVariation(anchor, san){
   // a new variation, or the one it goes on from made longer
   const path = anchor.san.concat([san]);
   const list = (FIX.get("added", anchor.key) || []).map(e => Object.assign({}, e));
-  const i = list.findIndex(e => !!e.before === anchor.before && isPrefix(e.san, path));
+  // (a section read on the page keeps its own moves: a move played after them is a variation of the reader's)
+  const i = list.findIndex(e => !e.rect && !!e.before === anchor.before && isPrefix(e.san, path));
   if (i >= 0) list[i].san = path; else list.push(entry(path, anchor.before));
   storeAdded(anchor.key, list);
 }
@@ -1406,7 +1436,9 @@ function changeAdded(next, san){
   const out = [];
   for (const e of list) {
     if (!!e.before === p.before && isPrefix(p.san, e.san)) {
-      if (!done) { out.push(entry(path, p.before, e.note)); done = true; }
+      // a section read on the page keeps its place while it holds moves of its own
+      if (e.rect && path.length > (e.first || 0)) out.push(Object.assign({}, e, {san: path}));
+      else if (!done) { out.push(entry(path, p.before, e.note)); done = true; }
     } else out.push(e);
   }
   if (!done) out.push(entry(path, p.before));
@@ -1422,7 +1454,9 @@ function removeAdded(id){
 function addedTitle(key){
   const at = nodeByKey(key), f = FIX.get("added", key) || [];
   const before = f.length ? !!f[0].before : Object.values(D.nodes).some(n => n.added === key && n.added_before);
-  return "Your variation " + (before ? "before " : "after ") + (at ? moveText(at, true) : "a move");
+  const read = f.length ? f.every(e => e.rect) : Object.values(D.nodes).some(n => n.added === key && n.region);
+  return (read ? "The moves you read " : "Your variation ") + (before ? "before " : "after ") +
+    (at ? moveText(at, true) : "a move");
 }
 function openAddedAt(key){
   // the Review list's item: the first move the reader added there, or the move it branches from
@@ -1435,8 +1469,9 @@ function openAddedAt(key){
   RV.edit = {kind: "addedkey", key};
   const f = FIX.get("added", key) || [];
   let h = "<div class=fh><h3>" + esc(addedTitle(key)) + "</h3></div>";
-  h += "<p class='small muted'>" + (f.length ? "You added <span class=n>" + esc(f.map(e => e.san.join(" ")).join("; ")) +
-    "</span> here on the board. " + esc(D.nodes[at].added_stale || applyWords()) :
+  h += "<p class='small muted'>" + (f.length ? (f.every(e => e.rect) ? "You read <span class=n>" : "You added <span class=n>") +
+    esc(f.map(e => e.san.join(" ")).join("; ")) + "</span> here " + (f.every(e => e.rect) ? "on the page. " : "on the board. ") +
+    esc(D.nodes[at].added_stale || applyWords()) :
     "You removed your variation. " + esc(applyWords())) + "</p>";
   h += "<p class='fixmsg small' id=fixmsg role=status></p>";
   if (f.length) h += "<div class=fixacts><button class=tb id=fixundo>Remove this variation</button></div>";
@@ -1449,6 +1484,8 @@ function openAddedAt(key){
 function openAdded(id){
   const n = D.nodes[id];
   if (!n) return;
+  // a move read from a section of the page: the sheet of that section
+  if (n.region && openRegionNode(id)) return;
   if (S.node !== id) selectNode(id, {scrollPage: false});
   RV.edit = {kind: "added", node: id};
   const top = addedTop(id), at = nodeByKey(n.added);
@@ -1498,8 +1535,9 @@ function boardMove(src, m){
   // the move the line holds here: a step, as the arrow makes it
   const hit = at.children.find(c => D.nodes[c].uci === m[1] && decoded(D.nodes[c]));
   if (hit) { selectNode(hit, {scrollPage: true}); openIfFailed(hit); return; }
-  // a gap in the text: the move fills it
-  if (src.gap && samePos(gapMoves(src.gap)[0], src.fen)) {
+  // a gap in the text: the move fills it (a correction, so in reading mode only)
+  const gapHere = !!src.gap && samePos(gapMoves(src.gap)[0], src.fen);
+  if (gapHere && reading()) {
     BM.want = {line: at.line, steps: pathOf(src.at).concat([{san: m[0]}])};
     chooseGap(src.gap, m);
     return;
@@ -1531,13 +1569,18 @@ function boardMove(src, m){
         boardDone(src, m, [{san: m[0]}], "The main line now plays " + text + " instead of " + moveText(next.id, true) + "."); }]);
     }
   }
+  // correcting the book's line is a tool of reading mode: outside it a move on the board only adds
+  // a variation, and the chooser says where the corrections are
+  const fixable = gapHere || opts.length > 0;
+  if (!reading()) opts.length = 0;
   const anchor = anchorOf(src.at);
   if (anchor) opts.push(["bmadd", "Add a new variation", () => { addVariation(anchor, m[0]);
     boardDone(src, m, [{san: m[0]}], "You added " + text + " as a new variation."); }]);
   let h = "<div class=fh><h3>Your move <span class=n>" + esc(text) + "</span></h3></div>";
   h += "<p class='small muted'>" + (next ? (next.main ? "The book's line plays" : "The variation plays") +
     " <span class=n>" + esc(moveText(next.id, true)) + "</span> here." : "The line ends here.") +
-    (opts.length ? " Choose what your move does." : " The program has no printed move here to keep your move with.") + "</p>";
+    (opts.length ? " Choose what your move does." : " The program has no printed move here to keep your move with.") +
+    (fixable && !reading() ? " Show reading (the two squares at the top) offers to correct the book's line with it." : "") + "</p>";
   h += "<div class=boardacts>" + opts.map(o => "<button class=tb id=" + o[0] + ">" + o[1] + "</button>").join("") +
     "<button class=tb id=bmcancel>Cancel</button></div>";
   h += "<p class='fixmsg small' id=fixmsg role=status></p>";
@@ -1658,6 +1701,7 @@ function initReview(){
   $("reviewbtn").addEventListener("click", () => setReview(!RV.on));
   initPencil();
   initBoardMoves();
+  initRegion();
   // corrections stored in this browser that the book does not hold yet (made
   // while the worker was busy elsewhere, or that never reached it) are applied
   // now, without reading the book again

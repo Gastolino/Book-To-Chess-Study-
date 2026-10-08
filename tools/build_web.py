@@ -72,13 +72,15 @@ body{margin:0;display:flex;flex-direction:column;box-sizing:border-box;
 #resume button:hover{text-decoration:underline}
 #resume[hidden]{display:none}
 body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
-/* The sign that the app is at work: the open book whose page turns (chessbook/style.py), over a
-   thin bar that fills as far as the work has come where the app knows it, and otherwise carries
-   a sliding segment; the words of the work go under it. In the reader, the small book stands at
-   the right of the top bar, over the same thin line along the bar's foot. */
+/* The sign that the app is at work: the revolving book whose pages turn (chessbook/style.py), over
+   a thin bar that fills as far as the work has come where the app knows it, and otherwise carries
+   a sliding segment; the words of the work go under it. A page halfway through its turn reaches a
+   fifth of the book's width beyond its square, so the book keeps that much room above the bar.
+   In the reader, the small book stands at the right of the top bar, over the same thin line along
+   the bar's foot. */
 #loader{display:none;margin-top:28px}
 #loader.on{display:block}
-#loader .bookicon{width:88px;height:auto;margin:0 auto 14px}
+#loader .bookicon{width:80px;height:auto;margin:0 auto 24px}
 #bar{height:2px;background:var(--line);position:relative;overflow:hidden}
 #bar i,#topbar i{position:absolute;left:0;top:0;bottom:0;width:30%;background:var(--accent);
   animation:run 1.4s linear infinite;display:none}
@@ -88,20 +90,28 @@ body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
 #bar.on.det b,#topbar.on.det b{display:block}
 @keyframes run{from{left:-30%}to{left:100%}}
 @media (prefers-reduced-motion:reduce){#bar i,#topbar i{animation-duration:4s}}
-#busy{display:inline-flex;align-items:center;justify-content:center;width:26px;height:18px;
-  margin:-2px -4px -2px 0;visibility:hidden;align-self:center;padding:0}
+/* (a finger's room to tap, 30 by 28, in the line's own room: the margins give back what the
+   button takes beyond the book) */
+#busy{display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;
+  margin:-7px -6px -7px -2px;visibility:hidden;align-self:center;padding:0}
 #busy.on{visibility:visible}
+/* (hidden, its pages rest: a turning page costs the phone a frame's work even out of sight) */
+#busy:not(.on) .bookicon .leaf{animation-play-state:paused}
 #busy .bookicon{width:24px;height:auto}
 #view{flex:1;border:0;width:100%;display:none}
 iframe.view{flex:1;border:0;width:100%}
-#top{display:none;flex-wrap:wrap;align-items:baseline;gap:4px 20px;padding:10px 16px;
+#top{display:none;flex-wrap:wrap;align-items:baseline;gap:4px 16px;padding:10px 16px;
   border-bottom:1px solid var(--line);font-size:13px;color:var(--muted);position:relative}
-/* the status takes the room the buttons leave, on one line: long words end in an ellipsis
-   (a tap on the small book shows them whole), so that the bar keeps its height */
-#took{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#note{flex-basis:100%}
-/* the whole words of the work, for a few seconds after a tap on the small book: over the page,
-   under the bar, so that nothing moves */
+/* One line: the book's name takes the room that the small book and Library leave in the
+   right-hand corner, and a long name ends in an ellipsis, so that the bar keeps its height. The
+   words of the work do not show in the bar (#took keeps them): a tap on the small book shows them. */
+#booktitle{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Under the line, only when one of them has something to say: the notes, the way back from the
+   contents and Read again, so that none of them crowds the book's name on a phone. */
+#sub{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 20px}
+#sub:not(:has(> :not([hidden]):not(:empty))){display:none}
+/* the whole words of the work, for a few seconds after a tap on the small book (and where the
+   app came back to): over the page, under the bar, so that nothing moves */
 #tip{position:absolute;top:100%;left:0;right:0;z-index:5;padding:8px 16px;background:var(--bg);
   border-bottom:1px solid var(--line);color:var(--fg)}
 #tip[hidden]{display:none}
@@ -110,9 +120,10 @@ iframe.view{flex:1;border:0;width:100%}
 #topbar{position:absolute;left:0;right:0;bottom:-1px;height:1px;overflow:hidden}
 #top button{font:inherit;color:var(--fg);background:none;border:0;padding:0;cursor:pointer}
 #top button:hover{text-decoration:underline}
-#top .gap{flex:0 0 0}
 #top{transition:margin-top .2s ease}
 #top button[hidden]{display:none}
+/* the bar's words to tap take a finger's height, 28 px, in the room of their line */
+#top #another,#top #backbtn,#top #again{padding:5px 0;margin:-5px 0}
 /* the library (web/library.js): the Cloudflare site's, or the one in this browser */
 body.library #start{max-width:760px;padding-top:40px}
 #lib{margin-top:24px}
@@ -155,11 +166,12 @@ body.library #drop .small{max-width:46em}
 }
 </style></head>
 <body>
-<div id="top"><span id="took"></span><button id="backbtn" type="button" hidden></button><span class="gap"></span>
-<button id="again" type="button" hidden>Read again</button>
-<button id="another" type="button">Open another book</button>
+<div id="top"><span id="booktitle"></span>
 <button id="busy" type="button" aria-label="What the program is doing" title="What the program is doing">__BOOK_SMALL__</button>
-<span id="note" role="status"></span><span id="tip" role="status" hidden></span><div id="topbar"><i></i><b></b></div></div>
+<button id="another" type="button">Open another book</button>
+<div id="sub"><span id="note" role="status"></span><button id="backbtn" type="button" hidden></button>
+<button id="again" type="button" hidden>Read again</button></div>
+<span id="took" hidden></span><span id="tip" role="status" hidden></span><div id="topbar"><i></i><b></b></div></div>
 <main id="start">
 <h1>Chess Book Reader</h1>
 <div id="intro">
@@ -202,8 +214,9 @@ const SW = ("serviceWorker" in navigator && /^https?:$/.test(location.protocol))
   : Promise.resolve();
 const worker = new Worker("worker.js");
 let ready = false, busy = false, current = null, lastFile = null, lastName = "";
-// While the worker reads the book, the reader can already read it: the top bar
-// says how far the reading has come, and the thin line under it moves.
+// While the worker reads the book, the reader can already read it: the thin line
+// along the top bar's foot moves, and a tap on the small book says how far the
+// reading has come.
 let loading = false;
 // ?pace=MS slows the reading down by MS milliseconds a step (for tests)
 CFG.pace = parseInt(new URLSearchParams(location.search).get("pace") || "0", 10) || 0;
@@ -310,6 +323,11 @@ function status(text, error) {
   el.classList.toggle("error", !!error);
   if (error && window.TOPBAR) TOPBAR.show();       // a failure is never out of sight
 }
+// Words of work under way: on the start page in its status line; in the reader they are the words
+// of the work, which a tap on the small book shows, so that the bar keeps its one line.
+function progress(text) {
+  if ($("top").style.display === "flex") workSay(text); else status(text);
+}
 // One sign of work: the book and the bar on the start page, the small book and the line along the
 // top bar's foot in the reader. It shows while a request is on its way (working), while the book
 // is read (loading), while pictures of pages are drawn and while the reading is saved. The words
@@ -357,25 +375,43 @@ function workNow() {
   if (!parts.length && workingNow) parts.push(workWords);
   return parts.filter(Boolean).join(" ").replace(/([^.])( Drawing| Saving)/g, "$1.$2");
 }
-// a tap shows them whole for a few seconds, in a slip under the bar (#tip) that moves nothing
-let busyTimer = 0;
-$("busy").addEventListener("click", () => {
-  const tip = $("tip");
-  tip.textContent = workNow() || "The program has nothing to do now.";
-  tip.hidden = false;
-  clearTimeout(busyTimer);
-  busyTimer = setTimeout(() => { tip.hidden = true; }, 4000);
-});
+// Words shown whole for a few seconds, in a slip under the bar (#tip) that moves nothing: the
+// words of the work after a tap on the small book, and where the app came back to. A tap on the
+// slip puts it away at once, so that it never stands between the reader and the page's tools.
+let tipTimer = 0;
+function tip(text) {
+  const el = $("tip");
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => { el.hidden = true; }, 4000);
+}
+$("busy").addEventListener("click", () => tip(workNow() || "The program has nothing to do now."));
+$("tip").addEventListener("click", () => { clearTimeout(tipTimer); $("tip").hidden = true; });
+// The book's name in the top bar: the title the library knows, or the one the reading found, or
+// the file's name in words; the whole name shows on a pointer's hover when the bar cuts it short.
+function bookTitle(text) {
+  $("booktitle").textContent = text || "";
+  $("booktitle").title = text || "";
+}
 // The flag goes first in the head, so that the page's own script sees it
 // while it starts (the stored corrections it sends, the words it chooses).
 const FLAG = "<script>window.CHESSBOOK_APP=true;window.CHESSBOOK_ENGINE=" + JSON.stringify(CFG.engine) + ";<" + "/script>";
+// The app's top bar names the book, so the reader's own bar shows the chapter alone (a reader
+// opened from disk keeps the book's name there). The rule goes after the page's own style, which
+// it overrides.
+const APP_STYLE = "<style>.where .book{display:none}</style>";
 // A page of the reader shows in a fresh frame. While a reader shows, the next one loads in a
 // hidden frame of the same size and takes its place once it has shown its page (or after a
 // short while), so that turning from one chapter to the next shows no empty page between them.
 let swapping = null;
 function show(name, hash, htmlText) {
-  TOPBAR.show();
-  const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</body>", NAV + "</body>");
+  // a new page shows at its top with the bar; a turn of the page into the next (or the previous)
+  // chapter keeps the bar as it is, since the reading goes on where the turn lands, which is not
+  // the top (the bar coming back there would push the page down after the turn)
+  if (!/[#&]turn=/.test(hash || "")) TOPBAR.show();
+  const page = htmlText.replace("<head>", "<head>" + FLAG).replace("</head>", APP_STYLE + "</head>")
+    .replace("</body>", NAV + "</body>");
   const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
   const old = $("view");
   const fresh = document.createElement("iframe");
@@ -422,7 +458,7 @@ worker.onmessage = (e) => {
   // the library's own messages (the stored reading, the cover) end here
   if (LIB.message(m)) return;
   if (m.type === "progress") {
-    status(m.text);
+    if ($("top").style.display !== "flex") status(m.text);
     // the steps of starting: Python, then the libraries
     workSay(m.text, !ready ? (/^Starting Python/.test(m.text) ? 0.15 : /^Loading the PDF/.test(m.text) ? 0.45 : null)
                          : undefined);
@@ -448,7 +484,10 @@ worker.onmessage = (e) => {
     bookChapters = m.chapters || [];
     PICS.book(LIB.on && LIB.current && !LIB.current.ephemeral ? LIB.current.id : null, m.pages);
     prepared = {};
-    // the line shows work only: a book opened from the library has none, and the body's data-book
+    // the top bar names the book (the library has taken the reading's title by now)
+    bookTitle(LIB.on && LIB.current ? LIB.titleOf(LIB.current.book)
+                                    : m.title || lastName.replace(/\\.pdf$/i, "").replace(/_+/g, " ").trim());
+    // the words of the work: a book opened from the library has none, and the body's data-book
     // says how it came (for the tests)
     $("took").textContent = m.restored ? "" : "Reading the book";
     document.body.dataset.book = m.restored ? "opened" : "reading";
@@ -486,6 +525,9 @@ worker.onmessage = (e) => {
     // the final reading changed the chapters: the open one opens again
     wantOpen = m.chapter;
     worker.postMessage({ type: "chapter", name: m.chapter, small: window.matchMedia("(max-width: 700px)").matches });
+  } else if (m.type === "words" || m.type === "region") {
+    // the reader's section of a page: the words around a tap, or the program's reading of it
+    toView(m.type === "words" ? { words: m } : { regionRead: m });
   } else if (m.type === "patch") {
     prepared = {};
     patched(m);
@@ -502,7 +544,13 @@ worker.onmessage = (e) => {
     if (m.name !== "index.html") hideBack();
     openChapter = m.name;
     show(m.name, m.hash, m.html);
+    if (resumeTip) { tip(resumeTip); resumeTip = ""; }
   } else if (m.type === "error") {
+    if (m.during === "words" || m.during === "region") {
+      // the reader says why the section was not read, and the reader may type its moves
+      toView({ regionFailed: m.text, id: m.id });
+      return;
+    }
     working(false);
     if (m.during === "correct" || m.during === "correct-more") {
       // the reader says so too, instead of waiting for a patch that does not come
@@ -560,7 +608,7 @@ function prepare(w) {
   prepared[name] = "";
   worker.postMessage({ type: "chapter", name, prepare: true });
 }
-// "Back to page 31" in the top bar while the contents show
+// "Back to page 31" under the top bar's line while the contents show
 let backPlace = null;
 function showBack() {
   let v = null;
@@ -684,9 +732,9 @@ const PICS = (() => {
   };
 })();
 // The app comes back to where the reader was (SESSION): resuming holds the
-// record while the book opens; resumeNote is said in the top bar once the
-// chapter shows.
-let resuming = null, resumeNote = "", resumeWords = "";
+// record while the book opens; resumeNote is said under the top bar's line once
+// the chapter shows, and resumeTip in the slip under the bar for a few seconds.
+let resuming = null, resumeNote = "", resumeWords = "", resumeTip = "";
 function resumeStart(r) {
   resuming = r;
   document.body.classList.add("resuming");
@@ -694,7 +742,7 @@ function resumeStart(r) {
   $("resume").hidden = false;
 }
 // the contents page of the resumed book showed: the chapter follows (the
-// library posts it); the top bar says where the app came back to
+// library posts it); the slip under the top bar says where the app came back to
 function resumed(m) {
   const r = resuming;
   resuming = null;
@@ -702,9 +750,9 @@ function resumed(m) {
   $("resume").hidden = true;
   if (m.title) SESSION.title(m.title);
   const words = backTo(SESSION.record() || r);
-  if (m.restored) $("took").textContent = words;
+  if (m.restored) { $("took").textContent = words; resumeTip = words + "."; }
   else {
-    // the book is read again: the top bar's progress line carries the words meanwhile
+    // the book is read again: the words of the work start with them meanwhile
     resumeWords = words;
     $("took").textContent = words + ". Reading the book";
     resumeNote = words + (LIB.on ? ". The book is read again, because the app was closed before its reading was finished."
@@ -727,21 +775,24 @@ function patched(m) {
     // a chapter stays pending until all its pages are done, ten pages at a time
     const text = "Applying your piece choice to the other chapters: " + (moreDone + 1) + " of " +
       (moreDone + more.length) + ".";
-    status(text); toView({ progress: text });
+    progress(text); toView({ progress: text });
     if (!moreBusy) {
       moreBusy = true;
       worker.postMessage({ type: "correct-more", chapters: [more[0]], chapter: openChapter });
     }
   } else if (m.more || had) {
-    status("Your piece choice is applied to the whole book.");
+    progress("Your piece choice is applied to the whole book.");
     toView({ progress: "Your piece choice is applied to the whole book." });
   } else status("");
 }
 // On a phone, and a tablet held upright (the reader's compact layout), the top bar goes away
-// while the reader scrolls down the page, and comes back as soon as it scrolls up (or reaches
-// the top); the reader's frame takes the room meanwhile. A failure in the bar keeps it shown.
-// Wider screens keep it: their reader has a panel beside the page, sized to the window.
+// while the reader scrolls down the page, and comes back only when the page is scrolled all the
+// way to the top, or a new page shows at its top: a scroll up part of the way, to read a line
+// again, leaves the reader's frame the room. A failure in the bar keeps it shown. Wider screens
+// keep it: their reader has a panel beside the page, sized to the window.
 const TOPBAR = (() => {
+  // the top: within a few pixels of it, where a flick up may come to rest
+  const TOP = 4;
   let lastY = 0, away = false;
   const phone = window.matchMedia("(max-width: 700px), (max-width: 1100px) and (orientation: portrait)");
   function set(a) {
@@ -749,15 +800,30 @@ const TOPBAR = (() => {
     away = a;
     document.body.classList.toggle("topaway", a);
     $("top").style.marginTop = a ? -$("top").offsetHeight + "px" : "";
+    // the slip under the bar goes with it, rather than float alone over the page
+    if (a) { clearTimeout(tipTimer); $("tip").hidden = true; }
   }
+  // A line that comes under the bar or goes from it while the bar is away (a note, Read again)
+  // changes its height: the bar stays wholly out of sight, and the reader's frame keeps its place.
+  // (at once, without the slide of the bar's margin, which would show the bar's foot meanwhile)
+  if (window.ResizeObserver) new ResizeObserver(() => {
+    const top = $("top"), m = -top.offsetHeight + "px";
+    if (!away || top.style.marginTop === m) return;
+    top.style.transition = "none";
+    top.style.marginTop = m;
+    void top.offsetHeight;
+    top.style.transition = "";
+  }).observe($("top"));
+  // a tablet turned sideways leaves the compact layout: the bar comes back at once, without
+  // waiting for the next scroll
+  phone.addEventListener && phone.addEventListener("change", () => { if (!phone.matches) set(false); });
   return {
     scrolled(y) {
       const d = y - lastY;
       if (!phone.matches) { set(false); lastY = y; return; }
-      if (y <= 0) set(false);
+      if (y <= TOP) set(false);
       else if (Math.abs(d) < 8) return;           // a small move changes nothing
       else if (d > 0 && y > 60 && !$("note").classList.contains("error")) set(true);
-      else if (d < 0) set(false);
       lastY = y;
     },
     show() { set(false); lastY = 0; },
@@ -778,6 +844,11 @@ window.addEventListener("message", (e) => {
   }
   if (e.data && e.data.pictureShown) {
     if (swapping && e.source === swapping.frame.contentWindow) swapping.swap();
+    return;
+  }
+  if (e.data && (e.data.words || e.data.region)) {
+    // the reader asks for the words of a spot of a page, or for the program's reading of a section
+    worker.postMessage(Object.assign({ type: e.data.words ? "words" : "region" }, e.data.words || e.data.region));
     return;
   }
   LIB.fromReader(e.data);
@@ -811,7 +882,7 @@ window.addEventListener("message", (e) => {
   if (e.data && e.data.bookmarksChanged) return;
   if (!e.data || !e.data.open) return;
   working(true);
-  status(e.data.open === "index.html" ? "Opening the contents." :
+  progress(e.data.open === "index.html" ? "Opening the contents." :
     "Opening chapter " + parseInt(e.data.open.slice(2), 10) +
     ". The first opening of a chapter takes a few seconds.");
   wantOpen = e.data.open;
@@ -924,7 +995,7 @@ LIB.start(SESSION.pending()).then((on) => {
 # Added to the Home Screen of an iPhone or iPad, the app opens on its own
 # (without Safari's bars) and keeps its library apart from Safari, which may
 # clear the storage of a site left unused for a week.
-# The icons are the open book with two chequered pages (tools/make_icons.py
+# The icons are the revolving book with six chequered pages (tools/make_icons.py
 # renders them from web/icon.svg).
 MANIFEST = {"name": "Chess Book Reader", "short_name": "Chess books", "start_url": "./", "scope": "./",
             "display": "standalone", "background_color": "#fbfbfa", "theme_color": "#fbfbfa",

@@ -39,6 +39,15 @@ chess notation.
   thin coloured outline or a small coloured dot beside the item, with the
   meaning written out in words once on the page. Colour never carries the
   meaning alone.
+- The reader shows the book in two ways. By default the page picture is the
+  book alone: the boxes over it draw nothing, and the current move is
+  underlined 2px in the warm yellow at the foot of its box. Reading mode,
+  turned on by the Show reading icon (two filled squares of one size, the
+  second up and to the right of the first, overlapping by a quarter, with the
+  square they share cut out), outlines each scanned item by its status, gives
+  the current move the accent outline, and shows the tools that correct the
+  reading (the pencil, Read a section, Review); outside reading mode those
+  tools are hidden.
 
 ## Colour
 
@@ -59,11 +68,12 @@ Give `body` an explicit background.
 | `--fail` | `#b4413a` | `#e0756d` | failed |
 | `--board-light` | `#ecebe6` | `#b9b8b2` | light squares |
 | `--board-dark` | `#bdbab2` | `#8f8d87` | dark squares |
-| `--bookmark` | `#f2b705` | `#f2b705` | the bookmark icon when set, and the ribbon |
+| `--bookmark` | `#f2b705` | `#f2b705` | the bookmark icon when set, the ribbon, and the current move on the page outside reading mode |
 
-The bookmark is the only element that uses the warm yellow; nothing else may
-use it. It keeps the same value in dark mode, since it is meant to stand out
-from everything else on the page.
+The warm yellow marks the bookmark (the icon when set and the ribbon) and the
+current move on the page outside reading mode, and nothing else. It keeps the
+same value in dark mode, since it is meant to stand out from everything else
+on the page.
 
 In dark mode, pictures of the book (page images, thumbnails, diagram crops)
 are dimmed slightly and never inverted.
@@ -81,19 +91,39 @@ engine's lines are rows of notation, the suggested move at weight 500.
 
 ## The sign of work
 
-An open book seen from the front: two pages side by side, each a chequer of
-three columns and four rows in the two board colours, with hairline edges in
-the secondary colour over a thin cover line (`chessbook/style.py`,
-`book_svg`). While the app works, a third page turns over from right to left
-(a transform only, 1.2 s a turn with its pause); with reduced motion it
-stands still. On the start page it stands about 88 px wide over a 2px bar in
-the accent colour on a hairline track (the part done, where the app knows
-it, else a sliding segment), with the words of the work under it in the
-secondary colour; in the reader it stands 24 px wide at the right of the top
-bar, over the same line along the bar's foot, and takes its room whether it
-shows or not. Still, on the page background, it is the app's icon.
+A revolving book, after the drawing the reader chose: six flat pages about
+the spine. Across the top, a page cut on the diagonal (a right triangle) left
+of the spine and a quarter disc right of it; across the middle, a wide band
+of two pages that the spine parts, the left one hollowed by a quarter circle
+and the right one cut on the diagonal; under them, a page each side of the
+spine, the left one bounded by two quarter circles, the right one a
+parallelogram. Each page's face is a chequer (squares a third of the quarter
+disc's radius, on one grid for the whole book); thin gaps in the page
+background part the pages. On the light page the chequer is the darker
+board colour and the secondary text colour, so that the pages stand out
+from the white; in the dark scheme it is the two board colours
+(`chessbook/style.py`, `book_svg`, `--book-light` and `--book-dark`). While
+the app works, the pages turn in one after the other, 0.2 s apart and in
+their order clockwise round the spine: each swings in a quarter turn
+clockwise about the middle of the spine as it fades in, rests, then swings on
+another quarter turn clockwise as it fades out, so that the book swirls
+(a transform and the opacity only, 2.4 s a round). With reduced motion it
+stands still, whole, and while it is hidden its pages rest. On the start page it stands 80 px wide, with room for
+a turning page above a 2px bar in the accent colour on a hairline track (the
+part done, where the app knows it, else a sliding segment), with the words
+of the work under it in the secondary colour; in the reader it stands 24 px
+wide in the top bar, just left of Library, over the same line along the
+bar's foot, and takes its room whether it shows or not. Still, on the page
+background, it is the app's icon.
 
 ## Layout
+
+In the app, a top bar of one line stands over the reader: the book's name on
+the left in the secondary colour, cut short with an ellipsis, then the small
+book and Library in the right-hand corner, over a hairline. Notes and the way
+back from the contents take a line under it only when they are there, and the
+reader's own bar under it names the chapter alone. On narrow screens the top
+bar slides away while the page scrolls down and comes back at the page's top.
 
 The book page sits on the left and the board panel on the right, divided by a
 hairline. The panel holds, from top to bottom: the board, the line's title,
@@ -104,6 +134,20 @@ move, while the page scrolls by; at the end of the page picture they scroll up
 with the line's title and the move list, and the page's foot (the lines on
 the page, the chapters) comes last. Pages must work at
 390px width with a 16px side margin and no horizontal scroll.
+
+## Turning the page
+
+A swipe across the page moves it with the finger; let go past a quarter of
+its width (or flicked), it slides out the way it was swiped while the next
+page slides in from the other edge, the two as one strip with a 24 px gap,
+in about 300 ms on an easing curve, and below that it springs back. The page
+arrows and Page Up and Page Down turn with the same slide. Only transforms
+move. A page whose picture has not come slides in as its light sheet, and
+the picture fades in over it. On an enlarged page the reading goes on at the
+next page's top left after a turn forward and at the previous page's bottom
+right after a turn back, above the board and the bar at the foot of the
+window. With reduced motion nothing slides or fades: the page changes at
+once.
 
 ## Writing on the pages
 

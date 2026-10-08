@@ -166,6 +166,17 @@ onmessage = async (event) => {
       // the patch is for the chapter the worker opened last
       const result = JSON.parse(driver.correct_more(JSON.stringify(msg.chapters), msg.chapter || ""));
       postMessage({ type: "patch", chapter: result.chapter || msg.chapter, more: true, result });
+    } else if (msg.type === "words") {
+      // the words of the page around the reader's tap, for the selection to snap to
+      const words = JSON.parse(driver.words(msg.page, msg.rect[0], msg.rect[1], msg.rect[2], msg.rect[3], msg.near || 0));
+      postMessage({ type: "words", id: msg.id, page: msg.page, words });
+    } else if (msg.type === "region") {
+      // a section of a page the program missed, read with the book's decoder (which needs the
+      // state that applies corrections, and so the board libraries)
+      await boardsP;
+      const result = JSON.parse(driver.read_region(msg.page, JSON.stringify(msg.rect), msg.at, msg.side || "after",
+                                                   msg.other || null));
+      postMessage({ type: "region", id: msg.id, result });
     } else if (msg.type === "index") {
       postMessage({ type: "page", name: "index.html", hash: msg.hash || "", html: driver.index() });
     } else if (msg.type === "timeline") {
@@ -180,7 +191,7 @@ onmessage = async (event) => {
     }
   } catch (err) {
     // the type of the failed request lets the page say what did not happen
-    postMessage({ type: "error", during: msg.type, chapter: msg.chapter || "",
+    postMessage({ type: "error", during: msg.type, chapter: msg.chapter || "", id: msg.id,
                   text: String(err && err.message ? err.message : err) });
   }
 };
