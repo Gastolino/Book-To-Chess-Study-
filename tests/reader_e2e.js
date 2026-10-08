@@ -296,6 +296,16 @@ async function openChapterOf(page, p) {
     check("ArrowLeft goes back", st3.nodeId === target, st3);
     out.advanced = { node: st2.nodeId, fen: st2.fen };
 
+    // Contents is an icon in the bar (three rows of a dot and a line), named for screen readers,
+    // with a tap target of at least 24 px, and it opens the contents page
+    const cont = await page.evaluate(() => {
+      const a = document.querySelector(".bar a.nav[href='index.html']"), r = a.getBoundingClientRect();
+      return { label: a.getAttribute("aria-label"), text: a.textContent.trim(), dots: a.querySelectorAll("svg circle").length,
+               lines: (a.querySelector("svg path").getAttribute("d").match(/h/g) || []).length, w: r.width, h: r.height };
+    });
+    check("Contents is an icon of three dots and three lines, named Contents, at least 24 px",
+          cont.label === "Contents" && cont.text === "" && cont.dots === 3 && cont.lines === 3 && cont.w >= 24 && cont.h >= 24, cont);
+
     // "Show reading" outlines the boxes that need attention, leaves the moves read without doubt
     // unmarked, explains the outlines in words and moves nothing on the page
     const top0 = await page.evaluate(() => document.getElementById("pagebox").getBoundingClientRect().top + window.scrollY);
@@ -526,6 +536,23 @@ async function openChapterOf(page, p) {
     await page.waitForTimeout(200);
     const widths = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
     check("no sideways scroll at 390 px", widths[0] <= widths[1], widths);
+    // in plain mode the page's controls keep one row on a phone, down to 375 px, each a tap target
+    // of 32 px and more
+    for (const w of [390, 375]) {
+      await page.setViewportSize({ width: w, height: 844 });
+      await page.waitForTimeout(150);
+      const row = await page.evaluate(() => {
+        const t = document.querySelector(".tools"), plain = !document.body.classList.contains("reading");
+        const kids = [...t.children].filter((c) => getComputedStyle(c).display !== "none");
+        const rs = kids.map((c) => c.getBoundingClientRect());
+        return { plain, n: kids.length, mids: rs.map((r) => Math.round((r.top + r.bottom) / 2)),
+                 icons: kids.filter((c) => c.classList.contains("ib")).map((c) => Math.round(c.getBoundingClientRect().width)) };
+      });
+      check("in plain mode the bar's controls keep one row at " + w + " px",
+            !row.plain || (Math.max(...row.mids) - Math.min(...row.mids) <= 6 && row.icons.every((x) => x >= 32)), row);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(150);
     const mark = await page.$("#ov .mark[data-node='" + target + "']");
     // from the top of the window
     await page.evaluate(() => window.scrollTo(0, 0));

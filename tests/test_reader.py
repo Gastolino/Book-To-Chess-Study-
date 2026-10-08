@@ -101,7 +101,7 @@ def test_chapter_page(little):
     for needle in ("window.readerState", "Download PGN", "Chess board", "id=\"bflip\"",
                    "ArrowRight", "Board reading (Stage 3) could not read that diagram", "href=\"index.html\"",
                    'id="showread"', 'aria-label="Show reading"', style.icon("reading"),
-                   ">On this page<", ">Contents<",
+                   ">On this page<", 'aria-label="Contents"', style.icon("contents"),
                    'id="chips"', 'id="dpanel"'):
         assert needle in text, needle
     # the dropdown and the pill chips are gone

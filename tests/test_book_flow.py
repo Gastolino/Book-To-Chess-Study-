@@ -1,5 +1,5 @@
 """The book flow of the browser app (tests/flow_e2e.js): the sign of work (the
-revolving book with four chequered pages whose pages turn) on the start page
+revolving book with six chequered pages that turn in) on the start page
 and in the reader's top bar; a new book opens at its first page while it is read;
 the pages run on from chapter to chapter, drawn ten at a time, with a
 placeholder until a picture comes; a stored reading that other reading code
@@ -156,6 +156,10 @@ def test_book_flow_end_to_end(tmp_path):
     finally:
         server.shutdown()
     lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    if lines and not json.loads(lines[-1]).get("ok"):
+        # the whole report, which an assertion's message would cut short
+        (tmp_path / "flow.json").write_text(lines[-1], encoding="utf-8")
+        print("flow report:", tmp_path / "flow.json")
     assert lines, proc.stdout[-3000:] + proc.stderr[-3000:]
     res = json.loads(lines[-1])
     failed = [c for c in res["checks"] if not c["ok"]]

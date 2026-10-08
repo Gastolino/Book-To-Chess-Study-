@@ -178,17 +178,27 @@ async function run(browser, which) {
       ok, turns);
   }
   await both("flow_start_loading");
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  const still = await page.evaluate(() => {
+  // with reduced motion, as a reader with that setting meets the app: a page of its own, so that the
+  // animations held and moved by hand above play no part
+  const rm = await ctx.newPage();
+  await rm.emulateMedia({ reducedMotion: "reduce" });
+  await rm.goto(paced);
+  await rm.waitForSelector("#loader.on .bookicon", { timeout: 60000 });
+  const still = await rm.evaluate(() => {
     const svg = document.querySelector("#loader .bookicon"), leaves = [...svg.querySelectorAll(".leaf")];
-    return { anim: leaves.map((g) => getComputedStyle(g).animationName),
-             whole: leaves.every((g) => getComputedStyle(g).visibility === "visible" &&
-                                        parseFloat(getComputedStyle(g).opacity) === 1 &&
-                                        ["none", "matrix(1, 0, 0, 1, 0, 0)"].includes(getComputedStyle(g).transform)) };
+    // each page in its place: no turn (the identity, however the browser writes it) and fully opaque
+    const still = (t) => t === "none" || (() => {
+      const m = (t.match(/-?[\d.e]+(?:e-?\d+)?/g) || []).map(Number);
+      return m.length === 6 && [1, 0, 0, 1, 0, 0].every((v, i) => Math.abs(m[i] - v) < 1e-6);
+    })();
+    const pages = leaves.map((g) => { const c = getComputedStyle(g);
+      return { vis: c.visibility, opacity: c.opacity, transform: c.transform }; });
+    return { anim: leaves.map((g) => getComputedStyle(g).animationName), pages, running: svg.getAnimations({ subtree: true }).length,
+             whole: pages.every((x) => x.vis === "visible" && Math.abs(parseFloat(x.opacity) - 1) < 1e-6 && still(x.transform)) };
   });
+  await rm.close();
   check("with reduced motion the pages do not turn and the book stands whole",
-    still.anim.length === 6 && still.anim.every((a) => a === "none") && still.whole, still);
-  await page.emulateMedia({ reducedMotion: "no-preference" });
+    still.anim.length === 6 && still.anim.every((a) => a === "none") && still.running === 0 && still.whole, still);
   await page.waitForFunction(() => typeof ready !== "undefined" && ready === true, null, { timeout: 300000 });
   check("the book and the bar go when the app is ready", await page.evaluate(() =>
     !document.getElementById("loader").classList.contains("on")));
