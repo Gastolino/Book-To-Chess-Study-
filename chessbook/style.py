@@ -181,6 +181,11 @@ ICONS = {
     # middle 12 by 12 of the box (a filled shape weighs more than the others' strokes), and every
     # edge lies on a whole unit, so that it is sharp at one, two and three pixels to the unit
     "reading": "<path d='M4 8h8v8H4zM8 4h8v8H8z' fill='currentColor' fill-rule='evenodd' stroke='none'/>",
+    # the contents: three rows, each a dot (the chapter's number) and a line (its title)
+    "contents": "<circle cx='4.5' cy='5.5' r='1.25' fill='currentColor' stroke='none'/>"
+                "<circle cx='4.5' cy='10' r='1.25' fill='currentColor' stroke='none'/>"
+                "<circle cx='4.5' cy='14.5' r='1.25' fill='currentColor' stroke='none'/>"
+                "<path d='M8.5 5.5h8M8.5 10h8M8.5 14.5h8'/>",
 }
 
 

@@ -303,11 +303,13 @@ CHAPTER_CSS = r"""
 /* The tools that correct what the program read belong to reading mode: outside it the page holds
    only the book, and none of them shows (or acts on a tap) */
 body:not(.reading) .rtool{display:none}
+/* in the wide bar the reading tools stand in the row with the others (their group adds no box) */
+.rtools{display:contents}
 /* Show reading stays where it is when it is tapped, so that a second tap on the same spot turns
    reading off again rather than turning on a tool that has just appeared there. In the wide bar,
    which stands at the right, the reading tools come first and keep their room while hidden (the
-   chapter's title then wraps the same way in both modes); in the compact layout, which spreads
-   its rows across the width, the icon comes first and the tools that appear follow it. */
+   chapter's title then wraps the same way in both modes); in the compact layout the icon comes
+   first and the tools appear in a strip under the bar (below). */
 @media (min-width:701px) and (orientation:landscape),(min-width:1101px){
 .tools .rtool{order:-1}
 body:not(.reading) .tools .rtool{display:inline-block;visibility:hidden}}
@@ -498,7 +500,16 @@ border:1px solid var(--line);white-space:nowrap}
 .bar{flex-wrap:wrap;padding:12px 16px}
 .where{flex-basis:100%;white-space:normal;flex-wrap:wrap;gap:0 12px}
 .where h1{white-space:normal}
-.tools{width:100%;justify-content:space-between;gap:12px}
+/* the page's controls on one row in plain mode, down to a 375 px phone: a small least gap (the row
+   spreads them out) and narrower sides on the icons, which keep a tap target of 32 px and more */
+.tools{width:100%;justify-content:space-between;gap:4px}
+.tools > .ib{padding:8px 6px}
+/* the reading tools: a strip under the bar, over the page, while reading mode is on, so that turning
+   it on moves nothing on the page (the app's slip of words under its bar does the same) */
+.bar{position:relative}
+.rtools{position:absolute;left:0;right:0;top:100%;z-index:6;display:flex;align-items:center;gap:4px 20px;
+padding:4px 16px;background:var(--bg);border-bottom:1px solid var(--line)}
+body:not(.reading) .rtools{display:none}
 #showread{order:-1}
 .notes{padding-left:16px;padding-right:16px}
 .reader{grid-template-columns:minmax(0,1fr)}
@@ -549,6 +560,7 @@ max-width:min(100%,55vh)}
 @media (min-width:701px) and (max-width:1100px) and (orientation:portrait){
 /* the book and the chapter on one line across the top, the page's controls on the line under them */
 .bar{padding:12px 24px}
+.rtools{padding:4px 24px}
 .where{flex-wrap:nowrap;white-space:nowrap}
 .where .book{flex:0 1 auto;max-width:45%;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
 .where h1{flex:0 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
@@ -2400,10 +2412,10 @@ CHAPTER_HTML = """<!doctype html>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number"><span class="ptotal small muted" id="pagetotal"></span>
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
 <button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
-<button class="ib rtool" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
+<span class="rtools" role="group" aria-label="Correct the reading"><button class="ib rtool" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
 <button class="ib rtool" id="regionbtn" aria-pressed="false" aria-label="Read a section of the page that the program missed" title="Read a section: drag across moves that the program missed">__ICON_SECTION__</button>
-<button class="tb rtool" id="reviewbtn" aria-pressed="false">Review</button>
-<a class="nav" href="index.html">Contents</a>
+<button class="tb rtool" id="reviewbtn" aria-pressed="false">Review</button></span>
+<a class="nav ib" href="index.html" aria-label="Contents" title="Contents: the chapters and their pages">__ICON_CONTENTS__</a>
 <button class="ib" id="bmbtn" aria-pressed="false" aria-label="Bookmark this page" title="Bookmark: a tap marks this page and the chosen move.">__ICON_BOOKMARK__</button>
 <button class="ib" id="invbtn" aria-pressed="false" aria-label="Invert the page: white text on black" title="Invert the page: white text on black.">__ICON_INVERT__</button>
 __PGNBTN__
@@ -2672,6 +2684,7 @@ def chapter_html(book, ch, images, pgn_text, pgn_info, engine=False):
         "__ICON_FLIP__": style.icon("flip"),
         "__ICON_PENCIL__": style.icon("pencil"),
         "__ICON_READING__": style.icon("reading"),
+        "__ICON_CONTENTS__": style.icon("contents"),
         "__ICON_SECTION__": style.icon("section"),
         "__ICON_CPU__": style.icon("cpu"),
         "__ICON_GEAR__": style.icon("gear"),
