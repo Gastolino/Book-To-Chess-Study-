@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -640,6 +641,85 @@ def test_engine_in_chromium(tmp_path):
                  "engine_board_1180_dark.png", "engine_settings_1180_light.png", "engine_settings_1180_dark.png"):
         assert (screens / name).stat().st_size > 10000, name
     print(json.dumps(res["timings"]))
+
+
+def _repeat_book(path):
+    """A game whose note repeats its first moves before it branches off
+    ("1.e4 c5 2.Nf3 Nc6 3.Bb5 d6"), and goes on over two more pages."""
+    from test_start_choice import _Book, _front
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(2)
+    b.line("Smith - Jones, London 1901", bold=True)
+    b.line("1.e4 c5 2.Nf3 d6 3.Bb5+", bold=True)
+    b.line("Sosonko once preferred 1.e4 c5 2.Nf3 Nc6 3.Bb5 d6 with a quiet game.")
+    b.line("3...Bd7 4.Bxd7+ Qxd7 5.O-O Nc6", bold=True)
+    b.prose(20)
+    b.page()
+    b.prose(2)
+    b.line("6.c3 Nf6 7.Re1 e6 8.d4 cxd4", bold=True)
+    b.line("Or 8...Be7 9.d5 with an edge.")
+    b.prose(20)
+    b.page()
+    b.prose(2)
+    b.line("9.cxd4 d5 10.e5 Ne4 11.Nbd2", bold=True)
+    b.prose(20)
+    return b.save(path)
+
+
+@pytest.fixture(scope="module")
+def repeat(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("repeat")
+    pdf = _repeat_book(tmp / "repeat.pdf")
+    book = build_book(pdf, output_dir=tmp / "output", books_dir=tmp / "books")
+    out = tmp / "output" / "repeat" / "reader"
+    reader.build_reader(book, pdf, out)
+    return out, book, pdf
+
+
+def test_a_note_that_repeats_the_line_prints_its_moves_again(repeat, tmp_path):
+    """The book the reader's place is tested on: the note's e4, c5 and Nf3
+    are boxes of the game's moves, its Nc6 a variation of 2.Nf3; each box
+    has its own key. A bookmark keeps the key of its box, and the contents
+    page links to it ("#at=PAGE:NODE:KEY")."""
+    out, book, pdf = repeat
+    pg = next(p for p in book["pages"] if [m["raw"] for m in p["marks"]].count("c5") == 2)
+    marks = pg["marks"]
+    raws = [m["raw"] for m in marks]
+    c5 = [i for i, r in enumerate(raws) if r == "c5"]
+    nf3 = [i for i, r in enumerate(raws) if r == "Nf3"]
+    assert marks[c5[0]]["node"] == marks[c5[1]]["node"] and marks[nf3[0]]["node"] == marks[nf3[1]]["node"]
+    nc6 = book["nodes"][marks[nf3[1] + 1]["node"]]
+    assert nc6["san"] == "Nc6" and nc6["parent"] == marks[nf3[1]]["node"] and not nc6["main"]
+    assert len({m["key"] for m in marks}) == len(marks)
+    key = marks[c5[1]]["key"]
+    marked = dict(book, bookmarks=[{"page": pg["page"], "node": marks[c5[1]]["node"], "key": key, "at": 1}])
+    assert reader.bookmarks_of(marked)[0]["key"] == key
+    reader.build_reader(marked, pdf, tmp_path / "reader", chapters=set())
+    index = (tmp_path / "reader" / "index.html").read_text(encoding="utf-8")
+    line = re.search(r'<p class="summary small" id="bmlist">(.*?)</p>', index).group(1)
+    href = htmlmod.unescape(re.search(r'href="([^"]+)"', line).group(1))
+    assert href == f'ch01.html#at={pg["page"]}:{marks[c5[1]]["node"]}:' + urllib.parse.quote(key, safe="")
+
+
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_staying_on_the_line_in_chromium(repeat):
+    """The reader's place is a box (tests/stay_e2e.js): a tap on a repeated
+    move lights that box alone, the arrows stay in the sentence being read and
+    turn the page only their way, the address names the box, and every box of
+    the book passes the walk (one box lit at most, no page turned against the
+    arrow)."""
+    out, _, _ = repeat
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "stay_e2e.js"), str(out / "ch01.html")],
+                          capture_output=True, text=True, env=env, timeout=600)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    assert res["errors"] == []
 
 
 def test_reader_without_the_engine(little):

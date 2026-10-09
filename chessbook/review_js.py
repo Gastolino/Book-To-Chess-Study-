@@ -762,7 +762,7 @@ function openDiagramFix(id){
   if (!d) return;
   if (S.page !== p) showPage(p);
   if (S.diagram) closeDiagram();
-  S.node = null;
+  S.node = null; S.at = null;
   for (const el of document.querySelectorAll(".diag.current")) el.classList.remove("current");
   const el = document.querySelector(".diag[data-diagram='" + id + "']");
   if (el) el.classList.add("current");
@@ -954,8 +954,9 @@ function openSymbol(sym){
   const places = symbolPlaces(sym);
   const pick = places.find(([, , m]) => m.node && REVIEW.indexOf(D.nodes[m.node].status) >= 0) || places[0];
   if (pick) {
-    const [p, , m] = pick;
-    if (m.node) selectNode(m.node, {scrollPage: false});
+    const [p, i, m] = pick;
+    // (the box printed with the symbol)
+    if (m.node) selectNode(m.node, {at: SPOT[p + ":" + i] || null, page: p, scrollPage: false});
     else { if (S.page !== p) showPage(p); }
   }
   RV.edit = {kind: "symbol", sym};
@@ -1188,9 +1189,9 @@ function penClick(b){
   // the pencil's tap on the page: true when it handled the tap
   if (PEN.connect && b.dataset.node) { finishConnect(b.dataset.node); return true; }
   // while a section of the page is read, a tap on a move chooses the move its moves go with
-  if (regionOpen() && b.dataset.node) { selectNode(b.dataset.node, {fromPage: true}); return true; }
+  if (regionOpen() && b.dataset.node) { selectNode(b.dataset.node, {at: markBox(b)}); return true; }
   if (!PEN.on || b.dataset.eye) return false;
-  if (b.dataset.node) { const id = b.dataset.node; selectNode(id, {fromPage: true}); openMove(id); return true; }
+  if (b.dataset.node) { const id = b.dataset.node; selectNode(id, {at: markBox(b)}); openMove(id); return true; }
   if (b.dataset.seq) { openSeq(b.dataset.seq); return true; }
   if (b.dataset.diagram) { openDiagramFix(b.dataset.diagram); return true; }
   return false;
@@ -1216,9 +1217,16 @@ function applyPatch(p){
   // a new reading of the chapter while the app reads the book (see progressive.py)
   const reread = p.reading !== undefined;
   if (reread) { D.reading = p.reading; readingState(); }
+  indexBoxes();
+  // the reader's box keeps its place by its key, with the move the new reading prints there; else
   // a renamed move wins: a new reading may give the same id to another move
   const ren = p.renamed || {};
-  if (S.node && (ren[S.node] || !D.nodes[S.node])) S.node = ren[S.node] || null;
+  const box = boxAt(S.at);
+  if (box && S.node) S.node = box.node;
+  else {
+    S.at = null;
+    if (S.node && (ren[S.node] || !D.nodes[S.node])) S.node = ren[S.node] || null;
+  }
   const edit = RV.edit;
   if (edit && edit.node && (ren[edit.node] || !D.nodes[edit.node])) edit.node = ren[edit.node] || null;
   if (S.node) S.line = D.nodes[S.node].line;
@@ -1243,9 +1251,14 @@ function applyPatch(p){
   if (p.corrections) boardMoveApplied();
   const pgn = $("pgnbtn");
   if (pgn) pgn.disabled = !D.pgn;
-  // the move the app came back to, now that this reading holds it
-  if (S.wanted && D.nodes[S.wanted]) selectNode(S.wanted, {scrollPage: false});
-  if (S.node) history.replaceState(null, "", "#node=" + S.node);
+  // the place the app came back to, now that this reading holds it, on the page shown only
+  const w = S.wanted;
+  if (w && w.page === S.page) {
+    const wb = w.key ? BOX[w.key] : null;
+    if (wb && wb.page === S.page) selectNode(wb.node, {at: wb, scrollPage: false});
+    else if (w.node && D.nodes[w.node] && boxesOn(w.node, S.page).length) selectNode(w.node, {fromPage: true, scrollPage: false});
+  }
+  placeHash();
   setState();
   // a new reading speaks only in reading mode; the top bar already says how far the app has come
   if (!reread || reading()) say(p.progress || "Your correction is applied.");
@@ -1534,7 +1547,7 @@ function boardMove(src, m){
   const at = D.nodes[src.at];
   // the move the line holds here: a step, as the arrow makes it
   const hit = at.children.find(c => D.nodes[c].uci === m[1] && decoded(D.nodes[c]));
-  if (hit) { selectNode(hit, {scrollPage: true}); openIfFailed(hit); return; }
+  if (hit) { stepTo(hit); openIfFailed(hit); return; }
   // a gap in the text: the move fills it (a correction, so in reading mode only)
   const gapHere = !!src.gap && samePos(gapMoves(src.gap)[0], src.fen);
   if (gapHere && reading()) {
