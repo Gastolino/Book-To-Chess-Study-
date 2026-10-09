@@ -777,10 +777,10 @@ async function openChapterOf(page, p) {
         return { fixTop: f.top, fixBottom: f.bottom, barTop: bar.top, mini: mr && { top: mr.top, bottom: mr.bottom, w: mr.width },
                  blkTop: blk.top, blkBottom: blk.bottom,
                  mark: { top: k.top, bottom: k.bottom }, sw: document.documentElement.scrollWidth, w: window.innerWidth,
-                 stick: document.body.classList.contains("stickboard") };
+                 stick: document.body.classList.contains("stickboard"), held: document.body.classList.contains("threadboard") };
       }, vis);
       check("iPhone 13: a correction shows its sheet above the board, the board above the bar and the move above them",
-            fx.stick && !fx.mini && Math.abs(fx.blkBottom - fx.barTop) <= 2 && Math.abs(fx.fixBottom - fx.blkTop) <= 2 &&
+            fx.held && !fx.mini && Math.abs(fx.blkBottom - fx.barTop) <= 2 && Math.abs(fx.fixBottom - fx.blkTop) <= 2 &&
             fx.fixTop >= 60 && fx.mark.top >= 0 && fx.mark.bottom <= fx.fixTop && fx.sw <= fx.w, fx);
       await pp.screenshot({ path: path.join(screens, "sticky_390x664_correction.png") });
       out.screenshots.push("sticky_390x664_correction.png");
