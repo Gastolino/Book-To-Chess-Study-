@@ -19,7 +19,7 @@
 //   GET    /api/books/:id/selection
 //   PUT    /api/books/:id/bookmarks      the same, for the bookmarks (listed with the book as well)
 //   GET    /api/books/:id/bookmarks
-//   PUT    /api/books/:id/position       {position: {chapter, page, node}, updated}
+//   PUT    /api/books/:id/position       {position: {chapter, page, node, key}, updated}
 //   PUT    /api/books/:id/cover          a small JPEG of the first page
 //   GET    /api/books/:id/cover
 import { authenticate } from "./auth.js";
@@ -216,6 +216,8 @@ async function putPosition(env, request, user, id) {
     chapter: typeof p.chapter === "string" ? p.chapter.slice(0, 40) : null,
     page: p.page,
     node: typeof p.node === "string" ? p.node.slice(0, 40) : null,
+    // the key of the move's box on the page ("page:x,y:raw"), which a new reading keeps
+    key: typeof p.key === "string" ? p.key.slice(0, 200) : null,
   });
   await env.DB.prepare(
     "UPDATE books SET position = ?, position_updated = ?, opened = MAX(COALESCE(opened, 0), ?) " +

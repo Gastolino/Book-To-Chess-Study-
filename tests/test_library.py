@@ -538,9 +538,10 @@ def test_the_server_under_wrangler(tmp_path):
         assert listed["bookmarks"] == {"data": marks, "updated": 2500}
         assert site.call("PUT", f"books/{bid}/notes", b"{}")[0] == 405
         status, body = site.call("PUT", f"books/{bid}/position", json.dumps(
-            {"position": {"chapter": "ch02.html", "page": 9, "node": "n4"}, "updated": 5000}).encode())
-        assert json.loads(body)["book"]["position"] == {"chapter": "ch02.html", "page": 9,
-                                                        "node": "n4", "updated": 5000}
+            {"position": {"chapter": "ch02.html", "page": 9, "node": "n4", "key": "9:58,82:c3"},
+             "updated": 5000}).encode())
+        assert json.loads(body)["book"]["position"] == {"chapter": "ch02.html", "page": 9, "node": "n4",
+                                                        "key": "9:58,82:c3", "updated": 5000}
         site.call("PUT", f"books/{bid}/position", json.dumps(
             {"position": {"page": 1}, "updated": 4000}).encode())
         book = json.loads(site.call("GET", "books")[1])["books"][0]
