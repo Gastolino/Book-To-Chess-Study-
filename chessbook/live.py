@@ -86,6 +86,18 @@ def apply(state, book, fix, chapters=None, window=None):
     return res
 
 
+def suggest(state, after, before=None, skip=None):
+    """What follows the move after (a token key or a node id) for the reader
+    who joins the moves the program could not place to their line, as
+    assemble._Builder.suggest gives it, with "seconds". before holds moves
+    in SAN that the reader gave after it, skip the keys of the boxes the
+    reader passed over."""
+    t0 = time.perf_counter()
+    res = state["builder"].suggest(after, before or (), skip or ())
+    res["seconds"] = round(time.perf_counter() - t0, 3)
+    return res
+
+
 def _recount(book, b, fix):
     """The counts of every chapter and of the book (as _book_dict has them)."""
     counts = {c["index"]: assemble._empty_counts() for c in book["chapters"]}

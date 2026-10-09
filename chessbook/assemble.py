@@ -265,6 +265,13 @@ CORRECTED_COUNTS = {"move": "moves", "symbol": "symbol_moves", "connected": "con
                     "split": "splits", "filled": "gap_moves", "added": "added_moves"}
 COMMENT_MAX = 2000              # characters of note text kept as one comment
 GAP_MAX = 8                     # plies a main run may skip and still continue its line
+SUGGEST_GAP = 4                 # plies a run's number may lie ahead of the line it follows (suggest)
+BETWEEN_PROBE = 4               # printed moves read to rank the moves given for a gap (suggest)
+BETWEEN_MAX = 5                 # the moves suggest offers for a gap, at most
+# the doubt of a move given for a gap, added to the cost of the moves printed after it
+# (suggest): read without doubt after its printed number (True), read without doubt
+# elsewhere (False), read with doubt, or not read from the words at all (None)
+WORDS_DOUBT = {True: 0.0, False: 0.25, "unsure": 0.75, None: 1.0}
 
 _EXERCISE_RE = re.compile(r"^(\d{1,3}[a-d]?)\.(?= )")
 # What may follow a solution number: a move number ("1.Qa1", "2...Rh3+",
@@ -342,6 +349,7 @@ _SETUP_RE = re.compile(r"\b(?:White|Black)\s*[:(]", re.I)
 _SENTENCE_END_RE = re.compile(r"(?:[^\W\d_]{2}[.!?]|;)\s|[.!?]\s+(?=[A-Z][a-z]+ )")
 _REAL_WORD_RE = re.compile(r"^[^\W\d_]{2,}")
 _BARE_NUMBER_RE = re.compile(r"^[0-9lIO]{1,3}$")
+_MOVE_NUMBER_WORD_RE = re.compile(r"^(\d{1,3})\s*(?:\.|…)*$")    # "5", "5.", "5..."
 _NUMBER_LINE_RE = re.compile(r"^[0-9lIOS]{1,3}(?: [0-9lIOS])?(?: ?[.…•·]+)*$")
 _DOTS_RE = re.compile(r"^[.…•·]+$")
 # A move number at the end of a stretch of the notes ("... Perhaps I S ... ").
@@ -430,6 +438,24 @@ def _ply_words(ply):
     if ply is None:
         return "a move with no number"
     return f"{'Black' if ply % 2 else 'White'}'s move {ply // 2 + 1}"
+
+
+def _ordinal(n):
+    """'5th', '1st', '22nd'."""
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    return f"{n}" + {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+
+def _missing_words(ply, count):
+    """"Black's 5th move is missing": the count plies the text lacks from ply on."""
+    def one(p):
+        return f"{'Black' if p % 2 else 'White'}'s {_ordinal(p // 2 + 1)} move"
+    if count == 1:
+        return f"{one(ply)} is missing"
+    if count == 2:
+        return f"{one(ply)} and {one(ply + 1)} are missing"
+    return f"{count} moves are missing from {one(ply)} on"
 
 
 def _board_ply(fen):
@@ -2370,13 +2396,14 @@ class _Builder:
             return run.text
         return re.sub(r"[ \n\r]+", " ", self.st.orig_text[run.start:run.end]).strip()
 
-    def unplaced(self, run, reason, src=None, dismiss=None, after=None):
+    def unplaced(self, run, reason, src=None, dismiss=None, after=None, missing=None):
         """A sequence placed in no line, with the reason in words. src is the
         line whose notes held it; dismiss holds the entry fields of a
         sequence the reader dismissed as no variation; after is the key of
         the move that the text prints it after (a bare move, see
         bare_move_before), which the reader offers as the move to join it
-        to."""
+        to; missing ({"from_ply", "count"}) says which moves the text lacks
+        before it where the reader joined it (do_graft)."""
         ci = run.ci if run.ci >= 0 else self.ci
         page, box = self.place_of(run.moves[0], ci) if run.moves else (None, None)
         key = fixes.token_key(page, box, run.moves[0].raw) if box is not None else None
@@ -2385,6 +2412,8 @@ class _Builder:
                  "_src": src.id if src is not None else None}
         if after:
             entry["after"] = after
+        if missing:
+            entry["missing"] = dict(missing)
         if dismiss is not None:
             entry.update(dismiss)
             self.dismissed.append(entry)
@@ -4138,7 +4167,8 @@ class _Builder:
         def rs(r):
             return (r.ci, r.start, r.end, len(r.tokens))
         if op[0] == "graft":
-            return ("graft", op[1], tuple(_Builder.op_sig(o) for o in op[2]))
+            return ("graft", op[1], tuple(_Builder.op_sig(o) for o in op[2]),
+                    tuple(op[4]) if len(op) > 4 else ())
         return (op[0],) + tuple(rs(x) if isinstance(x, _Run) else
                                 (tuple(sorted(x.items())) if isinstance(x, dict) else x)
                                 for x in op[1:])
@@ -4197,7 +4227,6 @@ class _Builder:
             recs.append([L, list(ops)])
         glob = [[run, entry["reason"]] for entry, run in self.base["unplaced"]]
         dismissed = []
-        moved = set()
         # lines that go on from a line of the chapter before (chapter_join)
         by_id = {rec[0].id: rec for rec in recs}
         for rec in list(recs):
@@ -4208,15 +4237,23 @@ class _Builder:
             key = self.base["last_key"].get(prev.id)
             if key:
                 recs.remove(rec)
-                target[1].append(("graft", key, rec[1], None))
+                target[1].append(("graft", key, rec[1], None, ()))
 
         def where(key):
-            """("line", rec, op index, token index) or ("glob", index, token index)."""
+            """("line", rec, op index, token index), ("sub", rec, op index,
+            index in the join's ops or None, token index) for a run that a
+            correction placed in the line (a join, or a sequence tied to one
+            of its moves) or ("glob", index, token index)."""
             cands = []
             for rec in recs:
                 for oi, op in enumerate(rec[1]):
                     if op[0] in ("main", "note", "unplaced", "long"):
                         cands.append((("line", rec, oi), op[1]))
+                    elif op[0] == "graft":
+                        cands += [(("sub", rec, oi, si), r) for si, so in enumerate(op[2])
+                                  for r in self.op_runs(so)]
+                    elif op[0] == "attach":
+                        cands.append((("sub", rec, oi, None), op[1]))
             for gi, g in enumerate(glob):
                 if g is not None:
                     cands.append((("glob", gi), g[0]))
@@ -4247,7 +4284,7 @@ class _Builder:
                 dismissed.append((run, {"_fix": key}))
                 continue
             tgt = where(v["attach_to"])
-            if tgt is None or tgt[0] != "line":
+            if tgt is None or tgt[0] == "glob":
                 glob.append([run, "you tied it to a move that the program no longer finds"])
                 continue
             tgt[1][1].append(("attach", run, v["attach_to"]))
@@ -4306,53 +4343,87 @@ class _Builder:
             L2.spec = spec
             L2.split_from = L.id
             recs.insert(recs.index(rec) + 1, [L2, [("main", tail)] + rest_main + theirs])
-        # runs that continue a line after a move the reader chose
-        for key, v in sorted((fix.get("connect") or {}).items()):
-            loc = where(key)
-            tgt = where(v["after"])
-            if loc is None or tgt is None or tgt[0] != "line":
-                continue
-            if loc[0] == "glob":
-                sub = [("main", glob[loc[1]][0])]
-                head, tail = self.cut_run(sub[0][1], loc[2])
-                if tail is None:
-                    continue
-                if head is not None:
-                    glob[loc[1]][0] = head
-                else:
-                    glob[loc[1]] = None
-                sub = [("main", tail)]
-            else:
-                rec, oi, j = loc[1], loc[2], loc[3]
-                ops = rec[1]
-                op = ops[oi]
-                if rec is tgt[1] and op[0] == "main":
-                    continue                # a line cannot continue itself
-                if op[0] in ("note", "unplaced"):
-                    ops[oi] = ("skip",)
-                    sub = [("main", op[1])]
-                elif op[0] == "main":
-                    head, tail = self.cut_run(op[1], j)
-                    first = all(o[0] not in ("main", "gap") for o in ops[:oi]) and head is None
-                    rest = [o for o in ops[oi + 1:]]
-                    sub = [("main", tail)] + [o for o in rest if o[0] in ("main", "gap")]
-                    notes = [o for o in rest if o[0] not in ("main", "gap")]
-                    if first:
-                        sub += notes
-                        recs.remove(rec)        # the whole line goes on from the move chosen
-                        moved.add(rec[0].id)
-                    else:
-                        rec[1] = ops[:oi] + ([("main", head)] if head is not None else []) + notes
-                else:
-                    continue
-            # the join goes right after the step that placed the move chosen,
-            # so that the moves printed after it (a numbered run after a
-            # bare move) find the line gone on when their turn comes
-            tops = tgt[1][1]
-            at = tgt[2] + 1 if tops[tgt[2]][0] in ("main", "note") else len(tops)
-            tops.insert(at, ("graft", v["after"], sub, key))
+        # runs that continue a line after a move the reader chose; a join
+        # after a move that another join placed waits for that join
+        todo = sorted((fix.get("connect") or {}).items())
+        while todo:
+            left = [(key, v) for key, v in todo if not self.join(recs, glob, where, key, v)]
+            if len(left) == len(todo):
+                break
+            todo = left
         globs = [(g[0], g[1]) for g in glob if g is not None]
         return [(rec[0], rec[1]) for rec in recs], globs, dismissed
+
+    def join(self, recs, glob, where, key, v):
+        """Take the run from the move key on out of where it stands (a line,
+        or no line) and insert it as a join after the move v["after"] in the
+        ops of that move's line (derive). False while the move chosen stands
+        in no line (a join placed later may bring it into one)."""
+        loc = where(key)
+        tgt = where(v["after"])
+        if tgt is None or tgt[0] == "glob":
+            return False
+        if loc is None:
+            return True
+        if loc[0] == "glob":
+            head, tail = self.cut_run(glob[loc[1]][0], loc[2])
+            if tail is None:
+                return True
+            if head is not None:
+                glob[loc[1]][0] = head
+            else:
+                glob[loc[1]] = None
+            sub = [("main", tail)]
+        elif loc[0] == "sub":
+            # a run that an earlier join brought into a line (a note of the
+            # line it joined, or the rest of its moves)
+            rec, oi, si, j = loc[1:]
+            op = rec[1][oi]
+            if op[0] != "graft" or (rec is tgt[1] and oi == tgt[2]):
+                return True
+            ops = list(op[2])
+            so = ops[si]
+            if so[0] in ("note", "unplaced"):
+                ops[si] = ("skip",)
+                sub = [("main", so[1])]
+            elif so[0] == "main":
+                head, tail = self.cut_run(so[1], j)
+                rest = ops[si + 1:]
+                sub = [("main", tail)] + [o for o in rest if o[0] in ("main", "gap")]
+                ops = ops[:si] + ([("main", head)] if head is not None else []) + \
+                    [o for o in rest if o[0] not in ("main", "gap")]
+            else:
+                return True
+            rec[1][oi] = op[:2] + (ops,) + op[3:]
+        else:
+            rec, oi, j = loc[1], loc[2], loc[3]
+            ops = rec[1]
+            op = ops[oi]
+            if rec is tgt[1] and op[0] == "main":
+                return True             # a line cannot continue itself
+            if op[0] in ("note", "unplaced"):
+                ops[oi] = ("skip",)
+                sub = [("main", op[1])]
+            elif op[0] == "main":
+                head, tail = self.cut_run(op[1], j)
+                first = all(o[0] not in ("main", "gap") for o in ops[:oi]) and head is None
+                rest = [o for o in ops[oi + 1:]]
+                sub = [("main", tail)] + [o for o in rest if o[0] in ("main", "gap")]
+                notes = [o for o in rest if o[0] not in ("main", "gap")]
+                if first:
+                    sub += notes
+                    recs.remove(rec)        # the whole line goes on from the move chosen
+                else:
+                    rec[1] = ops[:oi] + ([("main", head)] if head is not None else []) + notes
+            else:
+                return True
+        # the join goes right after the step that placed the move chosen,
+        # so that the moves printed after it (a numbered run after a bare
+        # move) find the line gone on when their turn comes
+        tops = tgt[1][1]
+        at = tgt[2] + 1 if tops[tgt[2]][0] in ("main", "note", "graft") else len(tops)
+        tops.insert(at, ("graft", v["after"], sub, key, tuple(v.get("before") or ())))
+        return True
 
     # ---------------- replaying
     def drop_line(self, lid):
@@ -4528,19 +4599,23 @@ class _Builder:
         """Runs that the reader said continue this line after one of its moves:
         the main line goes on with them when that move ends it, and they form
         a variation from that move otherwise (and a note run that continues
-        their numbering goes on with them, state). Moves that are not legal
-        there are placed in no line, with the reason."""
-        _, target, sub, src_key = op
+        their numbering goes on with them, state). The moves the reader gave
+        for the text that lacks them ("before") are played first. Moves that
+        are not legal there, and a run whose printed number does not follow
+        the main line's last move, are placed in no line, with the reason."""
+        _, target, sub, src_key = op[:4]
+        before = list(op[4]) if len(op) > 4 else []
         nid = self.target_node(L, target)
         mains = [o[1] for o in sub if o[0] == "main"]
         if not mains:
             return
         run0 = self.forced(mains[0])
 
-        def refuse(why):
+        def refuse(why, missing=None):
             for o in sub:
                 if o[0] in ("main", "note", "unplaced"):
-                    self.unplaced(o[1], why, src=L)
+                    self.unplaced(o[1], why, src=L, missing=missing)
+                    missing = None
         if nid is None:
             refuse("you joined it to a move that the program no longer finds")
             return
@@ -4549,14 +4624,37 @@ class _Builder:
             refuse(f"the position after {self.move_words(nid)} is unknown, so its moves cannot "
                    "be checked there")
             return
-        decs = self.dec.run(fen, run0.tokens)
-        if not decs or decs[0].status == "failed" or _fit(decs)[0] == 2:
-            shown = self.shown_move(run0.moves[0].raw)
-            side = "Black" if chess.Board(fen).turn == chess.BLACK else "White"
-            refuse(f"its first move, {shown}, is not a legal move for {side} after "
-                   f"{self.move_words(nid)}")
+        where = self.move_words(nid) + (f" and {' '.join(before)}" if before else "")
+        board = chess.Board(fen)
+        given = []
+        for san in before:
+            try:
+                mv = board.parse_san(san)
+            except ValueError:
+                side = "Black" if board.turn == chess.BLACK else "White"
+                refuse(f"the move you gave before it, {san}, is not a legal move for {side} after "
+                       f"{self.move_words(nid)}" + (f" and {' '.join(given)}" if given else ""))
+                return
+            given.append(board.san(mv))
+            board.push(mv)
+        start = board.fen()
+        cont = nid == L.main_nodes[-1] and not L.broken
+        why, missing = self.join_numbering(run0, start, where) if src_key and cont else ("", None)
+        if missing:
+            refuse(why, missing)
             return
-        if nid == L.main_nodes[-1] and not L.broken:
+        decs = self.dec.run(start, run0.tokens)
+        if not decs or decs[0].status == "failed" or (_fit(decs)[0] == 2 and not why):
+            shown = self.shown_move(run0.moves[0].raw)
+            side = "Black" if board.turn == chess.BLACK else "White"
+            refuse(f"its first move, {shown}, is not a legal move for {side} after {where}")
+            return
+        if why:
+            refuse(why)
+            return
+        page = self.place_of(run0.moves[0], run0.ci)[0] or self.nodes[nid]["page"]
+        parent = self.give_moves(L, nid, before, cont, page)
+        if cont:
             n0 = len(L.main_nodes)
             self.run_ops(L, sub)
             if len(L.main_nodes) > n0 and src_key:
@@ -4566,8 +4664,8 @@ class _Builder:
         toks = [t for r in mains for t in self.forced(r).tokens if r.ci == run0.ci]
         whole = replace(run0, tokens=toks, moves=[t for t in toks if t.kind == "move"],
                         end=toks[-1].end)
-        decs = self.dec.run(fen, whole.tokens)
-        nodes = self.insert_decoded(L, nid, whole, decs)
+        decs = self.dec.run(start, whole.tokens)
+        nodes = self.insert_decoded(L, parent, whole, decs)
         L.variations += 1
         if nodes and src_key:
             self.set_corrected(nodes[0], "connected")
@@ -4581,6 +4679,53 @@ class _Builder:
             state["vars"][block].append({"depth": run0.depth, "plies": plies, "last": nodes[-1],
                                          "next": (max(plies) + 1) if plies else None,
                                          "bracket": run0.bracket, "end": whole.end})
+
+    def give_moves(self, L, nid, sans, main, page):
+        """Play the moves the reader gave after node nid (do_graft found them
+        legal there) as nodes with "corrected" "filled", on the main line
+        when main; returns the last node."""
+        parent = nid
+        board = chess.Board(self.nodes[nid]["fen"])
+        for san in sans:
+            mv = board.parse_san(san)
+            number, black, s = board.fullmove_number, board.turn == chess.BLACK, board.san(mv)
+            board.push(mv)
+            parent = self.new_node(L, parent=parent, san=s, fen=board.fen(), number=number,
+                                   black=black, status="ok", raw="", main=main, uci=mv.uci(),
+                                   page=page, corrected="filled")
+            if main:
+                L.main_nodes.append(parent)
+                L.ply_node[L.next_ply] = parent
+                L.next_ply += 1
+                L.last_fen = board.fen()
+        return parent
+
+    def join_numbering(self, run, fen, where):
+        """(why, missing) when the printed number of a run's first move does
+        not follow the position fen that the reader joined it after: missing
+        is {"from_ply", "count"} when the text lacks a few moves before it
+        (the reader may give them, corrections.py connect "before"), and
+        None when the number is another one. ("", None) when it follows, or
+        when the run prints no number. A number that OCR misreads as another
+        ("s" for 5 or 8) follows when one of its readings does."""
+        first = run.moves[0]
+        if first.number is None:
+            return "", None
+        lead = run.tokens[0] if run.tokens[0].kind == "number" else None
+        want = _board_ply(fen)
+        n, black = want // 2 + 1, bool(want % 2)
+        values = _number_values(lead) if lead is not None else [first.number]
+        side_known = lead.side_known if lead is not None else True
+        if n in values and (not side_known or bool(first.black) == black):
+            return "", None
+        ply = _ply(first)
+        label = f"{first.number}{'...' if first.black else '.'}{self.shown_move(first.raw)}"
+        gap = ply - want
+        if 0 < gap <= GAP_MAX:
+            return (f"{_missing_words(want, gap)} before {label}, so it does not join after {where}",
+                    {"from_ply": want, "count": gap})
+        return (f"it is printed as {_ply_words(ply)}, but {_ply_words(want)} comes next after "
+                f"{where}", None)
 
     def add_variations(self, L):
         """The variations the reader added on the board (corrections.py
@@ -4864,6 +5009,274 @@ class _Builder:
         """Keep the assembled lines as the base and apply the corrections."""
         self.snapshot()
         return self.apply_fix(fix)
+
+    # ---------------- what follows a move, for the reader who threads a line
+    # The reader joins, one step at a time, the moves the program could not
+    # place to the line they continue (corrections.py "moves" and "connect").
+    # suggest() says what comes next after a move: the next printed move in
+    # reading order that the line does not hold, how many moves the printed
+    # numbers say are missing before it, the moves that may stand for them,
+    # and how the moves printed there read from the line's position.
+
+    def node_of(self, at):
+        """The node of a move given as a node id or as the key of its printed
+        token (corrections.TOLERANCE), or None."""
+        if at in self.nodes:
+            return at
+        nid = self.node_by_key.get(at)
+        if nid in self.nodes:
+            return nid
+        try:
+            page, x, y, _ = fixes.parse_key(at)
+        except ValueError:
+            return None
+        best = None
+        for m in self.marks.get(page, []):
+            k = m.get("key")
+            if m["node"] is None or not k or m["node"] not in self.nodes:
+                continue
+            _, x2, y2, _ = fixes.parse_key(k)
+            d = max(abs(x2 - x), abs(y2 - y))
+            if d <= fixes.TOLERANCE and (best is None or d < best[0]):
+                best = (d, m["node"])
+        return best and best[1]
+
+    def mark_of(self, nid):
+        """The box of a node's printed move on the page (the last of its boxes
+        in reading order), or None."""
+        n = self.nodes[nid]
+        hits = [m for m in self.marks.get(n["page"], []) if m["node"] == nid]
+        return max(hits, key=lambda m: m["_o"]) if hits else None
+
+    def run_from(self, key, ci):
+        """The moves printed from the token key on, to the end of the run that
+        holds it (in a line, a join, or no line), with the moves the reader
+        corrected; None when the program finds no such token."""
+        runs = [r for L in self.lines for o in L.ops for r in self.op_runs(o) if r.ci == ci]
+        runs += [run for _, run in self.base["unplaced"] if run.ci == ci]
+        hit = self.find_token(key, runs)
+        if hit is None:
+            return None
+        tail = self.cut_run(runs[hit[0]], hit[1])[1]
+        return self.forced(tail) if tail is not None else None
+
+    def suggest(self, after, before=(), skip=()):
+        """What follows the move after (a token key or a node id) for the
+        reader who joins the moves the program could not place to its line.
+        The line is followed from that move to the end of its branch; then
+        the next printed move in reading order within the chapter that the
+        line does not hold is: a misread move of the branch itself ("failed"),
+        the moves after a gap in the text ("gap"), the first move of a run in
+        no line ("run") or of another line ("line"), whose printed number
+        follows the branch's end, at most SUGGEST_GAP moves later. before
+        holds moves the reader gave after the end of the branch (SAN), and
+        skip the keys of boxes the reader passed over.
+
+        Returns {"done": True} when nothing follows in the chapter, else
+        {"kind", "key", "page", "bbox", "raw", "number", "black", "after"
+        (the key of the move it would follow, None for a move with no
+        printed token), "after_node", "number_gap" (the moves the printed
+        numbers say are missing before it, after the moves given),
+        "missing" ({"from_ply", "count"} or None), "between" (the moves
+        that may stand for the missing ones, each a list of number_gap
+        moves in SAN, best first: read from the words printed between the
+        two boxes, and ranked by how far the moves printed after them then
+        read), "decoded" (when no move is missing: the printed moves read
+        from the position, [{"san", "cost", "unsure", "key"}], up to the
+        first move that does not read)}."""
+        nid = self.node_of(after)
+        if nid is None:
+            raise ValueError("The program no longer finds the move to go on from.")
+        L = self.line_by_id.get(self.nodes[nid]["line"])
+        if L is None:
+            raise ValueError("The program no longer finds the line of that move.")
+        skip = set(skip or ())
+        # the end of the branch: the line's own moves after the move given
+        cur, printed = nid, (nid if self.nodes[nid].get("key") else None)
+        while True:
+            n = self.nodes[cur]
+            nxt = next((c for c in n["children"]
+                        if self.nodes[c]["line"] == L.id and self.nodes[c]["main"] == n["main"]),
+                       None)
+            if nxt is None:
+                break
+            x = self.nodes[nxt]
+            if x["status"] == "waiting":
+                break
+            if not x["san"]:
+                return self.suggestion_inside(L, cur, nxt)
+            cur = nxt
+            if x.get("key"):
+                printed = cur
+        fen = self.nodes[cur]["fen"]
+        if not fen:
+            raise ValueError("The position after that move is unknown.")
+        board = chess.Board(fen)
+        for san in before or ():
+            try:
+                board.push_san(san)
+            except ValueError:
+                side = "Black" if board.turn == chess.BLACK else "White"
+                raise ValueError(f"{san} is not a legal move for {side} there.") from None
+        fen = board.fen()
+        want = _board_ply(fen)
+        last = self.mark_of(printed) if printed is not None else None
+        pos = last["_o"] if last is not None else -1
+        ch = self.chapters[L.chapter]
+        marks = sorted(((m["_o"], p, m) for p in range(ch["start"], ch["end"] + 1)
+                        for m in self.marks.get(p, []) if m["_o"] > pos),
+                       key=lambda x: x[:2])
+        for _, page, m in marks:
+            key = m.get("key")
+            if not key or key in skip:
+                continue
+            if m["node"] is None:
+                if m.get("seq") != key:
+                    continue            # (a run is offered at its first move)
+                kind = "run"
+            else:
+                x = self.nodes.get(m["node"])
+                if x is None or x["line"] == L.id or x["parent"] is None or \
+                        self.nodes[x["parent"]]["parent"] is not None:
+                    continue
+                kind = "line"
+            tail = self.run_from(key, L.chapter)
+            if tail is None:
+                continue
+            ply = _ply(tail.moves[0])
+            gap = ply - want if ply is not None else 0
+            if ply is not None and not 0 <= gap <= SUGGEST_GAP:
+                continue
+            if ply is None:
+                decs = self.dec.run(fen, tail.tokens[:1])
+                if not decs or decs[0].status == "failed":
+                    continue
+            return self.suggestion(kind, m, page, tail, cur, fen, gap, want, last)
+        return {"done": True}
+
+    def suggestion(self, kind, m, page, tail, cur, fen, gap, want, last):
+        """The record suggest() returns for the box m."""
+        first = tail.moves[0]
+        out = {"kind": kind, "key": m["key"], "page": page, "bbox": list(m["bbox"]),
+               "raw": m["raw"], "number": first.number, "black": bool(first.black),
+               "after": self.nodes[cur].get("key"), "after_node": cur, "number_gap": gap,
+               "missing": {"from_ply": want, "count": gap} if gap else None,
+               "between": [], "decoded": []}
+        if gap:
+            start = (self.nodes[last["node"]]["page"], last["bbox"]) if last is not None else None
+            out["between"] = self.between_moves(fen, tail, gap, start, (page, m["bbox"]))
+        else:
+            out["decoded"] = self.read_on(fen, tail)
+        return out
+
+    def suggestion_inside(self, L, cur, nid):
+        """The record suggest() returns for a move of the line itself that
+        does not read (nid, after cur): a misread move, or the gap in the
+        text before the next printed move."""
+        x = self.nodes[nid]
+        fen = self.nodes[cur]["fen"]
+        if x.get("gap") and not x["raw"]:
+            key, kind = x["gap"], "gap"
+            gap = x.get("missing") or 0
+        else:
+            key, kind, gap = x.get("key"), "failed", 0
+        hit = self.node_of(key) if key else None
+        m = self.mark_of(hit) if hit is not None else None
+        tail = self.run_from(key, L.chapter) if key else None
+        if m is None or tail is None:
+            return {"done": True}
+        last = self.mark_of(cur) if self.nodes[cur].get("key") else None
+        return self.suggestion(kind, m, self.nodes[hit]["page"], tail, cur, fen, gap,
+                               _board_ply(fen), last)
+
+    def read_on(self, fen, run):
+        """The moves of run read from fen, up to the first that does not read:
+        [{"san", "cost", "unsure", "key"}]."""
+        out = []
+        for t, d in zip(run.moves, self.dec.run(fen, run.tokens)):
+            if d.status == "failed" or not d.san:
+                break
+            out.append({"san": d.san, "cost": round(d.cost, 2), "unsure": d.status != "ok",
+                        "key": self.key_of(t, run.ci)})
+        return out
+
+    def words_between(self, a, b):
+        """The words printed between two boxes in reading order, a and b each
+        (page, bbox) (a None: from the top of b's page)."""
+        if self.doc is None:
+            return []
+        pb, bb = b
+        pa, ba = a if a is not None else (pb, None)
+
+        def within(box, w):
+            cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+            x0, y0, x1, y1 = w["bbox"]
+            return x0 - 0.5 <= cx <= x1 + 0.5 and y0 - 0.5 <= cy <= y1 + 0.5
+        out, on = [], ba is None
+        for p in range(pa, pb + 1):
+            for ln in pt.page_lines(self.doc, p - 1, self.fonts):
+                if ln["role"] in ("head", "coord", "blank", "label"):
+                    continue
+                for w in ln["words"]:
+                    if p == pb and within(bb, w):
+                        return out
+                    if on:
+                        out.append(w["text"])
+                    elif p == pa and within(ba, w):
+                        on = True
+            on = True
+        return out
+
+    def between_moves(self, fen, run, count, a, b):
+        """The moves that may stand for the count moves the text lacks before
+        run (from the position fen), best first, each a list of count moves:
+        the readings of the words printed between the boxes a and b (a word
+        after the missing move's printed number first) and, for one missing
+        move, every legal move; ranked by how many of the moves printed in
+        run then read (its first BETWEEN_PROBE moves), then by the cost of
+        reading them together with the doubt of the words (WORDS_DOUBT)."""
+        board = chess.Board(fen)
+        n = board.fullmove_number
+        words = self.words_between(a, b)
+        said = {}                   # moves -> (after its number, unsure, cost)
+        for i, w in enumerate(words):
+            num = _MOVE_NUMBER_WORD_RE.match(w)
+            numbered = num is not None and int(num.group(1)) == n
+            texts = []
+            if numbered and i + count < len(words):
+                texts.append((0, " ".join(words[i:i + 1 + count])))
+            if all(any(t.kind == "move" for t in region.tokens(x)) for x in words[i:i + count]) \
+                    and i + count <= len(words):
+                texts.append((1, " ".join(words[i:i + count])))
+            for rank, text in texts:
+                for c in region.read(self.dec, fen, text):
+                    if len(c["san"]) < count:
+                        continue
+                    k = tuple(c["san"][:count])
+                    said[k] = min(said.get(k, (9, 9, 99.0)), (rank, c["unsure"], c["cost"]))
+        pool = dict(said)
+        if count == 1:
+            for mv in board.legal_moves:
+                pool.setdefault((board.san(mv),), None)
+        probe = _first_moves(run.tokens, BETWEEN_PROBE)
+        scored = []
+        for sans, words_say in pool.items():
+            b2 = board.copy(stack=False)
+            for s in sans:
+                b2.push_san(s)
+            reads, cost = 0, 0.0
+            for d in self.dec.run(b2.fen(), probe):
+                if d.status == "failed":
+                    break
+                reads += 1
+                cost += d.cost
+            # what the words say weighs as a share of a move read with doubt
+            doubt = (WORDS_DOUBT[None] if words_say is None else
+                     WORDS_DOUBT[words_say[0] == 0 and not words_say[1]] if not words_say[1] else
+                     WORDS_DOUBT["unsure"])
+            scored.append(((-reads, round(cost + doubt, 2), words_say or (9, 9, 99.0)), list(sans)))
+        scored.sort(key=lambda s: s[0])
+        return [sans for _, sans in scored[:BETWEEN_MAX]]
 
     # -------------------------------------------------------- output
     def line_dicts(self):

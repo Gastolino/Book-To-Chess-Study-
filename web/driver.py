@@ -569,6 +569,34 @@ def read_region(page, rect_json, at, side="after", other=None):
                        "seconds": round(time.perf_counter() - t0, 3)})
 
 
+# ---------------------------------------------------------------- threading a line
+
+def suggest(after, name="", before_json=None, skip_json=None):
+    """What follows a move, for the reader who joins the moves the program
+    could not place to their line one at a time (chessbook/live.py
+    suggest(), assemble._Builder.suggest()): after is the token key or the
+    node id of the move, name the chapter file open in the reader,
+    before_json a JSON list of moves in SAN that the reader gave after it,
+    and skip_json a JSON list of the keys of boxes the reader passed over.
+    While the book is read, the chapter's own reading answers, once it has
+    one. Returns JSON: {"done": true} or the next box, with "seconds"."""
+    t0 = time.perf_counter()
+    before = json.loads(before_json) if before_json else []
+    skip = json.loads(skip_json) if skip_json else []
+    if _loading():
+        job = STATE["job"]
+        s = job.solo.get(job.chapter_index(name)) if name else None
+        if s is None:
+            raise ValueError("The program suggests the next moves once it has read this chapter.")
+        keep = s["keep"]
+    else:
+        _no_state()
+        keep = STATE["keep"]
+    res = live.suggest(keep, str(after), before, skip)
+    res["seconds"] = round(time.perf_counter() - t0, 3)
+    return json.dumps(res)
+
+
 def timeline():
     """What happened when while the book was read (seconds from start())."""
     job = STATE.get("job")

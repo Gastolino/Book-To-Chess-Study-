@@ -177,6 +177,13 @@ onmessage = async (event) => {
       const result = JSON.parse(driver.read_region(msg.page, JSON.stringify(msg.rect), msg.at, msg.side || "after",
                                                    msg.other || null));
       postMessage({ type: "region", id: msg.id, result });
+    } else if (msg.type === "suggest") {
+      // what follows a move the reader joined to its line: the next printed move the line does
+      // not hold, read with the state that applies corrections
+      await boardsP;
+      const result = JSON.parse(driver.suggest(msg.after, msg.chapter || "", JSON.stringify(msg.before || []),
+                                               JSON.stringify(msg.skip || [])));
+      postMessage({ type: "suggest", id: msg.id, result });
     } else if (msg.type === "index") {
       postMessage({ type: "page", name: "index.html", hash: msg.hash || "", html: driver.index() });
     } else if (msg.type === "timeline") {

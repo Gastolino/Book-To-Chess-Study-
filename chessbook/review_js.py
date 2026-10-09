@@ -1025,9 +1025,12 @@ function paintFixes(){
   for (const el of document.querySelectorAll("#ov .mark")) {
     const m = D.pages[S.page].marks[parseInt(el.dataset.mark, 10)];
     const n = m.node ? D.nodes[m.node] : null;
-    const fixed = !!(m.corrected || (n && n.corrected) || (n && n.key && (FIX.get("moves", n.key) ||
-      FIX.get("connect", n.key) || FIX.get("disconnect", n.key) || FIX.get("gaps", n.key))) ||
-      (m.seq && (FIX.get("unattached", m.seq) || FIX.get("connect", m.seq))));
+    // a box shows a correction that placed something, or one still waiting to be applied (a
+    // correction the book holds that left the box as it was placed nothing)
+    const mine = (part, k) => !!(k && FIX.get(part, k) && FIX.pending(part, k));
+    const fixed = !!(m.corrected || (n && n.corrected) ||
+      (n && ["moves", "connect", "disconnect", "gaps"].some((part) => mine(part, n.key))) ||
+      (m.seq && (mine("unattached", m.seq) || mine("connect", m.seq))));
     el.classList.toggle("fixed", fixed);
   }
 }
