@@ -277,8 +277,10 @@ function check(name, cond, detail) {
     s = await state(page);
     check("from the diagram's line at its start, the board steps to the line's first move", s.id === I.rd8 && !s.open, s);
 
-    // in reading mode the tap opens the diagram's panel, whose corrector still takes taps on its squares
+    // in reading mode, with the pencil it starts with turned off, the tap opens the diagram's panel,
+    // whose corrector still takes taps on its squares
     await page.click("#showread");
+    await page.click("#penbtn");
     await page.click(".diag[data-diagram='p5-1']");
     await page.waitForSelector("#dpanel:not([hidden]) .boardwrap svg.board");
     await page.click("#dfix");

@@ -335,6 +335,7 @@ function shownFen(){
   // the position the board shows (the board of a diagram, a preview, a move, the position
   // before a gap, the start of the line), or null when it shows no position
   if (S.diagram) { const [, d] = diagramInfo(S.diagram); return d && d.fen ? d.fen : null; }
+  if (TH.on && TH.fen) return TH.fen;
   if (S.preview) return S.preview.fen;
   const n = S.node ? D.nodes[S.node] : null;
   if (n && n.fen) return n.fen;

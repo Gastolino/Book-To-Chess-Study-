@@ -134,10 +134,13 @@ async function run(browser, which) {
     await inFrame((p) => { location.hash = "#page=" + p; }, p);
     await waitFrame((p) => window.readerState.page === p, p);
   };
+  // a tap on a box; with the pencil, whose sheet asks for the move printed there (the thread), More
+  // opens the box's full editor
   const tapMark = async (sel) => {
     await inFrame((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); }, sel);
     const f = await frame();
     await f.click(sel);
+    await inFrame(() => { const b = document.getElementById("thmore"); if (b) b.click(); });
   };
   // ---------------------------------------------------------------- upload
   // the contents page shows as soon as the chapters are known; the book is read on

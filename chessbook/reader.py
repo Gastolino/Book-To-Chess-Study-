@@ -306,11 +306,10 @@ CHAPTER_CSS = r"""
 body:not(.reading) .rtool{display:none}
 /* in the wide bar the reading tools stand in the row with the others (their group adds no box) */
 .rtools{display:contents}
-/* Show reading stays where it is when it is tapped, so that a second tap on the same spot turns
-   reading off again rather than turning on a tool that has just appeared there. In the wide bar,
-   which stands at the right, the reading tools come first and keep their room while hidden (the
-   chapter's title then wraps the same way in both modes); in the compact layout the icon comes
-   first and the tools appear in a strip under the bar (below). */
+/* Show reading sits in the row under the board, between the arrows and the board's own buttons, so
+   that it is at hand where the moves are corrected. In the wide bar, which stands at the right, the
+   reading tools come first and keep their room while hidden (the chapter's title then wraps the
+   same way in both modes); in the compact layout they appear in a strip under the bar (below). */
 @media (min-width:701px) and (orientation:landscape),(min-width:1101px){
 .tools .rtool{order:-1}
 body:not(.reading) .tools .rtool{display:inline-block;visibility:hidden}}
@@ -511,7 +510,6 @@ border:1px solid var(--line);white-space:nowrap}
 .rtools{position:absolute;left:0;right:0;top:100%;z-index:6;display:flex;align-items:center;gap:4px 20px;
 padding:4px 16px;background:var(--bg);border-bottom:1px solid var(--line)}
 body:not(.reading) .rtools{display:none}
-#showread{order:-1}
 .notes{padding-left:16px;padding-right:16px}
 .reader{grid-template-columns:minmax(0,1fr)}
 .pagecol{padding:16px 16px 8px}
@@ -1547,6 +1545,8 @@ function diagramLabel(id){
 }
 function boardFor(){
   // [kind, html or diagram id, note]
+  // a move asked for on the board (the thread): its position, with the move offered drawn on it
+  if (TH.on && TH.fen) return ["svg", boardSvg(TH.fen, S.flip, TH.offer || TH.uci), ""];
   if (S.preview) return ["svg", boardSvg(S.preview.fen, S.flip, S.preview.uci), S.preview.note];
   const n = S.node ? D.nodes[S.node] : null;
   const fen = n ? nodeFen(S.node) : null;
@@ -2044,7 +2044,8 @@ function selectNode(id, opts){
   if (S.diagram) closeDiagram();
   S.preview = null;
   if (RV.edit && !(RV.edit.kind === "move" && RV.edit.node === id) && RV.edit.kind !== "symbol" &&
-      RV.edit.kind !== "region" && !(RV.edit.kind === "gap" && gapKeyOf(id) === RV.edit.key)) closeFix();
+      RV.edit.kind !== "region" && !(RV.edit.kind === "gap" && gapKeyOf(id) === RV.edit.key) &&
+      !(RV.edit.kind === "thread" && TH.self)) closeFix();
   const lineChanged = S.line !== n.line;
   S.node = id; S.line = n.line;
   if (!opts.keepWanted) S.wanted = null;   // the reader chose a move: the wanted place is forgotten
@@ -2407,6 +2408,8 @@ function init(){
   $("tree").addEventListener("click", (e) => {
     const t = e.target.closest(".mv");
     if (t && t.dataset.node && PEN.connect) { finishConnect(t.dataset.node); return; }
+    // (the move a box in no line follows, while the thread asks for its move)
+    if (t && t.dataset.node && threadTree(t.dataset.node)) return;
     if (t && t.dataset.node) {
       selectNode(t.dataset.node, {scrollTree: false, scrollPage: true});
       openIfFailed(t.dataset.node);
@@ -2491,7 +2494,11 @@ function init(){
   $("pagenum").addEventListener("change", typedPage);
   $("pagenum").addEventListener("focus", () => $("pagenum").select());
   $("showread").addEventListener("click", () => {
-    setReading(!reading()); renderInfo(); layoutPanel(false);
+    const on = !reading();
+    setReading(on);
+    // the pencil is the tool reading mode starts with
+    if (on && !PEN.on) setPencil(true, true);
+    renderInfo(); layoutPanel(false);
   });
   $("zoom").addEventListener("click", () => { setZoom(!$("pagescroll").classList.contains("zoom")); viewChanged(); });
   $("mzoom").addEventListener("click", () => { setZoom(!$("pagescroll").classList.contains("zoom")); viewChanged(); });
@@ -2538,7 +2545,8 @@ function init(){
   window.addEventListener("resize", () => {
     cancelAnimationFrame(resizing);
     resizing = requestAnimationFrame(() => {
-      sizeCoords(document); layoutPanel(false); barHeight();
+      // (an open sheet sits above the bar, which a turned tablet may have changed)
+      sizeCoords(document); layoutPanel(false); barHeight(); placeSheet();
       // the window grew or shrank just after a turn (the app's top bar went away as the page
       // scrolled to its place): the page lands again in the space it has now
       if (landed && performance.now() < landed.until) land(landed.dir, landed.zoom, landed.y);
@@ -2610,7 +2618,6 @@ CHAPTER_HTML = """<!doctype html>
 <span class="pnav"><button class="ib" id="prevpage" aria-label="Previous page" title="Previous page (Page Up)">__ICON_BACK__</button>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number"><span class="ptotal small muted" id="pagetotal"></span>
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
-<button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
 <span class="rtools" role="group" aria-label="Correct the reading"><button class="ib rtool" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
 <button class="ib rtool" id="regionbtn" aria-pressed="false" aria-label="Read a section of the page that the program missed" title="Read a section: drag across moves that the program missed">__ICON_SECTION__</button>
 <button class="tb rtool" id="reviewbtn" aria-pressed="false">Review</button></span>
@@ -2669,6 +2676,8 @@ __PGNBTN__
 <button class="ib" id="bback" title="Previous move (left arrow)" aria-label="Previous move">__ICON_BACK__</button>
 <button class="ib" id="bfwd" title="Next move (right arrow)" aria-label="Next move">__ICON_FWD__</button>
 <button class="ib" id="bend" title="End of the line (End)" aria-label="End of the line">__ICON_END__</button>
+<span class="gap"></span>
+<button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
 <span class="gap"></span>
 <button class="ib" id="bflip" title="Turn the board round" aria-label="Turn the board round">__ICON_FLIP__</button>
 <button class="ib" id="bcpu" aria-pressed="false" title="Analysis with Stockfish" aria-label="Analysis with Stockfish">__ICON_CPU__</button>

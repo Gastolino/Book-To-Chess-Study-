@@ -7,7 +7,8 @@
 // it) whose notes print a reply without its number after a comment
 // ("7.Nf3 ... retreats. Nbd7 8.Qc2 ..."), where the moves after it do not
 // read on from it, so that the bare move stands in no line, and checks: the
-// Review list lists it; with the pencil on, a tap on it opens its corrector
+// Review list lists it; with the pencil (on with reading mode), a tap on it
+// asks for its move after 7.Nf3 and offers Nbd7, and More opens its corrector
 // with "Continue the line after 7.Nf3"; that button stores the join, and
 // the patch (computed by chessbook/live.py for that join) applied through
 // the page's applyPatch hook makes the move and the moves after it part of
@@ -55,9 +56,14 @@ function check(name, cond, detail) {
     check("the Review list shows the bare move", item && /Nbd7/.test(item), item);
     await page.click("#reviewbtn");
 
-    // the pencil: a tap on the bare move opens its corrector with the join after 7.Nf3
-    await page.click("#penbtn");
+    // the pencil (on with reading mode): a tap on the bare move asks for it after 7.Nf3, and More
+    // opens its corrector with the join after 7.Nf3
     await page.click(".mark[data-seq='" + u.key + "']");
+    const asks = await page.evaluate(() => ({ line: document.querySelector("#fix .thl").innerText,
+      buttons: [...document.querySelectorAll("#fix button")].map((b) => b.textContent) }));
+    check("the pencil's tap asks for the move after 7.Nf3 and offers it",
+          asks.line === "After 7.Nf3, make the move printed here on the board." && asks.buttons[0] === "Play Nbd7", asks);
+    await page.click("#thmore");
     await page.waitForSelector("#fixafter");
     const words = await page.evaluate(() => document.getElementById("fixafter").innerText);
     check("the corrector offers the line after 7.Nf3", /Continue the line after 7\.Nf3/.test(words), words);

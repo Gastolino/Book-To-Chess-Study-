@@ -6,7 +6,7 @@
 // Opens a chapter reader of the generated test book whose game lacks Black's
 // fifth move and White's sixth (tests/test_reader.py builds it, with the patch
 // that chessbook/live.py makes once the reader gives both moves), and checks,
-// with the pencil off: outside reading mode a tap on a red move only chooses
+// with the pencil that comes on with reading mode: outside reading mode a tap on a red move only chooses
 // it; in reading mode a tap on a red move on the page opens its corrector,
 // which says that the position is unknown because the text lacks a move
 // before it and offers the gap's corrector; the board shows the position

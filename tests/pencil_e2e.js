@@ -7,9 +7,11 @@
 // chessbook/live.py for a correction of the move printed "Zq9"), and checks:
 // the pencil in the top bar (and in the bar at the foot of a phone screen) is
 // a thin line icon with no background, shown in reading mode only (the Show
-// reading icon); with the pencil on, a tap on a move
-// that the program read without doubt opens its corrector, which takes
-// another legal move; "Continue a line…" on a sequence placed in no line
+// reading icon), and on with reading mode; with the pencil on, a tap on a move
+// that the program read without doubt asks in one line for the move printed
+// there, and More opens its corrector, which takes another legal move; a
+// tap on a sequence placed in no line asks for its move after the move
+// before it, and More opens its Place sheet, whose "Continue a line…"
 // joins it after a move tapped on the page; "Start a new line here" and "Not
 // part of this line" store their corrections; the patch applied through the
 // page's applyPatch hook (as the browser app's worker sends it) turns the
@@ -62,8 +64,7 @@ function check(name, cond, detail) {
     check("pencil shows in the top bar", pen.visible, pen);
     check("pencil is a 1.25 px line icon", pen.stroke === "1.25px" && pen.fill === "none", pen);
     check("pencil has no background", pen.bg === "rgba(0, 0, 0, 0)", pen.bg);
-    await page.click("#penbtn");
-    check("pencil turns on", await page.evaluate(() => document.body.classList.contains("pencil") &&
+    check("pencil comes on with reading mode", await page.evaluate(() => document.body.classList.contains("pencil") &&
       document.getElementById("penbtn").getAttribute("aria-pressed") === "true"));
 
     // a move read without doubt: its corrector opens and takes another legal move
@@ -72,6 +73,10 @@ function check(name, cond, detail) {
         if (m.node && READER.nodes[m.node].san === "e5" && READER.nodes[m.node].status === "ok") return m.node;
     });
     await page.click(".mark[data-node='" + e5 + "']");
+    const asks = await page.evaluate(() => document.querySelector("#fix .thl") && document.querySelector("#fix .thl").innerText);
+    check("a tap with the pencil asks for the move printed there, in one line",
+          asks === "Make the move printed here on the board.", asks);
+    await page.click("#thmore");
     await page.waitForSelector("#fix:not([hidden]) #fixsan");
     const editor = await page.evaluate(() => document.getElementById("fix").innerText);
     check("a move read without doubt opens its corrector", /Correct 1…e5/.test(editor) || /Correct 1\.\.\.e5/.test(editor), editor.slice(0, 80));
@@ -83,6 +88,7 @@ function check(name, cond, detail) {
     const stored = await page.evaluate((id) => JSON.parse(window.correctionsText()).moves[READER.nodes[id].key], e5);
     check("the correction of a move read without doubt is stored", stored && stored.san === "e6", stored);
     await page.click(".mark[data-node='" + e5 + "']");
+    await page.click("#thmore");
     await page.click("#fixundo");
 
     // disconnect: a new line from 6.Nxf7
@@ -90,6 +96,7 @@ function check(name, cond, detail) {
       for (const id in READER.nodes) if (READER.nodes[id].raw === "tLlxf7") return id;
     });
     await page.click(".mark[data-node='" + nxf7 + "']");
+    await page.click("#thmore");
     await page.waitForSelector("#splithere");
     await page.emulateMedia({ colorScheme: "dark" });
     await shot("pencil_line_1280_dark.png");
@@ -110,6 +117,10 @@ function check(name, cond, detail) {
     await page.evaluate((p) => { location.hash = "#page=" + p; }, seqPage);
     await page.waitForFunction((p) => window.readerState.page === p, seqPage);
     await page.click(".mark[data-seq='" + seq + "']");
+    const seqAsks = await page.evaluate(() => document.querySelector("#fix .thl") && document.querySelector("#fix .thl").innerText);
+    check("a tap on a sequence placed in no line asks for its move after the move before it",
+          /^After .+, make the move printed here on the board\.$/.test(seqAsks || ""), seqAsks);
+    await page.click("#thmore");
     await page.waitForSelector("#fixjoin");
     await page.click("#fixjoin");
     check("joining asks for a move", await page.evaluate(() => document.body.classList.contains("joining")));
