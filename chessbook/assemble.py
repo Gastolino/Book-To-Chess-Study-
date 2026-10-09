@@ -272,6 +272,18 @@ BETWEEN_MAX = 5                 # the moves suggest offers for a gap, at most
 # (suggest): read without doubt after its printed number (True), read without doubt
 # elsewhere (False), read with doubt, or not read from the words at all (None)
 WORDS_DOUBT = {True: 0.0, False: 0.25, "unsure": 0.75, None: 1.0}
+# reading on after a correction (_Builder.read_on): the pages past the corrected move's
+# page that it reads at least (besides the rest of the chapter), the joins and fills it
+# makes at most in one call, the moves the program supplies for a gap at most, how many
+# printed moves after them must read, and by how much the next best moves must read worse
+READ_ON_PAGES = 5
+READ_ON_STEPS = 60
+FILL_MAX = 2
+DECIDE_PROBE = 12               # printed moves read to tell whether the moves supplied decide
+DECIDE_NEED = 4                 # of which at least this many (or all the run's) must read
+DECIDE_COST = 1.5               # the runner-up's extra reading cost that counts as clearly worse
+DECIDE_MEAN = 1.0               # the most the moves read after a supplied move may cost each
+DECIDE_RIVALS = 3               # other choices that read half as far, at most, still to read out
 
 _EXERCISE_RE = re.compile(r"^(\d{1,3}[a-d]?)\.(?= )")
 # What may follow a solution number: a move number ("1.Qa1", "2...Rh3+",
@@ -456,6 +468,33 @@ def _missing_words(ply, count):
     if count == 2:
         return f"{one(ply)} and {one(ply + 1)} are missing"
     return f"{count} moves are missing from {one(ply)} on"
+
+
+def _same_position(a, b):
+    """True when two FENs hold the same pieces on the same squares with the
+    same side to move."""
+    return bool(a and b) and a.split(" ")[:2] == b.split(" ")[:2]
+
+
+def _reach(fen, placement, count):
+    """The sequences of count legal moves (SAN) that lead from fen to a
+    position with the pieces placed as placement (a FEN's first field)."""
+    out = []
+    board = chess.Board(fen)
+
+    def walk(path, k):
+        if k == 0:
+            if board.board_fen() == placement:
+                out.append(list(path))
+            return
+        for mv in list(board.legal_moves):
+            path.append(board.san(mv))
+            board.push(mv)
+            walk(path, k - 1)
+            board.pop()
+            path.pop()
+    walk([], count)
+    return out
 
 
 def _board_ply(fen):
@@ -926,11 +965,16 @@ class _Decoder:
         self.calls = 0
         self.seconds = 0.0
 
-    def run(self, fen, tokens):
+    def run(self, fen, tokens, keep=True):
+        """decode() of tokens from fen, kept in the memo (keep False: read
+        from it, not added to it, for the many trial readings of read_on)."""
         if self.fixed:
             tokens = [self.named(t) for t in tokens]
         key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced, t.shape) for t in tokens))
         hit = self.memo.get(key)
+        if hit is None and not keep:
+            return decode(chess.Board(fen), tokens, glyphs=self.glyphs, letters=self.decode_letters,
+                          insert=False)
         if hit is None:
             t0 = time.perf_counter()
             # Never supply a move the text lacks: a gap in the numbering is
@@ -998,6 +1042,7 @@ class _Builder:
         self.kinds = sel.picture_kinds(diagrams, chapters[1]["start"] if len(chapters) > 1 else 1)
         self.diag_info = {}
         self.page_ids = defaultdict(list)
+        self.diagram_at = {}            # diagram id -> (chapter, offset in its text): reading order
         for did, d in zip(self.ids, diagrams):
             self.diag_info[did] = d
             self.page_ids[d["page"]].append(did)
@@ -1029,6 +1074,11 @@ class _Builder:
         self.by_line = defaultdict(list)        # line id -> its node ids
         self.line_pages = defaultdict(set)      # line id -> pages holding its marks
         self.base = None                # the lines as assembled, before corrections
+
+    def __getstate__(self):
+        # (the caches of suggest and read_on are not part of a stored reading)
+        return {k: v for k, v in self.__dict__.items()
+                if k not in ("_page_lines", "_run_index", "_between")}
 
     def page_label(self, page):
         """The page number printed in the book (the PDF page when unknown)."""
@@ -1601,6 +1651,7 @@ class _Builder:
                 self.pending_header = self.pending_number = self.exercise = None
             elif kind == "diagram":
                 self.diagram_events.append((off, x))
+                self.diagram_at[x] = (self.ci, off)
                 self.diagram_section.append(self.section_index)
                 if a is not None and not a.waiting and a.main_tok:
                     # a diagram printed right after decoded moves shows the
@@ -2746,10 +2797,12 @@ class _Builder:
         for before, mv in moves:
             after = before.copy()
             after.push(mv)
+            auto = {"auto": True} if v.get("auto") else {}
             nid = self.new_node(L, parent=L.main_nodes[-1], san=before.san(mv), fen=after.fen(),
                                 number=before.fullmove_number, black=before.turn == chess.BLACK,
-                                status="ok", raw="", main=True, uci=mv.uci(), page=page,
-                                corrected="filled", gap=key)
+                                status="guessed" if auto else "ok", raw="", main=True,
+                                uci=mv.uci(), page=page,
+                                corrected="assumed" if auto else "filled", gap=key, **auto)
             L.main_nodes.append(nid)
             L.ply_node[L.next_ply] = nid
             L.next_ply += 1
@@ -4168,7 +4221,7 @@ class _Builder:
             return (r.ci, r.start, r.end, len(r.tokens))
         if op[0] == "graft":
             return ("graft", op[1], tuple(_Builder.op_sig(o) for o in op[2]),
-                    tuple(op[4]) if len(op) > 4 else ())
+                    tuple(op[4]) if len(op) > 4 else (), bool(op[5]) if len(op) > 5 else False)
         return (op[0],) + tuple(rs(x) if isinstance(x, _Run) else
                                 (tuple(sorted(x.items())) if isinstance(x, dict) else x)
                                 for x in op[1:])
@@ -4422,7 +4475,8 @@ class _Builder:
         # move) find the line gone on when their turn comes
         tops = tgt[1][1]
         at = tgt[2] + 1 if tops[tgt[2]][0] in ("main", "note", "graft") else len(tops)
-        tops.insert(at, ("graft", v["after"], sub, key, tuple(v.get("before") or ())))
+        tops.insert(at, ("graft", v["after"], sub, key, tuple(v.get("before") or ()),
+                         bool(v.get("auto"))))
         return True
 
     # ---------------- replaying
@@ -4532,12 +4586,19 @@ class _Builder:
                 best = (d, nid)
         return best and best[1]
 
-    def set_corrected(self, nid, what):
+    def set_corrected(self, nid, what, auto=False):
+        """Mark a node and its boxes as corrected (what: CORRECTED_COUNTS);
+        auto: by the program, which read on after a correction (read_on),
+        rather than by the reader."""
         n = self.nodes[nid]
         n["corrected"] = what
+        if auto:
+            n["auto"] = True
         for m in self.marks.get(n["page"], []):
             if m["node"] == nid:
                 m["corrected"] = what
+                if auto:
+                    m["auto"] = True
 
     def do_attach(self, L, run, target):
         """A sequence the reader tied to a move of this line: an alternative
@@ -4605,6 +4666,7 @@ class _Builder:
         the main line's last move, are placed in no line, with the reason."""
         _, target, sub, src_key = op[:4]
         before = list(op[4]) if len(op) > 4 else []
+        auto = bool(op[5]) if len(op) > 5 else False
         nid = self.target_node(L, target)
         mains = [o[1] for o in sub if o[0] == "main"]
         if not mains:
@@ -4653,12 +4715,12 @@ class _Builder:
             refuse(why)
             return
         page = self.place_of(run0.moves[0], run0.ci)[0] or self.nodes[nid]["page"]
-        parent = self.give_moves(L, nid, before, cont, page)
+        parent = self.give_moves(L, nid, before, cont, page, auto)
         if cont:
             n0 = len(L.main_nodes)
-            self.run_ops(L, sub)
+            self.run_ops(L, self.numbering_cut(L, sub, _board_ply(start)))
             if len(L.main_nodes) > n0 and src_key:
-                self.set_corrected(L.main_nodes[n0], "connected")
+                self.set_corrected(L.main_nodes[n0], "connected", auto)
             return
         # a variation from the move chosen: the runs read as one sequence
         toks = [t for r in mains for t in self.forced(r).tokens if r.ci == run0.ci]
@@ -4668,7 +4730,7 @@ class _Builder:
         nodes = self.insert_decoded(L, parent, whole, decs)
         L.variations += 1
         if nodes and src_key:
-            self.set_corrected(nodes[0], "connected")
+            self.set_corrected(nodes[0], "connected", auto)
         if state is not None and nodes and not self.nodes[nid]["main"]:
             plies = {}
             for n in nodes:
@@ -4680,10 +4742,56 @@ class _Builder:
                                          "next": (max(plies) + 1) if plies else None,
                                          "bracket": run0.bracket, "end": whole.end})
 
-    def give_moves(self, L, nid, sans, main, page):
+    def numbering_cut(self, L, sub, ply):
+        """The ops of a join that continues the main line from ply, with its
+        first run cut before the first move whose printed number (inside the
+        run) is not the one it would be played as: the decoder would read
+        it as a move of the other side, or of another move, a legal but
+        wrong game. The moves from there on stand in no line, with the reason
+        (the moves the text lacks before them, join_numbering's words), and
+        the ops after the run with them."""
+        k = next((i for i, o in enumerate(sub) if o[0] == "main"), None)
+        if k is None:
+            return sub
+        run = sub[k][1]
+        toks, want, cut = run.tokens, ply, None
+        for i, t in enumerate(toks):
+            if t.kind != "move":
+                continue
+            lead = toks[i - 1] if i > 0 and toks[i - 1].kind == "number" else None
+            if i > 0 and lead is not None and t.number is not None:
+                n, black = want // 2 + 1, bool(want % 2)
+                values = _number_values(lead) or [t.number]
+                if n not in values or (lead.side_known and bool(t.black) != black):
+                    cut = i
+                    break
+            want += 1
+        if cut is None:
+            return sub
+        head, tail = self.cut_run(run, cut)
+        tail = self.forced(tail)
+        first = tail.moves[0]
+        label = f"{first.number}{'...' if first.black else '.'}{self.shown_move(first.raw)}"
+        gap = _ply(first) - want
+        if 0 < gap <= GAP_MAX:
+            why = f"{_missing_words(want, gap)} before {label}"
+            missing = {"from_ply": want, "count": gap}
+        else:
+            why = f"it is printed as {_ply_words(_ply(first))}, but {_ply_words(want)} comes next"
+            missing = None
+        self.unplaced(tail, why, src=L, missing=missing)
+        for o in sub[k + 1:]:
+            if o[0] in ("main", "note", "unplaced"):
+                self.unplaced(o[1], why if o[0] == "main" else
+                              "the moves before it stand in no line", src=L)
+        return sub[:k] + ([("main", head)] if head is not None else [])
+
+    def give_moves(self, L, nid, sans, main, page, auto=False):
         """Play the moves the reader gave after node nid (do_graft found them
         legal there) as nodes with "corrected" "filled", on the main line
-        when main; returns the last node."""
+        when main; returns the last node. auto: the program supplied them
+        (read_on): they are "assumed", doubtful ("guessed") until the reader
+        checks them."""
         parent = nid
         board = chess.Board(self.nodes[nid]["fen"])
         for san in sans:
@@ -4691,8 +4799,10 @@ class _Builder:
             number, black, s = board.fullmove_number, board.turn == chess.BLACK, board.san(mv)
             board.push(mv)
             parent = self.new_node(L, parent=parent, san=s, fen=board.fen(), number=number,
-                                   black=black, status="ok", raw="", main=main, uci=mv.uci(),
-                                   page=page, corrected="filled")
+                                   black=black, status="guessed" if auto else "ok", raw="",
+                                   main=main, uci=mv.uci(), page=page,
+                                   corrected="assumed" if auto else "filled",
+                                   **({"auto": True} if auto else {}))
             if main:
                 L.main_nodes.append(parent)
                 L.ply_node[L.next_ply] = parent
@@ -5052,15 +5162,40 @@ class _Builder:
         """The moves printed from the token key on, to the end of the run that
         holds it (in a line, a join, or no line), with the moves the reader
         corrected; None when the program finds no such token."""
-        runs = [r for L in self.lines for o in L.ops for r in self.op_runs(o) if r.ci == ci]
-        runs += [run for _, run in self.base["unplaced"] if run.ci == ci]
+        try:
+            page = fixes.parse_key(key)[0]
+        except ValueError:
+            return None
+        index = self.__dict__.get("_run_index")
+        if index is None or index[0] is not self.lines:
+            # the runs of the lines and of no line by chapter and page, until the
+            # lines are derived again (apply_fix)
+            by = defaultdict(list)
+            runs = [r for L in self.lines for o in L.ops for r in self.op_runs(o)]
+            runs += [run for _, run in self.base["unplaced"]]
+            for r in runs:
+                if not r.moves:
+                    continue
+                a = self.place_of(r.moves[0], r.ci)[0]
+                b = self.place_of(r.moves[-1], r.ci)[0]
+                for p in ([None] if a is None or b is None else range(a, b + 1)):
+                    by[(r.ci, p)].append(r)
+            index = self._run_index = (self.lines, by)
+        runs = index[1].get((ci, page), []) + index[1].get((ci, None), [])
         hit = self.find_token(key, runs)
         if hit is None:
             return None
         tail = self.cut_run(runs[hit[0]], hit[1])[1]
         return self.forced(tail) if tail is not None else None
 
-    def suggest(self, after, before=(), skip=()):
+    def chapter_at(self, page):
+        """The index of the chapter that holds a page, or None."""
+        for i, c in enumerate(self.chapters):
+            if c["start"] <= page <= c["end"]:
+                return i
+        return None
+
+    def suggest(self, after, before=(), skip=(), until=None, between=True):
         """What follows the move after (a token key or a node id) for the
         reader who joins the moves the program could not place to its line.
         The line is followed from that move to the end of its branch; then
@@ -5070,7 +5205,10 @@ class _Builder:
         no line ("run") or of another line ("line"), whose printed number
         follows the branch's end, at most SUGGEST_GAP moves later. before
         holds moves the reader gave after the end of the branch (SAN), and
-        skip the keys of boxes the reader passed over.
+        skip the keys of boxes the reader passed over. until, a page, looks
+        that far instead of to the end of the chapter (into the chapters
+        after it too). between False leaves "between" empty (read_on finds
+        the moves for a gap its own way, and only where it stops).
 
         Returns {"done": True} when nothing follows in the chapter, else
         {"kind", "key", "page", "bbox", "raw", "number", "black", "after"
@@ -5104,7 +5242,7 @@ class _Builder:
             if x["status"] == "waiting":
                 break
             if not x["san"]:
-                return self.suggestion_inside(L, cur, nxt)
+                return self.suggestion_inside(L, cur, nxt, between)
             cur = nxt
             if x.get("key"):
                 printed = cur
@@ -5121,12 +5259,18 @@ class _Builder:
         fen = board.fen()
         want = _board_ply(fen)
         last = self.mark_of(printed) if printed is not None else None
-        pos = last["_o"] if last is not None else -1
+        here = (L.chapter, -1)
+        if last is not None:
+            ci = self.chapter_at(self.nodes[printed]["page"])
+            here = (L.chapter if ci is None else ci, last["_o"])
         ch = self.chapters[L.chapter]
-        marks = sorted(((m["_o"], p, m) for p in range(ch["start"], ch["end"] + 1)
-                        for m in self.marks.get(p, []) if m["_o"] > pos),
-                       key=lambda x: x[:2])
-        for _, page, m in marks:
+        end = ch["end"] if until is None else until
+        # (marks carry their offset in their chapter's text: reading order within it)
+        marks = sorted(((ci, m["_o"], p, m) for p in range(ch["start"], end + 1)
+                        for ci in [self.chapter_at(p)] if ci is not None
+                        for m in self.marks.get(p, []) if (ci, m["_o"]) > here),
+                       key=lambda x: x[:3])
+        for ci, _, page, m in marks:
             key = m.get("key")
             if not key or key in skip:
                 continue
@@ -5140,7 +5284,7 @@ class _Builder:
                         self.nodes[x["parent"]]["parent"] is not None:
                     continue
                 kind = "line"
-            tail = self.run_from(key, L.chapter)
+            tail = self.run_from(key, ci)
             if tail is None:
                 continue
             ply = _ply(tail.moves[0])
@@ -5151,10 +5295,10 @@ class _Builder:
                 decs = self.dec.run(fen, tail.tokens[:1])
                 if not decs or decs[0].status == "failed":
                     continue
-            return self.suggestion(kind, m, page, tail, cur, fen, gap, want, last)
+            return self.suggestion(kind, m, page, tail, cur, fen, gap, want, last, between)
         return {"done": True}
 
-    def suggestion(self, kind, m, page, tail, cur, fen, gap, want, last):
+    def suggestion(self, kind, m, page, tail, cur, fen, gap, want, last, between=True):
         """The record suggest() returns for the box m."""
         first = tail.moves[0]
         out = {"kind": kind, "key": m["key"], "page": page, "bbox": list(m["bbox"]),
@@ -5163,13 +5307,26 @@ class _Builder:
                "missing": {"from_ply": want, "count": gap} if gap else None,
                "between": [], "decoded": []}
         if gap:
-            start = (self.nodes[last["node"]]["page"], last["bbox"]) if last is not None else None
-            out["between"] = self.between_moves(fen, tail, gap, start, (page, m["bbox"]))
+            if between:
+                out["between"] = self.between_for(out, fen, tail, last)
         else:
-            out["decoded"] = self.read_on(fen, tail)
+            out["decoded"] = self.read_from(fen, tail)
         return out
 
-    def suggestion_inside(self, L, cur, nid):
+    def between_for(self, s, fen, tail, last=None):
+        """suggest()'s "between" for the record s (number_gap moves missing
+        before the run tail, from the position fen; last: the box of the
+        line's last printed move, else s["after"]'s)."""
+        if last is None and s.get("after"):
+            an = self.node_of(s["after"])
+            last = self.mark_of(an) if an is not None else None
+        start = (self.nodes[last["node"]]["page"], last["bbox"]) if last is not None else None
+        kept = self.__dict__.get("_between")
+        if kept is not None and kept[0] == (fen, s["key"], s["number_gap"]):
+            return [c["san"] for c in kept[1][:BETWEEN_MAX]]      # (decisive_fill read them)
+        return self.between_moves(fen, tail, s["number_gap"], start, (s["page"], s["bbox"]))
+
+    def suggestion_inside(self, L, cur, nid, between=True):
         """The record suggest() returns for a move of the line itself that
         does not read (nid, after cur): a misread move, or the gap in the
         text before the next printed move."""
@@ -5187,9 +5344,9 @@ class _Builder:
             return {"done": True}
         last = self.mark_of(cur) if self.nodes[cur].get("key") else None
         return self.suggestion(kind, m, self.nodes[hit]["page"], tail, cur, fen, gap,
-                               _board_ply(fen), last)
+                               _board_ply(fen), last, between)
 
-    def read_on(self, fen, run):
+    def read_from(self, fen, run):
         """The moves of run read from fen, up to the first that does not read:
         [{"san", "cost", "unsure", "key"}]."""
         out = []
@@ -5212,9 +5369,17 @@ class _Builder:
             cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
             x0, y0, x1, y1 = w["bbox"]
             return x0 - 0.5 <= cx <= x1 + 0.5 and y0 - 0.5 <= cy <= y1 + 0.5
+        if pb - pa > 1:
+            pa, ba = pb - 1, None       # (words pages away say nothing of the moves missing)
+        # (the lines of the last few pages are kept: read_on asks for them again)
+        cache = self.__dict__.setdefault("_page_lines", {})
         out, on = [], ba is None
         for p in range(pa, pb + 1):
-            for ln in pt.page_lines(self.doc, p - 1, self.fonts):
+            if p not in cache:
+                while len(cache) >= 4:
+                    cache.pop(next(iter(cache)))
+                cache[p] = pt.page_lines(self.doc, p - 1, self.fonts)
+            for ln in cache[p]:
                 if ln["role"] in ("head", "coord", "blank", "label"):
                     continue
                 for w in ln["words"]:
@@ -5235,6 +5400,13 @@ class _Builder:
         move, every legal move; ranked by how many of the moves printed in
         run then read (its first BETWEEN_PROBE moves), then by the cost of
         reading them together with the doubt of the words (WORDS_DOUBT)."""
+        return [c["san"] for c in self.between_scored(fen, run, count, a, b)[:BETWEEN_MAX]]
+
+    def between_scored(self, fen, run, count, a, b):
+        """between_moves() with the scores: [{"san" (count moves), "reads"
+        (of the first BETWEEN_PROBE moves of run, how many read after them),
+        "cost" (of reading those, with the doubt of the words), "doubt" (that
+        doubt), "words" (what the words said, or None)}], best first."""
         board = chess.Board(fen)
         n = board.fullmove_number
         words = self.words_between(a, b)
@@ -5274,9 +5446,387 @@ class _Builder:
             doubt = (WORDS_DOUBT[None] if words_say is None else
                      WORDS_DOUBT[words_say[0] == 0 and not words_say[1]] if not words_say[1] else
                      WORDS_DOUBT["unsure"])
-            scored.append(((-reads, round(cost + doubt, 2), words_say or (9, 9, 99.0)), list(sans)))
+            scored.append(((-reads, round(cost + doubt, 2), words_say or (9, 9, 99.0)),
+                           {"san": list(sans), "reads": reads, "cost": round(cost + doubt, 2),
+                            "doubt": doubt, "words": words_say}))
         scored.sort(key=lambda s: s[0])
-        return [sans for _, sans in scored[:BETWEEN_MAX]]
+        return [c for _, c in scored]
+
+    # ---------------- reading on after a correction
+    # After each correction the reader makes while threading a line, the
+    # program reads on by itself from the corrected move (read_on): it joins
+    # what clearly continues the line, supplies a move or two the text lacks
+    # where the evidence decides them, and stops where it needs the reader.
+    # Its joins and moves are corrections like the reader's ("connect" and
+    # "gaps" entries with "auto": true), so that a fresh build gives the
+    # same lines and the reader can remove them.
+
+    def branch_of(self, nid):
+        """The nodes of the line of nid that follow it on its branch (the
+        main line, or the variation it stands in), in order."""
+        out, cur = [], nid
+        line = self.nodes[nid]["line"]
+        while True:
+            n = self.nodes[cur]
+            nxt = next((c for c in n["children"]
+                        if self.nodes[c]["line"] == line and self.nodes[c]["main"] == n["main"]),
+                       None)
+            if nxt is None:
+                return out
+            out.append(nxt)
+            cur = nxt
+
+    def read_on(self, after, chapters=None, pages=READ_ON_PAGES, skip=()):
+        """Read on by itself from the move after (a token key or a node id),
+        once the corrections are applied (apply_fix): through the rest of the
+        chapter and at least pages pages after the move's page (never past
+        the book), join what follows the line without asking, one step at a
+        time (suggest()):
+
+        - a run in no line whose printed number follows the line's end and
+          whose first move reads without doubt from there: joined;
+        - a gap of one or two moves (a run numbered that far ahead, or a gap
+          in the line's own text) where one choice of moves decides it: the
+          moves printed after them then read (DECIDE_NEED of them, or the
+          whole run), and the next best choice reads less than half as far
+          or at a clearly higher cost (decisive_fill): supplied;
+        - else a diagram printed before the next run whose position exactly
+          one sequence of those moves reaches (diagram_fill): supplied;
+        - the first move of a fragment (a line the program started from a
+          diagram or a heading, not a game with its own header) whose start
+          position is the line's position, after the moves supplied: merged.
+
+        Anything else stops it: a move it cannot read, more moves missing,
+        another game. Each step is stored as a correction marked as the
+        program's (corrections.py "connect" and "gaps" with "auto": true)
+        and applied at once; a step the replay refuses is taken back, and
+        stops it. skip holds keys of boxes the program must not join or fill
+        by itself (corrections of the program's that the reader removed): it
+        stops there.
+
+        Returns {"auto": {"connect": {...}, "gaps": {...}} (the corrections
+        made), "joined": [{"key", "after", "page", "raw", "moves"}],
+        "filled": [{"key", "san", "how" ("decisive" or "diagram"),
+        "diagram"}], "moves" (moves the line gained), "stop" (the box where
+        it stopped, as suggest() gives it, with "reason"; or {"done": true,
+        "reason"} when nothing more follows within the pages read), "until"
+        (the last page read) and "end" (the key of the line's last printed
+        move), "changes" (apply_fix's lists, together)}."""
+        nid = self.node_of(after)
+        if nid is None:
+            raise ValueError("The program no longer finds the move to go on from.")
+        line_id = self.nodes[nid]["line"]
+        L = self.line_by_id.get(line_id)
+        if L is None:
+            raise ValueError("The program no longer finds the line of that move.")
+        # node ids change when the line is replayed: go on from a printed move
+        anchor, cur = after, nid
+        while cur is not None and not self.nodes[cur].get("key"):
+            cur = self.nodes[cur]["parent"]
+        if cur is not None and self.nodes[cur]["parent"] is not None:
+            anchor = self.nodes[cur]["key"]
+        first = anchor
+        page0 = self.nodes[nid]["page"] or L.page
+        until = min(max(self.chapters[L.chapter]["end"], page0 + pages),
+                    max(c["end"] for c in self.chapters))
+        start = len([n for n in self.branch_of(self.node_of(first)) if self.nodes[n]["san"]])
+        fix = copy.deepcopy(self.fix)
+        made = {"connect": {}, "gaps": {}}
+        joined, filled = [], []
+        changes = {"lines": set(), "removed": set(), "pages": set(), "pending": []}
+        skip = set(skip or ())
+
+        def merge(res):
+            changes["lines"] |= set(res["lines"])
+            changes["removed"] |= set(res["removed"])
+            changes["pages"] |= set(res["pages"])
+            changes["pending"] = res["pending"]
+        stop = None
+        for _ in range(READ_ON_STEPS):
+            s = self.suggest(anchor, until=until, between=False)
+            result = self.line_by_id[line_id].result
+            if result and (s.get("done") or s["kind"] in ("run", "line")) and \
+                    self.nodes[self.node_of(anchor)]["main"]:
+                # (the main line reads to its end, and the book prints the result there)
+                stop = {"done": True, "reason": f"the game ends with its result, {result}"}
+                break
+            if s.get("done"):
+                stop = {"done": True, "reason": "nothing more follows the line up to page "
+                                                f"{self.page_label(until)}"}
+                break
+            if s["page"] > until:
+                stop = self.read_on_stop(s, "the next move to read lies past the pages read")
+                break
+            if s["key"] in skip:
+                # (the reader took back what the program did here: the reader goes on from it)
+                stop = self.read_on_stop(s, "you took back the program's reading here")
+                break
+            step = self.read_on_step(s)
+            if "stop" in step:
+                stop = self.read_on_stop(s, step["stop"])
+                break
+            part, key = step["part"], step["key"]
+            trial = copy.deepcopy(fix)
+            trial[part][key] = step["value"]
+            n0 = len(self.branch_of(self.node_of(first)))
+            merge(self.apply_fix(trial, chapters))
+            why = self.read_on_placed(key, line_id)
+            if why:
+                merge(self.apply_fix(fix, chapters))
+                stop = self.read_on_stop(s, why)
+                break
+            fix = trial
+            made[part][key] = step["value"]
+            gained = len(self.branch_of(self.node_of(first))) - n0
+            if step.get("fill"):
+                filled.append({"key": key, "san": list(step["fill"]), "how": step["how"],
+                               "diagram": step.get("diagram")})
+            if part == "connect":
+                joined.append({"key": key, "after": s["after"], "page": s["page"],
+                               "raw": s["raw"], "moves": gained - len(step.get("fill") or ())})
+            anchor = key
+        else:
+            stop = {"done": False, "reason": f"the program stopped after {READ_ON_STEPS} steps"}
+        self.__dict__.pop("_between", None)
+        top = self.node_of(first)
+        branch = [top] + self.branch_of(top)
+        printed = [n for n in branch if self.nodes[n].get("key") and self.nodes[n]["san"]]
+        end = self.nodes[printed[-1]]["key"] if printed else None
+        moves = len([n for n in self.branch_of(top) if self.nodes[n]["san"]])
+        return {"auto": {k: v for k, v in made.items() if v}, "joined": joined,
+                "filled": filled, "moves": max(0, moves - start), "stop": stop, "until": until,
+                "end": end, "changes": {"lines": sorted(changes["lines"]),
+                                        "removed": sorted(changes["removed"]),
+                                        "pages": sorted(changes["pages"]),
+                                        "pending": changes["pending"]}}
+
+    def read_on_stop(self, s, why):
+        """Where read_on() stops: the box s (as suggest() gives it) with the
+        reason, and the moves that may stand for those missing before it.
+        Moves printed more than a page after the line's last move with more
+        moves missing than the program fills (FILL_MAX) are no place to ask
+        the reader for them: the line reads to its end there ({"done":
+        true}, with that box as "next")."""
+        stop = dict(s, reason=why, done=False)
+        gap = s.get("number_gap") or 0
+        an = self.node_of(s["after"]) if s.get("after") else None
+        last = self.nodes[an]["page"] if an is not None else None
+        if gap > FILL_MAX and last is not None and s["page"] > last + 1:
+            return {"done": True, "reason": "nothing more follows the line nearby", "next":
+                    {k: s.get(k) for k in ("kind", "key", "page", "bbox", "raw", "number_gap")}}
+        if 0 < gap <= SUGGEST_GAP and s["kind"] != "failed":
+            ci = self.chapter_at(s["page"])
+            tail = self.run_from(s["key"], ci) if ci is not None else None
+            fen = self.nodes[s["after_node"]]["fen"]
+            if tail is not None and fen:
+                stop["between"] = self.between_for(s, fen, tail)
+        return stop
+
+    def read_on_step(self, s):
+        """What read_on() does with the box suggest() offers (s): {"part",
+        "key", "value"} (the correction to make), with "fill", "how" and
+        "diagram" when it supplies moves; or {"stop": the reason}."""
+        kind, gap, key = s["kind"], s["number_gap"], s["key"]
+        label = (f"{s['number']}{'...' if s['black'] else '.'}{self.shown_move(s['raw'])}"
+                 if s.get("number") is not None else self.shown_move(s["raw"]))
+        if kind == "failed":
+            return {"stop": f"the program cannot read the move printed as {label}"}
+        cur = s["after_node"]
+        fen = self.nodes[cur]["fen"]
+        want = _board_ply(fen)
+        ci = self.chapter_at(s["page"])
+        tail = self.run_from(key, ci) if ci is not None else None
+        if tail is None:
+            return {"stop": "the program no longer finds these moves"}
+        missing = f"{_missing_words(want, gap)} before {label}" if gap else ""
+        if kind == "gap":
+            if not 1 <= gap <= FILL_MAX:
+                return {"stop": missing}
+            fill = self.decisive_fill(fen, tail, gap, s)
+            if fill is None:
+                return {"stop": missing}
+            return {"part": "gaps", "key": key, "value": {"san": fill, "auto": True},
+                    "fill": fill, "how": "decisive"}
+        if not s.get("after"):
+            return {"stop": "the line ends with a move that is not printed, so the program "
+                            "does not join moves to it by itself"}
+        if s.get("number") is None:
+            return {"stop": f"{label} carries no move number, so the program does not join it "
+                            "by itself"}
+        other = None
+        if kind == "line":
+            hit = self.node_of(key)
+            other = self.line_by_id.get(self.nodes[hit]["line"]) if hit is not None else None
+            if other is None or other.kind != "fragment" or other.header:
+                return {"stop": f"{label} begins another game"}
+        if self.nodes[cur]["main"] and tail.kind != "main" and self.main_printed(cur):
+            # the book prints the moves of its games in a font of their own, and these
+            # are printed as a note: a variation, never the game's next moves by itself
+            return {"stop": f"{label} is printed as a note, not as the moves of the line"}
+        if gap == 0:
+            if other is not None:
+                if not _same_position(self.nodes[other.root]["fen"], fen):
+                    return {"stop": f"the line from {label} starts from another position"}
+            elif not s["decoded"] or s["decoded"][0]["unsure"]:
+                return {"stop": f"the program cannot read {label} without doubt after "
+                                f"{self.move_words(cur)}"}
+            return {"part": "connect", "key": key, "value": {"after": s["after"], "auto": True}}
+        if gap > FILL_MAX:
+            return {"stop": missing}
+        fill, how, did = None, "decisive", None
+        if other is None:
+            fill = self.decisive_fill(fen, tail, gap, s)
+        if fill is None:
+            fill, did = self.diagram_fill(fen, gap, s, other)
+            how = "diagram"
+        if fill is None:
+            return {"stop": missing}
+        board = chess.Board(fen)
+        for san in fill:
+            board.push_san(san)
+        if other is not None:
+            if not _same_position(self.nodes[other.root]["fen"], board.fen()):
+                return {"stop": missing}
+        else:
+            d = self.dec.run(board.fen(), _first_moves(tail.tokens, 1))
+            if not d or d[-1].status != "ok":
+                return {"stop": missing}
+        return {"part": "connect", "key": key,
+                "value": {"after": s["after"], "before": list(fill), "auto": True},
+                "fill": fill, "how": how, "diagram": did}
+
+    def main_printed(self, nid):
+        """True when the book prints the moves of its games in a font of their
+        own (fonts "moves") and the line of node nid reads its main line from
+        runs printed so: a run printed as a note does not go on with it."""
+        if not self.moves_font:
+            return False
+        L = self.line_by_id.get(self.nodes[nid]["line"])
+        return L is not None and any(o[0] == "main" and o[1].kind == "main"
+                                     for o in L.ops if len(o) > 1 and isinstance(o[1], _Run))
+
+    def decisive_fill(self, fen, run, count, s):
+        """The count moves (one or two) that the text lacks before run (from
+        the position fen), when one choice decides them: the moves printed
+        after it then read (at least DECIDE_NEED, or all of the run's; up to
+        DECIDE_PROBE are read) at a low cost each (DECIDE_MEAN), and after
+        every other choice of legal moves the printed moves read less than
+        half as far, or only at a cost higher by DECIDE_COST over the same
+        moves (a misprint the reading has to assume). Otherwise None.
+
+        The first choice is the best of between_scored (for two moves, of
+        those the words between the boxes read as; none: None). The other
+        choices are read in stages, as far as it takes to tell, and more
+        than DECIDE_RIVALS that read half as far leave it undecided. What
+        the words say does not count against the others: only the printed
+        moves after them decide."""
+        a = None
+        an = self.node_of(s["after"]) if s.get("after") else None
+        m = self.mark_of(an) if an is not None else None
+        if m is not None:
+            a = (self.nodes[an]["page"], m["bbox"])
+        cands = self.between_scored(fen, run, count, a, (s["page"], s["bbox"]))
+        self._between = ((fen, s["key"], count), cands)
+        n = len(run.moves)
+        need = min(DECIDE_NEED, n)
+        if not cands or cands[0]["reads"] < min(need, BETWEEN_PROBE):
+            return None
+
+        def costs(sans, k):
+            """The costs of the first k moves of run read after the moves
+            sans, up to the first that does not read."""
+            b = chess.Board(fen)
+            for san in sans:
+                b.push_san(san)
+            out = []
+            for d in self.dec.run(b.fen(), _first_moves(run.tokens, k), keep=False):
+                if d.status == "failed":
+                    break
+                out.append(d.cost)
+            return out
+        top = cands[0]["san"]
+        mine = costs(top, min(DECIDE_PROBE, n))
+        best = len(mine)
+        if best < need or sum(mine) > DECIDE_MEAN * best:
+            return None
+        half = -(-best // 2)
+
+        def stands(sans, k):
+            """The first k moves read after sans, and not clearly dearer."""
+            cs = costs(sans, k)
+            return len(cs) >= k and sum(cs) < sum(mine[:k]) + DECIDE_COST
+        board = chess.Board(fen)
+        if count == 1:
+            pool = [[board.san(mv)] for mv in board.legal_moves]
+        else:
+            pool = []
+            for m1 in board.legal_moves:
+                s1 = board.san(m1)
+                board.push(m1)
+                pool += [[s1, board.san(m2)] for m2 in board.legal_moves]
+                board.pop()
+        # (the choices the words or the first moves favour first: a rival shows early)
+        seen = [c["san"] for c in cands[1:]]
+        pool = seen + [p for p in pool if p != top and p not in seen]
+        stages = sorted({1, min(BETWEEN_PROBE, half), half})
+        rivals = []
+        for p in pool:
+            if all(stands(p, k) for k in stages):
+                rivals.append(p)
+                if len(rivals) > DECIDE_RIVALS:
+                    return None
+        for p in rivals:
+            theirs = costs(p, min(DECIDE_PROBE, n))
+            r = len(theirs)
+            if r > best or (r * 2 >= best and sum(theirs) < sum(mine[:r]) + DECIDE_COST):
+                return None
+        return list(top)
+
+    def diagram_fill(self, fen, count, s, other=None):
+        """(moves, diagram id): the count moves that lead from the position
+        fen to a diagram printed between the line's last move and the box s
+        (or to the start of the fragment other), when exactly one sequence of
+        legal moves does; (None, None) otherwise. The nearest such diagram
+        before the box decides."""
+        an = self.node_of(s["after"]) if s.get("after") else None
+        m = self.mark_of(an) if an is not None else None
+        ci = self.chapter_at(s["page"])
+        box = next((x for x in self.marks.get(s["page"], []) if x.get("key") == s["key"]), None)
+        if m is None or box is None or ci is None:
+            return None, None
+        here = (self.chapter_at(self.nodes[an]["page"]), m["_o"])
+        there = (ci, box["_o"])
+        found = sorted(((at, did) for did, at in getattr(self, "diagram_at", {}).items()
+                        if here < at < there), reverse=True)
+        found = [did for _, did in found]
+        if other is not None and other.diagram:
+            found = [other.diagram] + [did for did in found if did != other.diagram]
+        for did in found:
+            target = self.fix_diagrams.get(did) or self.diagram_fens.get(did)
+            if not target:
+                continue
+            seqs = _reach(fen, target.split(" ")[0], count)
+            if len(seqs) == 1:
+                return seqs[0], did
+            if seqs:
+                return None, None       # more than one way there: the reader decides
+        if other is not None and not other.diagram and self.nodes[other.root]["fen"]:
+            seqs = _reach(fen, self.nodes[other.root]["fen"].split(" ")[0], count)
+            if len(seqs) == 1:
+                return seqs[0], None
+        return None, None
+
+    def read_on_placed(self, key, line_id):
+        """None when the move key now stands, read, in the line line_id (a
+        step of read_on took), else the reason it does not."""
+        nid = self.node_by_key.get(key)
+        if nid is None or nid not in self.nodes:
+            nid = self.node_of(key)
+        if nid is not None and self.nodes[nid]["line"] == line_id and self.nodes[nid]["san"] \
+                and self.nodes[nid]["status"] != "failed":
+            return None
+        u = next((u for u in self.unattached if u.get("key") == key), None)
+        return (u or {}).get("reason") or "the program could not join these moves to the line"
 
     # -------------------------------------------------------- output
     def line_dicts(self):
@@ -5863,7 +6413,8 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
     for u in b.unattached:
         counts[u["chapter"]]["unattached"] += 1
     for n in b.nodes.values():
-        what = CORRECTED_COUNTS.get(n.get("corrected"))
+        # (the program's joins and the moves it supplied, read_on, are not the reader's)
+        what = None if n.get("auto") else CORRECTED_COUNTS.get(n.get("corrected"))
         if what:
             counts[line_chapter[n["line"]]]["corrected"][what] += 1
     for u in b.dismissed + b.attached:

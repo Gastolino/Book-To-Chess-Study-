@@ -11,11 +11,14 @@ selection (selection.py), and in the browser under
                     "202:40,88:Rd1": {"attach_to": "dismiss"}},
      "glyphs":     {"tLl": "N"},
      "connect":    {"203:52,120:e4": {"after": "202:310,96:Nf3"},
-                    "12:103,214:c4": {"after": "11:272,579:'it'et", "before": ["f5"]}},
+                    "12:103,214:c4": {"after": "11:272,579:'it'et", "before": ["f5"]},
+                    "14:52,96:'ife3!": {"after": "13:272,441:d6!", "before": ["Qc2"],
+                                        "auto": true}},
      "disconnect": {"204:80,300:Qh5": {"start": "here"},
                     "204:90,410:Rd1": {"start": "p204-1"},
                     "205:60,90:Kf2":  {"remove": true}},
-     "gaps":       {"7:28,664:e5": {"san": ["Bd7"]}},
+     "gaps":       {"7:28,664:e5": {"san": ["Bd7"]},
+                    "9:40,120:Nf3": {"san": ["Nc6"], "auto": true}},
      "added":      {"201:118,342:Nf3": [{"san": ["Nc6", "Bb5"]},
                                         {"san": ["d6"], "note": "Quieter."}],
                     "201:80,300:e4":   [{"san": ["d4", "d5"], "before": true}],
@@ -52,8 +55,17 @@ connect      the key of the first move of a run (or of any move of a line:
              number must follow the move chosen (counting the moves given
              "before"): a run printed as "6.c4" after 5.Qc1 is refused, with
              the reason naming Black's fifth move as missing. The keys stand
-             in the order "after", "before", as the browser writes them, and
-             an empty "before" is left out.
+             in the order "after", "before", "auto", as the browser writes
+             them, and an empty "before" is left out.
+             {"auto": true} marks a join that the program made by itself
+             when it read on after a correction (assemble._Builder.read_on),
+             not the reader: the moves of its "before" are then the
+             program's assumptions (nodes "corrected": "assumed", status
+             "guessed", shown as doubtful), and its first joined move is
+             "connected" with "auto": true. Such entries apply like the
+             reader's, so that a fresh build gives the same lines; the reader
+             may remove them as their own. Without "auto" (and in earlier
+             corrections) a join is the reader's.
 disconnect   the key of a move of a line. {"start": "here"} starts a new line
              with that move, from the position before it; {"start": <diagram
              id>} starts the new line from that diagram instead; {"remove":
@@ -65,8 +77,10 @@ gaps         the key of the first printed move after a gap in the text (moves
              the reader may give them one at a time). The moves are played
              from the line's last position before the gap when they are
              legal there; when they fill the whole gap the line reads on from
-             them, else a smaller gap follows them. The program never
-             supplies such a move itself.
+             them, else a smaller gap follows them. The program supplies
+             such moves itself only when it reads on after a correction and
+             the moves printed after the gap decide them: those entries
+             carry {"auto": true} (after "san"), as "connect" does.
 added        the key of a move of a line and the variations the reader added
              after it (by moving pieces on the board): a list, each entry a
              list of moves in SAN played from the position after that move
@@ -196,6 +210,8 @@ def normalise(data):
                     not all(isinstance(x, str) and x.strip() for x in before):
                 raise ValueError(f"The moves given before {key!r} are not a list of moves.")
             out["connect"][key]["before"] = [x.strip() for x in before]
+        if isinstance(v, dict) and v.get("auto"):
+            out["connect"][key]["auto"] = True
     for key, v in (data.get("disconnect") or {}).items():
         parse_key(key)
         v = v if isinstance(v, dict) else {}
@@ -215,6 +231,8 @@ def normalise(data):
                 not all(isinstance(x, str) and x.strip() for x in sans):
             raise ValueError(f"The moves given for the gap at {key!r} are not a list of moves.")
         out["gaps"][key] = {"san": [x.strip() for x in sans]}
+        if isinstance(v, dict) and v.get("auto"):
+            out["gaps"][key]["auto"] = True
     for key, v in (data.get("added") or {}).items():
         parse_key(key)
         entries = v if isinstance(v, list) else [v]
@@ -271,6 +289,19 @@ def _section(key, e, moves, before):
 
 def empty():
     return normalise({})
+
+
+def auto_part(data):
+    """The corrections in data that the program made by itself (entries
+    with "auto": true): {"connect": {...}, "gaps": {...}}, parts with none
+    left out."""
+    data = data or {}
+    out = {}
+    for part in ("connect", "gaps"):
+        got = {k: v for k, v in (data.get(part) or {}).items() if isinstance(v, dict) and v.get("auto")}
+        if got:
+            out[part] = got
+    return out
 
 
 def count(data):
