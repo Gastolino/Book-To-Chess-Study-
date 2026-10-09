@@ -270,9 +270,9 @@ const SESSION = (() => {
     // a book opens: the record starts (place: where it opens, or null for the contents page)
     begin(info, place) {
       rec = Object.assign({ id: null, kind: null, title: null, name: null, chapter: null, page: null, node: null,
-                            label: null, view: null }, info);
+                            key: null, label: null, view: null }, info);
       if (place) Object.assign(rec, { chapter: place.chapter || null, page: place.page || null, node: place.node || null,
-                                      label: place.label || null, view: place.view || null });
+                                      key: place.key || null, label: place.label || null, view: place.view || null });
       save();
     },
     title(t) { if (rec && t) { rec.title = t; save(); } },
@@ -283,7 +283,8 @@ const SESSION = (() => {
       if (!rec || !/^ch\\d+\\.html$/.test(openChapter)) return;
       const v = view();
       if (!v || !v.page) return;
-      Object.assign(rec, { chapter: openChapter, page: v.page, node: v.node || null, label: v.label || null, view: v });
+      Object.assign(rec, { chapter: openChapter, page: v.page, node: v.node || null, key: v.key || null,
+                           label: v.label || null, view: v });
       save();
     },
     // the view, a moment after a change
@@ -294,7 +295,10 @@ const SESSION = (() => {
       if (final) stopped = true;
       try { localStorage.removeItem(KEY); } catch (e) { /* no storage */ }
     },
-    place() { return rec && rec.chapter ? { chapter: rec.chapter, page: rec.page, node: rec.node, label: rec.label, view: rec.view } : null; },
+    place() {
+      return rec && rec.chapter ? { chapter: rec.chapter, page: rec.page, node: rec.node, key: rec.key || null,
+                                    label: rec.label, view: rec.view } : null;
+    },
     record() { return rec; },
   };
   // the page hidden, dropped or frozen: the view and the place go to the storage at once
@@ -310,10 +314,13 @@ function backTo(r) {
   const where = r.chapter && r.page ? ", page " + (r.label || r.page) : "";
   return "Back to " + (r.title || "your book") + where;
 }
-// the hash that reopens a chapter at a place: the page, the move and the view
+// the hash that reopens a chapter at a place: the page, the move, the key of its box on that page
+// (the page always shows, and the box decides) and the view
 function placeHash(p) {
   if (!p || !p.page) return "";
-  return "#at=" + p.page + ":" + (p.node || "") + (p.view ? "&v=" + encodeURIComponent(JSON.stringify(p.view)) : "");
+  const key = p.key || (p.view && p.view.key) || "";
+  return "#at=" + p.page + ":" + (p.node || "") + (key ? ":" + encodeURIComponent(key) : "") +
+    (p.view ? "&v=" + encodeURIComponent(JSON.stringify(p.view)) : "");
 }
 // Messages go to the start screen while it shows, and to the top bar after.
 function status(text, error) {
@@ -502,7 +509,7 @@ worker.onmessage = (e) => {
     workSay("Opening the book", null);
     wantOpen = name;
     worker.postMessage({ type: "chapter", name,
-                         hash: place.node || place.view ? placeHash(place) : "#page=" + place.page });
+                         hash: place.node || place.key || place.view ? placeHash(place) : "#page=" + place.page });
   } else if (m.type === "status") {
     if (loading) $("took").textContent = (resumeWords ? resumeWords + ". " : "") + m.text;
     workSay(m.text);
@@ -614,7 +621,7 @@ function showBack() {
   let v = null;
   try { const w = $("view").contentWindow; v = w && w.readerView ? w.readerView() : null; } catch (e) { v = null; }
   if (!v || !v.page || !/^ch\d+\.html$/.test(openChapter)) return;
-  backPlace = { chapter: openChapter, page: v.page, node: v.node || null, view: v };
+  backPlace = { chapter: openChapter, page: v.page, node: v.node || null, key: v.key || null, view: v };
   $("backbtn").textContent = "Back to page " + (v.label || v.page);
   $("backbtn").hidden = false;
 }
@@ -940,7 +947,7 @@ $("again").addEventListener("click", () => {
   else {
     let v = null;
     try { const w = $("view").contentWindow; v = w && w.readerView ? w.readerView() : null; } catch (e) { v = null; }
-    againPlace = v && v.page ? { chapter: openChapter, page: v.page, node: v.node || null } : null;
+    againPlace = v && v.page ? { chapter: openChapter, page: v.page, node: v.node || null, key: v.key || null } : null;
   }
   outdatedNote = "";
   hideBack();

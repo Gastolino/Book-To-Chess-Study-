@@ -233,8 +233,11 @@ const ribbonFits = (page) => page.evaluate(() => {
     const list = await page.evaluate(() => ({
       text: document.getElementById("bmlist").textContent,
       links: Array.from(document.querySelectorAll("#bmlist a")).map((a) => a.getAttribute("href")) }));
+    // (the link to the page with a move carries the key of the move's box: "#at=PAGE:NODE:KEY")
+    const key = two.value.bookmarks[0].key;
     check("the contents page lists the bookmarks", list.text === "Bookmarks: page " + t.page + ", page " + (t.page + 1) + "." &&
-          list.links[0] === "ch01.html#at=" + t.page + ":" + t.node && list.links[1] === "ch01.html#at=" + (t.page + 1) + ":", list);
+          !!key && list.links[0] === "ch01.html#at=" + t.page + ":" + t.node + ":" + encodeURIComponent(key) &&
+          list.links[1] === "ch01.html#at=" + (t.page + 1) + ":", { list, key });
     await shot(page, "bookmark_index_1280_light.png");
     await Promise.all([page.waitForURL(/ch01\.html#at=/), page.click("#bmlist a")]);
     await page.waitForFunction(() => window.readerState && window.readerState.page !== null);
