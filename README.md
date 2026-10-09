@@ -166,14 +166,19 @@ pictures are kept on each device as well, not on the site.
 
 While the app starts, and while a book is read before its first page shows,
 the start page shows a revolving book: six pages about the spine, each
-chequered like a board, that turn in one after the other, each swinging a
-quarter turn clockwise about the spine, so that they swirl round it. It stands above a thin bar that fills as far as the work has come
-where the app knows it, with the words of the work under it.
+chequered like a board, turning in space. One page at a time lifts off and
+swings about the spine until the six stand fanned round it like the leaves
+of a star book; the whole book, seen a little from above, turns half a turn
+about its spine and shows the pages' darker backs; then the pages fold on
+round the spine, one at a time, all the same way, back into the drawing,
+which rests a moment before the next round. It stands above a thin bar that
+fills as far as the work has come where the app knows it, with the words of
+the work under it.
 In the reader, the same small book stands in the top bar, just left of
 **Library**, while the program works (reading the moves, drawing pages, saving the reading); a
 tap on it says what it is doing, and it goes when the work is done. With
-reduced motion set on the device, the pages do not turn and the book stands
-still. The book with its four chequered pages is also the app's icon
+reduced motion set on the device, nothing turns and the book stands still,
+flat and whole. The book with its six chequered pages is also the app's icon
 (`web/icon.svg`; `tools/make_icons.py` draws the icons of the Home Screen,
 the manifest and the browser tab).
 

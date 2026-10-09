@@ -72,15 +72,16 @@ body{margin:0;display:flex;flex-direction:column;box-sizing:border-box;
 #resume button:hover{text-decoration:underline}
 #resume[hidden]{display:none}
 body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
-/* The sign that the app is at work: the revolving book whose pages turn (chessbook/style.py), over
-   a thin bar that fills as far as the work has come where the app knows it, and otherwise carries
-   a sliding segment; the words of the work go under it. A page halfway through its turn reaches a
-   fifth of the book's width beyond its square, so the book keeps that much room above the bar.
-   In the reader, the small book stands at the right of the top bar, over the same thin line along
-   the bar's foot. */
+/* The sign that the app is at work: the revolving book that turns in space (chessbook/style.py),
+   over a thin bar that fills as far as the work has come where the app knows it, and otherwise
+   carries a sliding segment; the words of the work go under it. Its size is --book-size (every
+   part of it is placed absolutely, so the box takes its size from that alone). Turning, the book
+   stays within its square but for a twentieth of its width at most, below, so the 24 px under it
+   leave room above the bar. In the reader, the small book stands at the right of the top bar,
+   over the same thin line along the bar's foot. */
 #loader{display:none;margin-top:28px}
 #loader.on{display:block}
-#loader .bookicon{width:80px;height:auto;margin:0 auto 24px}
+#loader .bookicon{--book-size:80px;margin:0 auto 24px}
 #bar{height:2px;background:var(--line);position:relative;overflow:hidden}
 #bar i,#topbar i{position:absolute;left:0;top:0;bottom:0;width:30%;background:var(--accent);
   animation:run 1.4s linear infinite;display:none}
@@ -93,11 +94,12 @@ body.resuming #intro,body.resuming #lib,body.resuming #drop{display:none}
 /* (a finger's room to tap, 30 by 28, in the line's own room: the margins give back what the
    button takes beyond the book) */
 #busy{display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;
-  margin:-7px -6px -7px -2px;visibility:hidden;align-self:center;padding:0}
+  margin:-7px -6px -7px -2px;visibility:hidden;align-self:center;padding:0;overflow:visible}
 #busy.on{visibility:visible}
-/* (hidden, its pages rest: a turning page costs the phone a frame's work even out of sight) */
-#busy:not(.on) .bookicon .leaf{animation-play-state:paused}
-#busy .bookicon{width:24px;height:auto}
+/* (hidden, the book rests, every part of it: a turning page costs the phone a frame's work even
+   out of sight) */
+#busy:not(.on) .bookicon *{animation-play-state:paused}
+#busy .bookicon{--book-size:24px}
 #view{flex:1;border:0;width:100%;display:none}
 iframe.view{flex:1;border:0;width:100%}
 #top{display:none;flex-wrap:wrap;align-items:baseline;gap:4px 16px;padding:10px 16px;
@@ -1079,8 +1081,8 @@ def main(argv=None):
            "wheels: %s.map(w => new URL(w, location.href).href), packages: %s, engine: %s}") % (
                index_url, wheels, PYODIDE_PACKAGES, engine)
     text = (SHELL.replace("__CSS__", style.page_css() + style.BOOK_CSS).replace("__CFG__", cfg)
-            .replace("__BOOK_SMALL__", style.book_svg())
-            .replace("__BOOK__", style.book_svg(label="The program is at work")))
+            .replace("__BOOK_SMALL__", style.book_svg(uid="busy"))
+            .replace("__BOOK__", style.book_svg(label="The program is at work", uid="loader")))
     (out / "index.html").write_text(text, encoding="utf-8")
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
     print(f"Site written to {out} ({size / 1048576:.1f} MB)")

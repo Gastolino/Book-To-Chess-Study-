@@ -48,6 +48,21 @@ def test_top_bar_names_the_book_on_one_line(tmp_path):
     assert "bookTitle(LIB.on && LIB.current ? LIB.titleOf(LIB.current.book)" in page
 
 
+def test_the_two_books_of_the_start_page_keep_their_ids_apart(tmp_path):
+    """The start page holds the moving book twice, the large one over the bar
+    and the small one in the top bar, and each page of each cuts its gaps with a
+    mask found by its id: every id on the page is its own, and the two books
+    take their sizes from --book-size, the hidden small one resting whole."""
+    import collections
+    page = build(tmp_path)
+    ids = collections.Counter(re.findall(r'\sid="([^"]+)"', page))
+    assert [i for i, n in ids.items() if n > 1] == []
+    assert sum(i.startswith("loader-") for i in ids) == 6 and sum(i.startswith("busy-") for i in ids) == 6
+    assert "#loader .bookicon{--book-size:80px;margin:0 auto 24px}" in page
+    assert "#busy .bookicon{--book-size:24px}" in page
+    assert "#busy:not(.on) .bookicon *{animation-play-state:paused}" in page
+
+
 def test_the_reader_in_the_app_leaves_the_book_name_to_the_top_bar(tmp_path):
     """The app adds a rule after the reader page's own style that hides the
     book's name in the reader's bar; the reader written to disk keeps it."""

@@ -103,18 +103,31 @@ background part the pages. On the light page the chequer is the darker
 board colour and the secondary text colour, so that the pages stand out
 from the white; in the dark scheme it is the two board colours
 (`chessbook/style.py`, `book_svg`, `--book-light` and `--book-dark`). While
-the app works, the pages turn in one after the other, 0.2 s apart and in
-their order clockwise round the spine: each swings in a quarter turn
-clockwise about the middle of the spine as it fades in, rests, then swings on
-another quarter turn clockwise as it fades out, so that the book swirls
-(a transform and the opacity only, 2.4 s a round). With reduced motion it
-stands still, whole, and while it is hidden its pages rest. On the start page it stands 80 px wide, with room for
-a turning page above a 2px bar in the accent colour on a hairline track (the
-part done, where the app knows it, else a sliding segment), with the words
-of the work under it in the secondary colour; in the reader it stands 24 px
-wide in the top bar, just left of Library, over the same line along the
-bar's foot, and takes its room whether it shows or not. Still, on the page
-background, it is the app's icon.
+the app works, the book turns in space, a round every 2.8 s. It starts from
+the still drawing: one page at a time, from the top of the book down, lifts
+off and swings about the spine, so that the six pages stand fanned round it
+like the leaves of a star book, each at its own angle (30, 75 or 120 degrees
+from where it lay); meanwhile the whole book tips its top towards the viewer
+by 18 degrees, as if seen a little from above, and turns half a turn about
+its spine, so that the pages show their backs (mirrored, and darker); then
+the pages fold on round the spine, one at a time, back into the drawing,
+which stands still for the last 0.6 s of the round. Every page turns one way
+only and makes exactly one whole turn a round. A light from the left veils a
+page that turns away from it, a thin dark edge keeps overlapping pages
+apart, and a page fades as it passes edge on, so that it never shows as a
+hairline; the book keeps within its box but for a twentieth of its width
+below. In the dark scheme the backs and the veils are deeper. Only
+transforms and opacities move (each page a half-box leaf hinged on the
+spine, in one element that tilts and turns the book), so that it costs a
+phone little. With reduced motion nothing moves and the book stands flat
+and whole, and while it is hidden every part of it rests. On the start page
+it stands 80 px wide (`--book-size`), with room for its turn above a 2px bar
+in the accent colour on a hairline track (the part done, where the app
+knows it, else a sliding segment), with the words of the work under it in
+the secondary colour; in the reader it stands 24 px wide in the top bar,
+just left of Library, over the same line along the bar's foot, and takes
+its room whether it shows or not. Still, on the page background, it is the
+app's icon.
 
 ## Layout
 

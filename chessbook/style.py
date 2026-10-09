@@ -369,11 +369,15 @@ def _page_squares(k):
 
 
 def book_svg(cls="bookicon", animated=True, light="var(--book-light)", dark="var(--book-dark)",
-             line="var(--bg)", bg=None, label=None, pad=0):
-    """The book icon as an SVG element. animated makes the pages turn in one after
-    the other (class "leaf"); the colours default to the page's tokens, and line
-    is the colour of the gaps between the pages (the page's background); bg fills
-    a square background (the app icon) and pad widens the view box around the book."""
+             line="var(--bg)", bg=None, label=None, pad=0, uid="book"):
+    """The book icon. Still (animated False), an SVG element: the colours default
+    to the page's tokens, line is the colour of the gaps between the pages (the
+    page's background), bg fills a square background (the app icon) and pad widens
+    the view box around the book. Moving, the book that turns in space while the
+    app works (in the page's tokens, see BOOK_CSS); uid starts the ids of its
+    masks, so that two moving books on one page keep theirs apart."""
+    if animated:
+        return _book_moving(cls, label, uid)
     half = BOOK_HALF + pad
     parts = []
     if bg:
@@ -382,33 +386,290 @@ def book_svg(cls="bookicon", animated=True, light="var(--book-light)", dark="var
     gap = bg or line
     for k, (d, _parts) in enumerate(_BOOK_PAGES):
         edge = _outline(d)
-        body = (f'<path d="{edge}" fill="{light}"/>'
-                f'<path d="{_page_squares(k)}" fill="{dark}" fill-rule="evenodd"/>'
-                f'<path d="{edge}" fill="none" stroke="{gap}" stroke-width="{BOOK_GAP:g}"/>')
-        if animated:
-            body = f'<g class="leaf" style="animation-delay:{0.2 * k:g}s">{body}</g>'
-        parts.append(body)
+        parts.append(f'<path d="{edge}" fill="{light}"/>'
+                     f'<path d="{_page_squares(k)}" fill="{dark}" fill-rule="evenodd"/>'
+                     f'<path d="{edge}" fill="none" stroke="{gap}" stroke-width="{BOOK_GAP:g}"/>')
     aria = f'role="img" aria-label="{label}"' if label else 'aria-hidden="true"'
     return (f'<svg class="{cls}" viewBox="{_num(-half)} {_num(-half)} {_num(2 * half)} {_num(2 * half)}" '
             f'xmlns="http://www.w3.org/2000/svg" {aria}>' + "".join(parts) + "</svg>")
 
 
-# The pages turn in: each swings in by a quarter turn about the middle of the
-# spine, clockwise, and fades in as it comes; it rests in its place, then swings
-# on by another quarter turn, still clockwise, and fades out. The six start
-# 0.2 s apart, so that they come in one after the other round the spine and the
-# book swirls; the round lasts 2.4 s. Only a transform and the opacity move, so
-# that the turns cost little on a phone. Without motion (the reader's setting)
-# the book stands still, whole. The chequer's two tones: on the light page the
-# darker board tone and the secondary text colour, so that the pages stand out
-# from the white as the drawing's white pages stand out from black; in the dark
-# scheme the board's own tones.
+# ---------------------------------------------------------------- the book at work
+# Moving, the book turns in space. The round starts on the still drawing: one page
+# at a time lifts off and swings about the spine, so that the six pages stand
+# fanned round it like the leaves of a star book, each at its own angle; all the
+# while the whole book tips its top towards the viewer (it is seen a little from
+# above) and turns half a turn about its spine, so that the pages show their
+# darker backs; then the pages fold on round the spine, one at a time, back into
+# the still drawing, which rests until the next round. Every page turns one way
+# only (a right-hand page comes towards the viewer, as a page turned forward does)
+# and makes exactly one whole turn a round, half of it with the book and the rest
+# on its own, so that each round ends on the drawing it started from.
+#
+# The markup is HTML, since browsers flatten 3D transforms inside an SVG:
+#   span.bookicon        the box (--book-size) and the viewer's distance (perspective)
+#     span.turn          the whole book: its tilt, its turn about the spine and its size
+#       span.leaf x 6    a page's own turn about the spine: half the box, hinged on the spine
+#         svg.face.front, svg.face.back    the page's two faces, each hidden from behind
+#         svg.veil.front, svg.veil.back    a black veil over each face: the light on it
+# Every leaf is the same half of the box, so that every layer's centre lies the
+# same distance from the spine; Safari, which stacks whole layers by their depth,
+# then stacks the pages as their angles say. Only transforms and opacities move.
+# The gaps between the pages are cut out of each face by a mask, so that a page
+# in front of another shows the page behind through its gaps.
+
+BOOK_ROUND = 2.8            # seconds a round lasts
+BOOK_PERSPECTIVE = 2.6      # the viewer's distance from the book, in book sizes
+BOOK_FADE = 16              # degrees either side of edge on over which a face fades out and in
+# The easings, as the points of a CSS cubic-bezier
+_BOOK_EASE = {"out": (.2, .6, .35, 1), "inout": (.45, 0, .55, 1)}
+# The whole book: (second, degrees, easing) points of its tilt (its top towards the
+# viewer) and of its turn about the spine; the easing is the one that reaches the point
+BOOK_TILT = ((0, 0), (0.45, 18, "out"), (1.65, 18), (2.2, 0, "inout"))
+BOOK_SPIN = ((0, 0), (2.1, 180, "inout"))
+BOOK_SHRINK = 0.9           # how much smaller the book is drawn at full tilt, so that it keeps to its box
+# The pages: (page, second it lifts, its angle in the fan, second it folds on); a lift
+# takes BOOK_LIFT seconds and a fold BOOK_FOLD. A right-hand page's fan angle is
+# measured from where it lies, towards the viewer; a left-hand page's from where it
+# lies, away from the viewer, so that the fan is the same turn for both. They lift
+# from the top of the book down, a row's two pages one after the other, the first at
+# once; in the fan the six leaves stand round the spine 45 or 90 degrees apart, so
+# that the book is never seen edge on as a whole, and two pages whose shapes overlap
+# never come within 60 degrees of each other. The pages fold on in the same order,
+# and the drawing then rests for the last 0.6 s of the round.
+BOOK_LIFT, BOOK_FOLD = 0.32, 0.34
+BOOK_LEAVES = ((1, 0.00, 75, 1.22), (0, 0.13, 30, 1.35), (2, 0.26, 120, 1.48),
+               (5, 0.39, 75, 1.61), (3, 0.52, 30, 1.74), (4, 0.65, 120, 1.86))
+# The light comes from the left, in front; a face lit less than the book lying flat
+# is veiled in black by as much (never lit more, so that the resting drawing is the
+# still one). A face's veil also draws a thin dark edge just inside the page's gap,
+# and shows at least BOOK_EDGE while the page is off its place, so that two pages
+# that overlap stay apart; the veil's inside is var(--book-veil) of its black.
+BOOK_LIGHT = (-0.6, -0.1, 0.8)
+BOOK_AMBIENT = 0.72
+BOOK_EDGE = 0.25
+BOOK_EDGE_WIDTH = 0.45      # in the view box's units
+_BOOK_VEIL = 0.3            # var(--book-veil) on the light page, which the veils' opacities are worked out for
+
+_BOOK_SIDE = {0: "l", 1: "r", 2: "r", 3: "r", 4: "l", 5: "l"}
+
+
+def _bezier(points, x):
+    """A CSS cubic-bezier easing at x (0 to 1)."""
+    p1x, p1y, p2x, p2y = points
+
+    def at(t, a, b):
+        return 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3
+    lo, hi = 0.0, 1.0
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if at(mid, p1x, p2x) < x else (lo, mid)
+    return at((lo + hi) / 2, p1y, p2y)
+
+
+def _book_curve(points, t):
+    """The value at second t of a curve given by (second, value[, easing]) points."""
+    if t <= points[0][0]:
+        return points[0][1]
+    for a, b in zip(points, points[1:]):
+        if t <= b[0]:
+            if b[0] == a[0]:
+                return b[1]
+            ease = _BOOK_EASE[b[2] if len(b) > 2 else "inout"]
+            return a[1] + (b[1] - a[1]) * _bezier(ease, (t - a[0]) / (b[0] - a[0]))
+    return points[-1][1]
+
+
+def _book_leaf_points(k):
+    """Page k's own turn about the spine, as (second, degrees, easing) points: it
+    lifts to its fan angle, waits, and folds on to make up the whole turn with the
+    book's own half turn."""
+    _, lift, fan, fold = next(row for row in BOOK_LEAVES if row[0] == k)
+    rest = 360 - BOOK_SPIN[-1][1]
+    points = [(0, 0), (lift, 0), (lift + BOOK_LIFT, fan, "out"), (fold, fan),
+              (fold + BOOK_FOLD, rest, "inout"), (BOOK_ROUND, rest)]
+    return [p for i, p in enumerate(points) if i == 0 or p[0] > points[i - 1][0]]
+
+
+def _book_pose(k, t):
+    """Page k at second t: its angle about the spine (0 where a right-hand page
+    lies, growing as such a page comes towards the viewer), its own turn, the
+    book's turn, tilt and size."""
+    leaf, spin = _book_curve(_book_leaf_points(k), t), _book_curve(BOOK_SPIN, t)
+    tilt = _book_curve(BOOK_TILT, t)
+    scale = 1 - (1 - BOOK_SHRINK) * tilt / max(p[1] for p in BOOK_TILT)
+    home = 0 if _BOOK_SIDE[k] == "r" else 180
+    return home + leaf + spin, leaf, spin, tilt, scale
+
+
+def _book_light(k, t, back):
+    """Page k's face at second t: how opaque it is (faded near edge on, none from
+    behind) and how much of its veil shows (the light it lacks and its edge)."""
+    angle, leaf, spin, tilt, _ = _book_pose(k, t)
+    side = 1 if _BOOK_SIDE[k] == "r" else -1
+    facing = side * math.cos(math.radians(angle)) * (-1 if back else 1)
+    opacity = min(max(facing / math.sin(math.radians(BOOK_FADE)), 0), 1) ** 2
+    # the face's normal: turned with the page about the spine, then tipped with the book
+    a, b = math.radians(leaf + spin), math.radians(tilt)
+    n = (-math.sin(a), math.cos(a) * math.sin(b), math.cos(a) * math.cos(b))
+    if back:
+        n = tuple(-c for c in n)
+    norm = math.sqrt(sum(c * c for c in BOOK_LIGHT))
+
+    def lit(v):
+        return BOOK_AMBIENT + (1 - BOOK_AMBIENT) * max(sum(p * q / norm for p, q in zip(v, BOOK_LIGHT)), 0)
+    dark = max(1 - lit(n) / lit((0, 0, 1)), 0)
+    off = abs((leaf + spin + 180) % 360 - 180)
+    edge = BOOK_EDGE * min(off / 15, 1)
+    return opacity, min(max(dark / _BOOK_VEIL, edge), 1) * opacity
+
+
+def _pct(t):
+    return f"{round(100 * t / BOOK_ROUND, 2):g}%"
+
+
+def _simplified(points, tols):
+    """The fewest of the (second, values...) points that keep every value within its
+    tolerance of the straight line between the points kept (Douglas and Peucker)."""
+    if len(points) < 3:
+        return points
+    (t0, *v0), (t1, *v1) = points[0], points[-1]
+    worst, at = 0, 0
+    for i in range(1, len(points) - 1):
+        t, *v = points[i]
+        u = (t - t0) / (t1 - t0)
+        miss = max(abs(c - (a + (b - a) * u)) / tol for c, a, b, tol in zip(v, v0, v1, tols))
+        if miss > worst:
+            worst, at = miss, i
+    if worst <= 1:
+        return [points[0], points[-1]]
+    return _simplified(points[:at + 1], tols)[:-1] + _simplified(points[at:], tols)
+
+
+def _keyframes(name, points, fmt, tols):
+    """Keyframes from (second, values...) points sampled over a round, kept where the
+    straight lines between them stray; a value that holds is written once."""
+    # a value that holds stays exact: the samples are cut where one starts or ends to hold
+    cuts = [0] + [i for i in range(1, len(points) - 1)
+                  if (points[i][1:] == points[i - 1][1:]) != (points[i][1:] == points[i + 1][1:])] + [len(points) - 1]
+    kept = [points[0]]
+    for a, b in zip(cuts, cuts[1:]):
+        kept += _simplified(points[a:b + 1], tols)[1:]
+    rules = []
+    for i, (t, *v) in enumerate(kept):
+        if 0 < i < len(kept) - 1 and kept[i - 1][1:] == v == kept[i + 1][1:]:
+            continue
+        rules.append(f"{_pct(t)}{{{fmt(*v)}}}")
+    return f"@keyframes {name}{{{''.join(rules)}}}"
+
+
+def _book_samples(fn, step=0.01):
+    n = round(BOOK_ROUND / step)
+    return [(BOOK_ROUND * i / n, *fn(BOOK_ROUND * i / n)) for i in range(n + 1)]
+
+
+def _num3(v):
+    return f"{round(v, 3):g}"
+
+
+def _book_css():
+    """The moving book's rules and keyframes, worked out from the tables above."""
+    size = "var(--book-size)"
+    css = [f".bookicon{{--book-size:80px;display:block;position:relative;width:{size};height:{size};"
+           f"perspective:calc({size} * {BOOK_PERSPECTIVE:g})}}",
+           ".bookicon .turn,.bookicon .leaf{position:absolute;top:0;height:100%;"
+           "-webkit-transform-style:preserve-3d;transform-style:preserve-3d;"
+           f"animation:{BOOK_ROUND:g}s linear infinite both}}",
+           ".bookicon .turn{left:0;width:100%;animation-name:book-turn}",
+           ".bookicon .leaf{width:50%}",
+           ".bookicon .r{left:50%;transform-origin:0 50%}",
+           ".bookicon .l{left:0;transform-origin:100% 50%}",
+           ".bookicon .face,.bookicon .veil{position:absolute;left:0;top:0;width:100%;height:100%;display:block;"
+           "-webkit-backface-visibility:hidden;backface-visibility:hidden;"
+           f"animation:{BOOK_ROUND:g}s linear infinite both}}",
+           ".bookicon .back{transform:rotateY(180deg)}",
+           ".bookicon .veil{opacity:0;transform:translateZ(.2px)}",
+           ".bookicon .veil.back{transform:rotateY(180deg) translateZ(.2px)}",
+           ".bookicon .bk{fill:#000;fill-opacity:var(--book-back)}",
+           ".bookicon .vi{fill:#000;fill-opacity:var(--book-veil)}",
+           ".bookicon .ve{fill:none;stroke:#000;stroke-opacity:.6}"]
+    # the whole book: its tilt, its turn and its size, in one list of the same functions (the
+    # book's are the same for every page; page 0's pose gives them)
+    css.append(_keyframes("book-turn", _book_samples(lambda t: _book_pose(0, t)[2:]),
+                          lambda spin, tilt, scale: f"transform:rotateX({0 - tilt:.4g}deg) rotateY({0 - spin:.4g}deg) "
+                                                    f"scale3d({_num3(scale)},{_num3(scale)},{_num3(scale)})",
+                          (0.4, 0.25, 0.002)))
+    for k in range(6):
+        p = f".bookicon .p{k}"
+        # (the faces' rules as specific as the reduced-motion rule below, which comes after them)
+        css.append(f"{p}{{animation-name:book-leaf{k}}}"
+                   f".p{k}>.face.front{{animation-name:book-face{k}}}.p{k}>.face.back{{animation-name:book-back{k}}}"
+                   f".p{k}>.veil.front{{animation-name:book-veil{k}}}.p{k}>.veil.back{{animation-name:book-backveil{k}}}")
+        # the page's own turn: its points, each segment eased as the table says
+        rules = []
+        points = _book_leaf_points(k)
+        for i, (t, angle, *_e) in enumerate(points):
+            ease = points[i + 1][2] if i + 1 < len(points) and len(points[i + 1]) > 2 else None
+            rule = f"transform:rotateY({-angle:g}deg)"
+            if ease:
+                rule += f";animation-timing-function:cubic-bezier({','.join(f'{c:g}' for c in _BOOK_EASE[ease])})"
+            rules.append(f"{_pct(t)}{{{rule}}}")
+        css.append(f"@keyframes book-leaf{k}{{{''.join(rules)}}}")
+        for back, face, veil in ((False, "book-face", "book-veil"), (True, "book-back", "book-backveil")):
+            samples = _book_samples(lambda t: _book_light(k, t, back))
+            css.append(_keyframes(f"{face}{k}", [(t, o) for t, o, _ in samples],
+                                  lambda o: f"opacity:{_num3(o)}", (0.01,)))
+            css.append(_keyframes(f"{veil}{k}", [(t, v) for t, _, v in samples],
+                                  lambda v: f"opacity:{_num3(v)}", (0.01,)))
+    # without motion (the reader's setting) the drawing stands still and flat, its
+    # backs and veils gone, so that no browser can show a page from the wrong side
+    css.append("@media (prefers-reduced-motion:reduce){"
+               ".bookicon .turn,.bookicon .leaf,.bookicon .leaf>.face,.bookicon .leaf>.veil{animation:none}"
+               ".bookicon .turn,.bookicon .leaf{-webkit-transform-style:flat;transform-style:flat}"
+               ".bookicon .back,.bookicon .veil{display:none}}")
+    return "\n".join(css) + "\n"
+
+
+def _book_moving(cls, label, uid):
+    """The moving book's markup: the box, the turning book, and six leaves each
+    holding its page's faces and veils (the page drawn as the still drawing draws
+    it, over the half of the view box on its side of the spine)."""
+    h = BOOK_HALF
+    leaves = []
+    for k, (d, _parts) in enumerate(_BOOK_PAGES):
+        edge, side = _outline(d), _BOOK_SIDE[k]
+        x0 = 0 if side == "r" else -h
+        box = f'viewBox="{_num(x0)} {_num(-h)} {_num(h)} {_num(2 * h)}"'
+        mask = f"{uid}-{k}"
+        # the back is drawn mirrored about the middle of its half (its rotateY(180deg) turns it back)
+        mirror = f'<g transform="matrix(-1 0 0 1 {_num(2 * x0 + h)} 0)">'
+        page = (f'<path d="{edge}" fill="var(--book-light)"/>'
+                f'<path d="{_page_squares(k)}" fill="var(--book-dark)" fill-rule="evenodd"/>')
+        veil = (f'<path class="vi" d="{edge}"/>'
+                f'<path class="ve" d="{edge}" stroke-width="{BOOK_GAP + 2 * BOOK_EDGE_WIDTH:g}"/>')
+        svg = f'<svg class="{{}}" {box} xmlns="http://www.w3.org/2000/svg">{{}}</svg>'
+        leaves.append(
+            f'<span class="leaf {side} p{k}">'
+            + svg.format("face front",
+                         f'<mask id="{mask}" maskUnits="userSpaceOnUse" x="{_num(x0)}" y="{_num(-h)}" '
+                         f'width="{_num(h)}" height="{_num(2 * h)}"><path d="{edge}" fill="#fff" stroke="#000" '
+                         f'stroke-width="{BOOK_GAP:g}"/></mask><g mask="url(#{mask})">{page}</g>')
+            + svg.format("face back", f'{mirror}<g mask="url(#{mask})">{page}<path class="bk" d="{edge}"/></g></g>')
+            + svg.format("veil front", f'<g mask="url(#{mask})">{veil}</g>')
+            + svg.format("veil back", f'{mirror}<g mask="url(#{mask})">{veil}</g></g>')
+            + "</span>")
+    aria = f'role="img" aria-label="{label}"' if label else 'aria-hidden="true"'
+    return f'<span class="{cls}" {aria}><span class="turn">{"".join(leaves)}</span></span>'
+
+
+# The chequer's two tones: on the light page the darker board tone and the
+# secondary text colour, so that the pages stand out from the white as the
+# drawing's white pages stand out from black; in the dark scheme the board's own
+# tones. A page's back is its face under --book-back of black, and a veil's inside
+# is --book-veil of black: both deeper in the dark scheme, where the board's tones
+# sit on near-black and a light veil would hardly show.
 BOOK_CSS = """
-:root{--book-light:var(--board-dark);--book-dark:var(--muted)}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--book-light:var(--board-light);--book-dark:var(--board-dark)}}
-:root[data-theme="dark"]{--book-light:var(--board-light);--book-dark:var(--board-dark)}
-.bookicon{display:block;overflow:visible}
-.bookicon .leaf{transform-box:view-box;transform-origin:0 0;animation:leaf 2.4s cubic-bezier(.45,0,.55,1) infinite both}
-@keyframes leaf{0%{transform:rotate(-90deg);opacity:0}14%{transform:rotate(0deg);opacity:1}72%{transform:rotate(0deg);opacity:1}86%{transform:rotate(90deg);opacity:0}100%{transform:rotate(90deg);opacity:0}}
-@media (prefers-reduced-motion:reduce){.bookicon .leaf{animation:none}}
-"""
+:root{--book-light:var(--board-dark);--book-dark:var(--muted);--book-back:.16;--book-veil:.3}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--book-light:var(--board-light);--book-dark:var(--board-dark);--book-back:.3;--book-veil:.3}}
+:root[data-theme="dark"]{--book-light:var(--board-light);--book-dark:var(--board-dark);--book-back:.3;--book-veil:.3}
+""" + _book_css()
