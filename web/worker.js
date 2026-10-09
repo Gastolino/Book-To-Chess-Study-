@@ -8,6 +8,15 @@ function say(text) {
   postMessage({ type: "progress", text: String(text) });
 }
 
+// what went wrong, in the words of the error: a Python error's last line, without its traceback
+// and the name of its kind ("ValueError: f5 is not a legal move…" says "f5 is not a legal move…")
+function errorWords(err) {
+  const text = String(err && err.message ? err.message : err);
+  const lines = text.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (!lines.length || !/^Traceback/.test(lines[0])) return text;
+  return lines[lines.length - 1].replace(/^[A-Za-z_.]*(Error|Exception|Exit|Interrupt)\b:?\s*/, "");
+}
+
 // numpy and OpenCV (for reading the board pictures and the figurines' shapes)
 // come from Pyodide itself. A book opened from its stored reading needs neither
 // to show, so they load after the worker is ready; reading a book, a
@@ -66,7 +75,7 @@ async function run(id, t0) {
     let out;
     try { out = JSON.parse(driver.step()); }
     catch (err) {
-      postMessage({ type: "error", during: "process", text: String(err && err.message ? err.message : err) });
+      postMessage({ type: "error", during: "process", text: errorWords(err) });
       return;
     }
     for (const ev of out.events) {
@@ -199,6 +208,6 @@ onmessage = async (event) => {
   } catch (err) {
     // the type of the failed request lets the page say what did not happen
     postMessage({ type: "error", during: msg.type, chapter: msg.chapter || "", id: msg.id,
-                  text: String(err && err.message ? err.message : err) });
+                  text: errorWords(err) });
   }
 };

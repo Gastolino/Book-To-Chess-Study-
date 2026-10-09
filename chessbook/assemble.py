@@ -266,6 +266,9 @@ CORRECTED_COUNTS = {"move": "moves", "symbol": "symbol_moves", "connected": "con
 COMMENT_MAX = 2000              # characters of note text kept as one comment
 GAP_MAX = 8                     # plies a main run may skip and still continue its line
 SUGGEST_GAP = 4                 # plies a run's number may lie ahead of the line it follows (suggest)
+SUGGEST_PAGES = 2               # pages past the line's last printed move that suggest looks at
+SURE_COST = 1.5                 # how much dearer the runner-up's reading of the printed moves is
+                                # when the move suggest offers for a gap is sure
 BETWEEN_PROBE = 4               # printed moves read to rank the moves given for a gap (suggest)
 BETWEEN_MAX = 5                 # the moves suggest offers for a gap, at most
 # the doubt of a move given for a gap, added to the cost of the moves printed after it
@@ -5068,9 +5071,14 @@ class _Builder:
         line does not hold is: a misread move of the branch itself ("failed"),
         the moves after a gap in the text ("gap"), the first move of a run in
         no line ("run") or of another line ("line"), whose printed number
-        follows the branch's end, at most SUGGEST_GAP moves later. before
-        holds moves the reader gave after the end of the branch (SAN), and
-        skip the keys of boxes the reader passed over.
+        follows the branch's end, at most SUGGEST_GAP moves later. It looks
+        no further than the game the line belongs to (up to the heading of
+        another game) and SUGGEST_PAGES pages past the line's last printed
+        move; moves printed in the notes' font come only when they follow
+        with no move missing and read from there (a note is a variation, not
+        the line's continuation). before holds moves the reader gave after
+        the end of the branch (SAN), and skip the keys of boxes the reader
+        passed over.
 
         Returns {"done": True} when nothing follows in the chapter, else
         {"kind", "key", "page", "bbox", "raw", "number", "black", "after"
@@ -5081,9 +5089,12 @@ class _Builder:
         that may stand for the missing ones, each a list of number_gap
         moves in SAN, best first: read from the words printed between the
         two boxes, and ranked by how far the moves printed after them then
-        read), "decoded" (when no move is missing: the printed moves read
-        from the position, [{"san", "cost", "unsure", "key"}], up to the
-        first move that does not read)}."""
+        read), "sure" (the first of them was read from those words without
+        doubt, or it alone lets the moves printed after it read), "san" (the
+        box's own move as it reads after the missing moves, the first of
+        between, or None), "decoded" (when no move is missing: the printed
+        moves read from the position, [{"san", "cost", "unsure", "key"}], up
+        to the first move that does not read)}."""
         nid = self.node_of(after)
         if nid is None:
             raise ValueError("The program no longer finds the move to go on from.")
@@ -5123,10 +5134,16 @@ class _Builder:
         last = self.mark_of(printed) if printed is not None else None
         pos = last["_o"] if last is not None else -1
         ch = self.chapters[L.chapter]
-        marks = sorted(((m["_o"], p, m) for p in range(ch["start"], ch["end"] + 1)
+        # the game ends where another game's heading stands, and the reader looks a page or two on
+        end = self.game_end(L, pos)
+        upto = min(ch["end"], (self.nodes[printed if printed is not None else cur]["page"] or ch["start"])
+                   + SUGGEST_PAGES)
+        marks = sorted(((m["_o"], p, m) for p in range(ch["start"], upto + 1)
                         for m in self.marks.get(p, []) if m["_o"] > pos),
                        key=lambda x: x[:2])
-        for _, page, m in marks:
+        for o, page, m in marks:
+            if end is not None and o >= end:
+                break
             key = m.get("key")
             if not key or key in skip:
                 continue
@@ -5147,12 +5164,32 @@ class _Builder:
             gap = ply - want if ply is not None else 0
             if ply is not None and not 0 <= gap <= SUGGEST_GAP:
                 continue
-            if ply is None:
-                decs = self.dec.run(fen, tail.tokens[:1])
+            note = tail.kind == "note"
+            if note and gap:
+                continue
+            if ply is None or note:
+                decs = self.dec.run(fen, _first_moves(tail.tokens, 1))
                 if not decs or decs[0].status == "failed":
                     continue
             return self.suggestion(kind, m, page, tail, cur, fen, gap, want, last)
         return {"done": True}
+
+    def game_end(self, L, pos):
+        """Where the game of line L ends after the offset pos: the start of
+        the next line that is another game (a game, or a line under another
+        game's header): its header, or else its first move; or None."""
+        own = L.header or {}
+        names = (own.get("white"), own.get("black"))
+        ends = []
+        for M in self.lines:
+            if M is L or M.chapter != L.chapter or not (M.kind == "game" or M.header):
+                continue
+            if M.header and (M.header.get("white"), M.header.get("black")) == names:
+                continue
+            at = M.header.get("offset") if M.header and M.header.get("offset") is not None else M.first_offset
+            if at > pos and at > L.first_offset:
+                ends.append(at)
+        return min(ends, default=None)
 
     def suggestion(self, kind, m, page, tail, cur, fen, gap, want, last):
         """The record suggest() returns for the box m."""
@@ -5161,12 +5198,21 @@ class _Builder:
                "raw": m["raw"], "number": first.number, "black": bool(first.black),
                "after": self.nodes[cur].get("key"), "after_node": cur, "number_gap": gap,
                "missing": {"from_ply": want, "count": gap} if gap else None,
-               "between": [], "decoded": []}
+               "between": [], "sure": False, "san": None, "decoded": []}
         if gap:
             start = (self.nodes[last["node"]]["page"], last["bbox"]) if last is not None else None
-            out["between"] = self.between_moves(fen, tail, gap, start, (page, m["bbox"]))
+            out["between"], out["sure"] = self.between_moves(fen, tail, gap, start, (page, m["bbox"]))
+            if out["between"]:
+                board = chess.Board(fen)
+                for s in out["between"][0]:
+                    board.push_san(s)
+                d = self.dec.run(board.fen(), _first_moves(tail.tokens, 1))
+                if d and d[0].status != "failed" and d[0].san:
+                    out["san"] = d[0].san
         else:
             out["decoded"] = self.read_on(fen, tail)
+            if out["decoded"]:
+                out["san"] = out["decoded"][0]["san"]
         return out
 
     def suggestion_inside(self, L, cur, nid):
@@ -5234,7 +5280,12 @@ class _Builder:
         after the missing move's printed number first) and, for one missing
         move, every legal move; ranked by how many of the moves printed in
         run then read (its first BETWEEN_PROBE moves), then by the cost of
-        reading them together with the doubt of the words (WORDS_DOUBT)."""
+        reading them together with the doubt of the words (WORDS_DOUBT).
+        Returns (the moves, sure): sure when the first was read without
+        doubt from a word after the missing move's printed number, or when it
+        alone lets the printed moves read (they all read after it, and after
+        the runner-up fewer than half of them do, or they read at a cost
+        SURE_COST dearer)."""
         board = chess.Board(fen)
         n = board.fullmove_number
         words = self.words_between(a, b)
@@ -5274,9 +5325,18 @@ class _Builder:
             doubt = (WORDS_DOUBT[None] if words_say is None else
                      WORDS_DOUBT[words_say[0] == 0 and not words_say[1]] if not words_say[1] else
                      WORDS_DOUBT["unsure"])
-            scored.append(((-reads, round(cost + doubt, 2), words_say or (9, 9, 99.0)), list(sans)))
+            scored.append(((-reads, round(cost + doubt, 2), words_say or (9, 9, 99.0)), list(sans), cost))
         scored.sort(key=lambda s: s[0])
-        return [sans for _, sans in scored[:BETWEEN_MAX]]
+        sure = False
+        if scored:
+            (r0, _, w0), _, c0 = scored[0]
+            printed = sum(1 for t in probe if t.kind == "move")
+            if w0[0] == 0 and not w0[1]:
+                sure = True
+            elif -r0 >= printed > 0:
+                r1, c1 = (scored[1][0][0], scored[1][2]) if len(scored) > 1 else (0, 99.0)
+                sure = -r1 < -r0 / 2 or c1 - c0 >= SURE_COST
+        return [sans for _, sans, _ in scored[:BETWEEN_MAX]], sure
 
     # -------------------------------------------------------- output
     def line_dicts(self):

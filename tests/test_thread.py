@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
+from chessbook import assemble  # noqa: E402
 from chessbook import corrections as fixes  # noqa: E402
 from chessbook import live  # noqa: E402
 from chessbook.assemble import build_book  # noqa: E402
@@ -275,6 +276,8 @@ def test_suggest_threads_the_game(wells, live_book):
     assert (s["kind"], s["key"], s["page"], s["after"]) == ("run", c4, 5, itet)
     assert s["number_gap"] == 1 and s["missing"] == {"from_ply": 9, "count": 1}
     assert s["between"][0] == ["f5"] and s["decoded"] == []
+    # f5 alone lets the printed moves read: it is offered as sure, and c4 reads after it
+    assert s["sure"] is True and s["san"] == "c4"
     assert s["seconds"] < 1.0
     # the same from 4...Qb6: the line is followed to its end first
     assert live.suggest(state, qb6)["key"] == c4
@@ -309,6 +312,24 @@ def test_suggest_offers_a_misread_move_of_the_line(wells, live_book):
     assert (s["kind"], s["key"], s["after"], s["number_gap"]) == ("failed", qb6, d5, 0)
     assert s["decoded"] == []
     assert live.suggest(state, key_of(book, "Bg5"))["key"] == qb6
+
+
+def test_suggest_stays_in_its_game(wells, live_book, monkeypatch):
+    """suggest looks no further than the game of the line (up to another
+    game's heading or first move) and a page or two past its last move."""
+    book, state = live_book
+    qb6, itet, c4 = keys(book)
+    b = state["builder"]
+    own = next(L for L in b.lines if L.title.startswith("Wells - Shirov"))
+    other = next(L for L in b.lines if L is not own and L.kind == "game")
+    # the game in the next section ends Wells - Shirov, at its first move (it has no header)
+    assert b.game_end(own, 0) == other.first_offset
+    assert b.game_end(own, other.first_offset) is None
+    live.apply(state, book, {"moves": {itet: QC1}, "connect": {itet: {"after": qb6}}})
+    assert live.suggest(state, itet)["key"] == c4
+    # "6.c4" stands a page after 5.Qc1: with no page to look on, nothing follows
+    monkeypatch.setattr(assemble, "SUGGEST_PAGES", 0)
+    assert live.suggest(state, itet).get("done")
 
 
 def test_connect_before_round_trip():
