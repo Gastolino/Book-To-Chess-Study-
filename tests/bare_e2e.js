@@ -62,7 +62,7 @@ function check(name, cond, detail) {
     const asks = await page.evaluate(() => ({ line: document.querySelector("#fix .thl").innerText,
       buttons: [...document.querySelectorAll("#fix button")].map((b) => b.textContent) }));
     check("the pencil's tap asks for the move after 7.Nf3 and offers it",
-          asks.line === "After 7.Nf3, make the move printed here on the board." && asks.buttons[0] === "Play Nbd7", asks);
+          asks.line === "After 7.Nf3, play this move." && asks.buttons[0] === "Play Nbd7", asks);
     await page.click("#thmore");
     await page.waitForSelector("#fixafter");
     const words = await page.evaluate(() => document.getElementById("fixafter").innerText);

@@ -10,18 +10,21 @@
 // is missing from the text; "6.c4 Bh6 7.e3 f4 8.exf4 Bxf4 9.Qxf4 Qxb2" stands in no line on the
 // next page. On an iPad held upright, in the dark scheme, the test:
 //   - finds Show reading in the row under the board, between End (#bend) and Turn the board round
-//     (#bflip), on a 375 px phone, an upright iPad, a sideways iPad and a desktop;
+//     (#bflip), on a 375 px phone, an upright iPad, a sideways iPad and a desktop, and a Show reading
+//     on screen there with no move chosen (on the phone and the upright iPad, in the bar at the foot);
 //   - turns reading on from there: the pencil comes on with it;
 //   - taps the "'it'et" box: one line asks for the move printed there after 4...Qb6; Cancel leaves
 //     no sheet and no joining; More opens the box's Place sheet, whose "Continue a line..." starts a
 //     join that its Close ends; while joining, the sheet's list joins (never "in its place"), and the
 //     join the program refuses says why in the sheet;
-//   - taps the box again and makes 5.Qc1 on the board: the correction (its move, and the join after
-//     4...Qb6) is stored, the line holds 5.Qc1, and the sheet says that Black's 5th move is missing
-//     before 6.c4, with f5 offered;
+//   - taps the box again: the move is made on the full board, which stays in view under the sheet
+//     (the small board of the bar is not shown); makes 5.Qc1 there: the correction (its move, and
+//     the join after 4...Qb6) is stored, the line holds 5.Qc1, and the sheet says that Black's 5th
+//     move is missing before 6.c4, with f5 offered and 5.Qc1 to undo;
 //   - makes 5...f5 on the board: the sheet offers the moves read on from there, 6.c4 Bh6 7.e3 ...;
 //   - joins them: the line holds the whole game, the join stores f5 as the move given before it,
-//     and the sheet says the line reads to its end; Close leaves no thread and no joining.
+//     and the sheet says the line reads to its end; Undo takes the join back and offers the moves
+//     again, and Join joins them again; Close leaves no thread and no joining.
 // Prints one JSON object {ok, checks, errors, screenshots}; the exit code is 1 when a check fails.
 const { chromium } = require("playwright");
 const path = require("path");
@@ -72,6 +75,9 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
       await page.waitForTimeout(100);
     }
   };
+  // (the offer in a sheet's first place waits a moment after the sheet changes: a double tap's second
+  // tap does not take it)
+  const tapOffer = async (sel) => { await page.waitForTimeout(450); await tapIn(sel); };
   const tapIn = async (sel) => {
     const f = await frame();
     const el = await f.$(sel);
@@ -150,6 +156,17 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
             r.showread.w > 0 && r.bend.right <= r.showread.left && r.showread.right <= r.bflip.left &&
             Math.abs(r.showread.mid - r.bend.mid) < 3 && Math.abs(r.showread.mid - r.bflip.mid) < 3 &&
             r.showread.row === "controls", r);
+      // with no move chosen, as a chapter opens: a Show reading the reader can tap without scrolling
+      const seen = await inFrame(() => {
+        const hit = ["showread", "mread"].map((id) => {
+          const el = document.getElementById(id), b = el.getBoundingClientRect();
+          const x = (b.left + b.right) / 2, y = (b.top + b.bottom) / 2;
+          const top = b.width ? document.elementFromPoint(x, y) : null;
+          return { id, x, y, on: b.width > 0 && y > 0 && y < innerHeight && x > 0 && x < innerWidth && !!top && el.contains(top) };
+        });
+        return { node: readerState.nodeId, hit };
+      });
+      check("a Show reading is on screen with no move chosen on " + name, !seen.node && seen.hit.some((h) => h.on), seen);
       await shot("toggle_" + w + "x" + h);
     }
     await page.setViewportSize({ width: 834, height: 1194 });
@@ -171,8 +188,18 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
     await tapIn(await markSel(itet));
     let s = await sheet();
     check("a tap on the box in no line asks for its move after 4...Qb6, in one line",
-          s && s.line === "After 4…Qb6, make the move printed here on the board." &&
-          JSON.stringify(s.buttons) === JSON.stringify(["Not a move", "More", "Cancel"]), s);
+          s && s.line === "After 4…Qb6, play this move." &&
+          JSON.stringify(s.buttons) === JSON.stringify(["More", "Cancel"]), s);
+    const boards = await inFrame(() => {
+      const svg = document.querySelector("#board svg.board"), r = svg.getBoundingClientRect();
+      const sheet = document.getElementById("fix").getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width * 0.3, r.top + r.height * 0.9);
+      return { mini: document.querySelectorAll("#minibox svg.board").length, top: r.top, bottom: r.bottom, vh: innerHeight,
+        sheetBottom: sheet.bottom, square: Math.round(r.width / 8.3), free: !!top && svg.contains(top) };
+    });
+    check("one board while the move is asked for: the full board, in view under the sheet",
+          boards.mini === 0 && boards.top >= boards.sheetBottom - 1 && boards.bottom <= boards.vh && boards.free &&
+          boards.square >= 40, boards);
     const lit = await inFrame((k) => { const el = document.querySelector("#ov .mark.seqcur");
       return el ? READER.pages[readerState.page].marks[+el.dataset.mark].key === k : false; }, itet);
     check("the box asked about is outlined", lit);
@@ -222,21 +249,21 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
     out.timings["Qc1 made until the next step shows (s)"] = (Date.now() - t0) / 1000;
     s = await sheet();
     check("the line holds 5.Qc1", JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 9)), await gameNow());
-    check("the sheet says Black's 5th move is missing before 6.c4 and offers f5",
-          s.line === "Black's 5th move is missing before 6.c4. Make it on the board." && s.buttons.indexOf("Play f5") >= 0 &&
-          s.buttons.indexOf("Cancel") >= 0, s);
+    check("the sheet says Black's 5th move is missing before 6.c4 and offers f5, and 5.Qc1 to undo",
+          s.line === "Black's 5th move is missing before 6.c4." && s.buttons[0] === "Play f5" &&
+          s.buttons.indexOf("Undo 5.Qc1") >= 0 && s.buttons.indexOf("Cancel") >= 0, s);
     await shot("05_missing_move");
 
     // ---------------------------------------------------------------- 5...f5, then the moves read on
     await play("f6", "f5");
     await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /^Next:/.test(l.innerText); }, null, 120000);
     s = await sheet();
-    check("after f5 the sheet offers the moves read on from there, with their page",
-          /^Next: 6\.c4 Bh6 7\.e3 f4 8\.exf4 Bxf4 … \(page \d+\)$/.test(s.line) &&
-          JSON.stringify(s.buttons) === JSON.stringify(["Join", "Skip", "Cancel"]), s);
+    check("after f5 the sheet offers the moves read on from there",
+          /^Next: 6\.c4 Bh6 7\.e3 f4 8\.exf4 Bxf4 …( \(page \d+\))?$/.test(s.line) &&
+          JSON.stringify(s.buttons) === JSON.stringify(["Join", "Skip", "Undo 5.Qc1", "Cancel"]), s);
     await shot("06_next");
     t0 = Date.now();
-    await tapIn("#thjoin");
+    await tapOffer("#thjoin");
     await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /reads to its end/.test(l.innerText); }, null, 120000);
     out.timings["Join until the line reads to its end (s)"] = (Date.now() - t0) / 1000;
     const f2 = await fix();
@@ -245,8 +272,17 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
     check("the line holds the whole game", JSON.stringify(await gameNow()) === JSON.stringify(GAME), await gameNow());
     s = await sheet();
     check("the sheet says the line reads to its end", s.line === "The line reads to its end." &&
-          JSON.stringify(s.buttons) === JSON.stringify(["Close"]), s);
+          JSON.stringify(s.buttons) === JSON.stringify(["Undo", "Close"]), s);
     await shot("07_done");
+    // Undo takes the join back: the moves are offered again, and Join joins them again
+    await tapIn("#thundo");
+    await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /^Next:/.test(l.innerText); }, null, 120000);
+    check("Undo takes the join back and offers the moves again",
+          !(await fix()).connect[c4] && JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 9)),
+          { connect: (await fix()).connect, game: await gameNow() });
+    await tapOffer("#thjoin");
+    await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /reads to its end/.test(l.innerText); }, null, 120000);
+    check("Join after Undo joins them again", JSON.stringify(await gameNow()) === JSON.stringify(GAME), await gameNow());
     await tapIn("#thclose");
     st = await state();
     check("Close leaves no sheet, no thread and no joining", !st.open && !st.joining &&

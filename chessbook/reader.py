@@ -307,8 +307,9 @@ body:not(.reading) .rtool{display:none}
 /* in the wide bar the reading tools stand in the row with the others (their group adds no box) */
 .rtools{display:contents}
 /* Show reading sits in the row under the board, between the arrows and the board's own buttons, so
-   that it is at hand where the moves are corrected. In the wide bar, which stands at the right, the
-   reading tools come first and keep their room while hidden (the chapter's title then wraps the
+   that it is at hand where the moves are corrected (in the compact layout, where that row follows the
+   page, the bar at the foot of the window holds it too). In the wide bar, which stands at the right,
+   the reading tools come first and keep their room while hidden (the chapter's title then wraps the
    same way in both modes); in the compact layout they appear in a strip under the bar (below). */
 @media (min-width:701px) and (orientation:landscape),(min-width:1101px){
 .tools .rtool{order:-1}
@@ -516,6 +517,8 @@ body:not(.reading) .rtools{display:none}
 .key > *{grid-area:auto}
 .legend{display:none;visibility:visible}
 .reading .legend{display:flex}
+/* (an entry wider than a phone's window wraps rather than scroll the page sideways) */
+.legend > span{white-space:normal}
 .reading .key .help{display:none}
 .panel{position:static;height:auto;display:block;overflow:visible;border-left:0;padding:0 16px 32px}
 .panel > .pagefoot{border-top:1px solid var(--line);padding-top:12px}
@@ -528,7 +531,7 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mtxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
-#mboard[aria-pressed="true"],#mzoom[aria-pressed="true"]{color:var(--accent)}
+#mboard[aria-pressed="true"],#mzoom[aria-pressed="true"],#mread[aria-pressed="true"]{color:var(--accent)}
 /* the bar's magnifier enlarges the page: the button under the page is for wider screens */
 #zoom{display:none}
 /* The board follows the page picture (the script moves it there from the panel) and, while
@@ -551,7 +554,15 @@ max-width:min(100%,55vh)}
 .mbar.withboard .mtxt{flex:none;padding-top:4px}
 .mbar.withboard .mbtns{justify-content:flex-start;margin:0 0 0 -6px;flex-wrap:wrap}
 .mini svg,.mini canvas{display:block;width:100%;height:auto}
-.mini .co{display:none}}
+.mini .co{display:none}
+/* while the thread asks for a move the board stands at the foot of the window, above the bar, with the
+   sheet above it, wherever the page is scrolled */
+.threadboard .boardblock{position:fixed;left:0;right:0;bottom:var(--barh,50px);z-index:8;margin:0;
+overflow:hidden auto;max-height:calc(100vh - var(--barh,50px) - 96px)}}
+/* the bar's bookmark stands in the top bar too: a phone in reading mode (whose bar holds the pencil) and
+   the narrowest phone leave it out of the bar, so that the current move keeps its room */
+@media (max-width:480px){.reading #mbm{display:none}}
+@media (max-width:360px){#mbm{display:none}}
 /* a tablet held upright: the compact layout with the room it has. The board at the foot of the
    window has the line's title, the analysis and the move list beside it (#side, which the script
    makes), so that page, position and moves show together; the move list scrolls in its own box,
@@ -823,6 +834,8 @@ function setState(){
   }
   const t = $("mtxt");
   if (!t) return;
+  // (while the thread asks for a move, the bar names the move its board shows)
+  if (TH.on && TH.fen) { threadLabel(); return; }
   if (S.node) t.innerHTML = D.nodes[S.node].parent == null ? "Start position" :
     "<span class=n>" + moveHtml(S.node, true) + "</span>";
   else if (S.diagram) t.textContent = cap(diagramLabel(S.diagram));
@@ -1503,6 +1516,22 @@ function boardSvg(fen, flip, uci, doubt){
   }
   return s + "</svg>";
 }
+// the move the thread offers (a Play button), drawn as an arrow from its square to its target
+function offerArrow(svg, uci, flip){
+  if (!uci || uci.length < 4) return svg;
+  const mid = (sq) => {
+    const f = "abcdefgh".indexOf(sq[0]), r = 8 - parseInt(sq[1], 10);
+    return [M + (flip ? 7 - f : f) * SQ + SQ / 2, TOP + (flip ? 7 - r : r) * SQ + SQ / 2];
+  };
+  const [x1, y1] = mid(uci.slice(0, 2)), [x2, y2] = mid(uci.slice(2, 4));
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+  if (!len) return svg;
+  const ux = dx / len, uy = dy / len, head = 12, back = 9, ex = x2 - ux * head, ey = y2 - uy * head;
+  const a = "<line class='thoff' pointer-events='none' x1='" + (x1 + ux * 10) + "' y1='" + (y1 + uy * 10) + "' x2='" + ex +
+    "' y2='" + ey + "'/><polygon class='thoffh' pointer-events='none' points='" +
+    [x2, y2, ex - uy * back * 0.7, ey + ux * back * 0.7, ex + uy * back * 0.7, ey - ux * back * 0.7].join(",") + "'/>";
+  return svg.replace(/<\/svg>$/, a + "</svg>");
+}
 function sizeCoords(root){
   // the coordinates come out at 10px on screen, whatever the size of the board
   for (const svg of (root || document).querySelectorAll("svg.board")) {
@@ -1546,7 +1575,7 @@ function diagramLabel(id){
 function boardFor(){
   // [kind, html or diagram id, note]
   // a move asked for on the board (the thread): its position, with the move offered drawn on it
-  if (TH.on && TH.fen) return ["svg", boardSvg(TH.fen, S.flip, TH.offer || TH.uci), ""];
+  if (TH.on && TH.fen) return ["svg", offerArrow(boardSvg(TH.fen, S.flip, TH.uci), TH.offer, S.flip), ""];
   if (S.preview) return ["svg", boardSvg(S.preview.fen, S.flip, S.preview.uci), S.preview.note];
   const n = S.node ? D.nodes[S.node] : null;
   const fen = n ? nodeFen(S.node) : null;
@@ -1640,8 +1669,12 @@ function renderMini(){
   const editing = !!(RV.edit && document.getElementById("fix") && !$("fix").hidden) || RG.draw;
   const want = S.mini === null ? !!(S.node || S.diagram || editing) : S.mini;
   $("mboard").setAttribute("aria-pressed", String(want));
+  // while the thread asks for a move, the move is made on the full board: it stands at the foot of the
+  // window under the sheet, and the small board is not shown (one board, with squares a finger fits)
+  const thread = SMALL.matches && editing && RV.edit && RV.edit.kind === "thread" && kind === "svg";
+  document.body.classList.toggle("threadboard", !!thread);
   document.body.classList.toggle("stickboard", SMALL.matches && want && kind !== "empty" && !editing);
-  const show = SMALL.matches && want && kind !== "empty" && editing && !(RV.edit && RV.edit.kind === "diagram");
+  const show = SMALL.matches && want && kind !== "empty" && editing && !thread && !(RV.edit && RV.edit.kind === "diagram");
   mini.classList.toggle("on", show);
   bar.classList.toggle("withboard", show);
   const box = $("minibox");
@@ -2012,7 +2045,7 @@ function renderInfo(){
       if (gk && !(RV.edit && RV.edit.kind === "gap"))
         h += "<p class='small rtool'><button class=tb id=fixgapbtn>" + esc(n.gap && n.san ? "Change the moves you gave" :
           gapTitle(gk)) + "</button></p>";
-      else if (n.key && beforeFen(n) && !(RV.edit && RV.edit.node === S.node))
+      else if (n.key && beforeFen(n) && !(RV.edit && (RV.edit.node === S.node || RV.edit.kind === "thread")))
         h += "<p class='small rtool'><button class=tb id=fixthis>Correct this move</button></p>";
       else if (n.corrected === "added" && !(RV.edit && RV.edit.node === S.node))
         h += "<p class=small><button class=tb id=fixadded>Change your variation</button></p>";
@@ -2290,10 +2323,13 @@ function selNote(){
 function setReading(on){
   document.body.classList.toggle("reading", on);
   // the icon's name says what a tap does
-  const b = $("showread"), name = on ? "Hide reading" : "Show reading";
-  b.setAttribute("aria-pressed", String(on));
-  b.setAttribute("aria-label", name);
-  b.title = name;
+  const name = on ? "Hide reading" : "Show reading";
+  for (const b of [$("showread"), $("mread")]) {
+    if (!b) continue;
+    b.setAttribute("aria-pressed", String(on));
+    b.setAttribute("aria-label", name);
+    b.title = name;
+  }
   try { localStorage.setItem("chessbook-reading", on ? "1" : "0"); } catch (e) { /* no storage */ }
   if (on) return;
   // the correction tools show in reading mode only, so none of them may stay at work unseen: the
@@ -2493,7 +2529,9 @@ function init(){
   $("pagenum").addEventListener("keydown", (e) => { if (e.key === "Enter") { typedPage(); e.preventDefault(); } });
   $("pagenum").addEventListener("change", typedPage);
   $("pagenum").addEventListener("focus", () => $("pagenum").select());
-  $("showread").addEventListener("click", () => {
+  // (the bar at the foot of a phone's window holds it too: the row under the board follows the page
+  // there, out of view until a move is chosen)
+  for (const b of [$("showread"), $("mread")]) b.addEventListener("click", () => {
     const on = !reading();
     setReading(on);
     // the pencil is the tool reading mode starts with
@@ -2564,6 +2602,8 @@ function init(){
   let rd = false;
   try { rd = localStorage.getItem("chessbook-reading") === "1"; } catch (e) { rd = false; }
   setReading(rd);
+  // (the pencil is the tool reading mode starts with, as when the reader turns it on)
+  if (rd && !PEN.on) setPencil(true, true);
   // the moves of the sections read on the pages that the book does not hold yet (the reader opened
   // from a file), before the address is read, so that it may name one of them
   localRegions();
@@ -2651,7 +2691,6 @@ __PGNBTN__
 <span><i class="k unatt"></i>Placed in no line</span>
 <span><i class="k fixed"></i>Corrected by you</span>
 <span><i class="dot st-added"></i>Added by you on the board</span>
-<span class="penk"><i class="k pen"></i>Pencil on: a tap corrects the move, diagram or sequence</span>
 <span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
 </div>
@@ -2706,7 +2745,8 @@ __PGNBTN__
 <div class="mbar" id="mbar" aria-label="Current move">
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
 <div class="mside"><span class="mtxt" id="mtxt"></span><span class="meval small" id="mevalnum"></span>
-<span class="mbtns"><button class="ib rtool" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
+<span class="mbtns"><button class="ib" id="mread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
+<button class="ib rtool" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
 <button class="ib rtool" id="mregion" aria-pressed="false" aria-label="Read a section of the page that the program missed">__ICON_SECTION__</button>
 <button class="ib" id="mcpu" aria-pressed="false" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
 <button class="ib" id="mbm" aria-pressed="false" aria-label="Bookmark this page">__ICON_BOOKMARK__</button>

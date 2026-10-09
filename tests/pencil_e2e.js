@@ -75,7 +75,7 @@ function check(name, cond, detail) {
     await page.click(".mark[data-node='" + e5 + "']");
     const asks = await page.evaluate(() => document.querySelector("#fix .thl") && document.querySelector("#fix .thl").innerText);
     check("a tap with the pencil asks for the move printed there, in one line",
-          asks === "Make the move printed here on the board.", asks);
+          asks === "Play this move.", asks);
     await page.click("#thmore");
     await page.waitForSelector("#fix:not([hidden]) #fixsan");
     const editor = await page.evaluate(() => document.getElementById("fix").innerText);
@@ -119,7 +119,7 @@ function check(name, cond, detail) {
     await page.click(".mark[data-seq='" + seq + "']");
     const seqAsks = await page.evaluate(() => document.querySelector("#fix .thl") && document.querySelector("#fix .thl").innerText);
     check("a tap on a sequence placed in no line asks for its move after the move before it",
-          /^After .+, make the move printed here on the board\.$/.test(seqAsks || ""), seqAsks);
+          /^After .+, play this move\.$/.test(seqAsks || ""), seqAsks);
     await page.click("#thmore");
     await page.waitForSelector("#fixjoin");
     await page.click("#fixjoin");
@@ -180,13 +180,20 @@ function check(name, cond, detail) {
     const mpen = await page.evaluate(() => { const r = document.getElementById("mpen").getBoundingClientRect();
       return r.width > 0 && r.top >= window.innerHeight - 120; });
     check("the phone bar holds the pencil", mpen);
-    await page.click("#mpen");
+    // (reading mode kept over the reload brings the pencil with it, as turning it on does)
+    check("the pencil comes back on with reading mode after the reload",
+          await page.evaluate(() => document.body.classList.contains("pencil") &&
+            document.getElementById("mpen").getAttribute("aria-pressed") === "true"));
     await page.click(".mark[data-node='" + e5 + "']");
     await page.waitForSelector("#fix:not([hidden])");
-    const phone = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, w: window.innerWidth,
-      mini: document.getElementById("mini").classList.contains("on") }));
+    const phone = await page.evaluate(() => {
+      const b = document.querySelector("#board svg.board").getBoundingClientRect(), f = document.getElementById("fix").getBoundingClientRect();
+      return { sw: document.documentElement.scrollWidth, w: window.innerWidth, h: window.innerHeight,
+        mini: document.getElementById("mini").classList.contains("on"), top: b.top, bottom: b.bottom, sheet: f.bottom };
+    });
     check("no sideways scroll at 390 px with the pencil", phone.sw <= phone.w, phone);
-    check("the small board stays in view while correcting", phone.mini, phone);
+    check("the board stays in view under the sheet while correcting (one board)",
+          !phone.mini && phone.top >= phone.sheet - 1 && phone.bottom <= phone.h, phone);
     await shot("pencil_move_390_light.png");
     await page.emulateMedia({ colorScheme: "dark" });
     await shot("pencil_move_390_dark.png");

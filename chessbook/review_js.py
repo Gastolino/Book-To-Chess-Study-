@@ -143,18 +143,21 @@ svg.board .hit{fill:transparent;cursor:pointer}
    needs attention; a diagram shows that a tap corrects it) */
 .pencil .diag{outline:1px dotted color-mix(in srgb,var(--accent) 60%,transparent)}
 .joining .mark[data-node]:hover{outline:1.5px solid var(--accent)}
-.legend .penk{display:none}
-.pencil .legend .penk{display:inline-flex}
 .pencil .legend{visibility:visible}
 .pencil .key .help{visibility:hidden}
-.k.pen{border:1px dotted var(--accent)}
 .lineacts{display:grid;gap:6px;border-top:1px solid var(--line);padding-top:8px}
 .lineacts p{margin:0}
 #diagpick[hidden]{display:none}
 .dot.st-added{background:var(--ok)}
 .boardacts{display:grid;justify-items:start;gap:6px}
-/* the thread's sheet: one line, then its buttons */
+/* the thread's sheet: one line, then its buttons; the move offered (Play, Join) in the accent colour,
+   and on a touch screen each button a tap target of 32 px at least */
 .fix .thl{margin:0}
+.fix .fixacts .tb.primary{color:var(--accent);font-weight:500}
+@media (pointer:coarse){.fix .fixacts .tb{min-height:32px;padding:6px 0}}
+/* the move the thread offers, as an arrow (the last move keeps its outline) */
+svg.board .thoff{stroke:var(--accent);stroke-width:5px;stroke-linecap:round;opacity:.55;fill:none}
+svg.board .thoffh{fill:var(--accent);opacity:.55}
 .boardacts .n{font-family:"Geist Mono",ui-monospace,Menlo,Consolas,monospace;font-variant-ligatures:none}
 svg.board.movable use[data-mine]{cursor:grab}
 svg.board use.lifted{opacity:.35}
@@ -473,6 +476,8 @@ function showFix(html, kind, nav){
   box.innerHTML = "<div class=fix>" + html + (nav === false ? "" : fixNav()) + "</div>";
   box.hidden = false;
   RV.edit = Object.assign(RV.edit || {}, {kind});
+  // another editor ends the thread (the board then shows the line again and takes no move for it)
+  if (kind !== "thread" && TH.on) threadEnd(true);
   $("panel").classList.toggle("editing-diagram", kind === "diagram");
   if ($("fixclose")) $("fixclose").addEventListener("click", () => closeSheet());
   if ($("fixprev")) $("fixprev").addEventListener("click", () => openItem(RV.cur - 1));
@@ -506,19 +511,24 @@ function placeSheet(){
   // on a phone the editor sits above the bar at the foot of the window
   const box = $("fix"), bar = $("mbar");
   if (SMALL.matches && !box.hidden) {
-    box.style.bottom = bar.offsetHeight + "px";
+    // (the thread's sheet stands above the board, which stays at the foot of the window for its move)
+    const under = threadBoardHeight();
+    box.style.bottom = (bar.offsetHeight + under) + "px";
     // leave room above the editor for the page, so that the item stays in view: on a tablet held
     // upright the diagram editor takes half the window at most, so that the diagram it corrects,
     // taller than a move, stands whole above it
     const room = TABLET.matches && RV.edit && RV.edit.kind === "diagram" ? Math.round(window.innerHeight * 0.5) :
-      window.innerHeight - bar.offsetHeight - 200;
-    box.style.maxHeight = Math.max(220, room) + "px";
-    document.body.style.paddingBottom = (bar.offsetHeight + box.offsetHeight) + "px";
+      window.innerHeight - bar.offsetHeight - under - 200;
+    box.style.maxHeight = Math.max(under ? 96 : 220, room) + "px";
+    document.body.style.paddingBottom = (bar.offsetHeight + box.offsetHeight + under) + "px";
   } else { box.style.bottom = ""; box.style.maxHeight = ""; document.body.style.paddingBottom = ""; }
 }
 function bottomCover(){
   const box = $("fix");
-  return SMALL.matches && box && !box.hidden ? box.offsetHeight : 0;
+  return SMALL.matches && box && !box.hidden ? box.offsetHeight + threadBoardHeight() : 0;
+}
+function threadBoardHeight(){
+  return SMALL.matches && document.body.classList.contains("threadboard") ? $("boardblock").offsetHeight : 0;
 }
 function setMsg(text, kind){
   const m = $("fixmsg");
@@ -892,7 +902,7 @@ function openSeq(key){
     parseInt(b.id.slice(1), 10) - parseInt(a.id.slice(1), 10));
   let h = "<div class=fh><h3>Place “<span class=n>" + shownHtml(u.text) + "</span>”</h3></div>";
   h += "<p class='small muted'>The program placed these moves in no line" + (u.reason ? ", because " + esc(u.reason) : "") +
-    ". Choose the move of the line that they replace, or tap that move on the page.</p>";
+    ". Choose the move of the line that they replace.</p>";
   // a move printed without its number after a comment: the move the text prints it after is the natural join
   const afterId = u.after ? nodeByKey(u.after) : null;
   if (afterId && !joined)
@@ -929,6 +939,16 @@ function openSeq(key){
   if ($("fixundo")) $("fixundo").addEventListener("click", () => {
     FIX.set("unattached", key, null); FIX.set("connect", key, null); afterFix(); openSeq(key);
     setMsg("Your correction is removed. " + applyWords());
+  });
+}
+// a sequence marked as no move leaves the page: its sheet says so, and takes it back
+function seqDismissed(key){
+  RV.edit = {kind: "seqdone", key};
+  showFix("<p class=thl>Marked as no move.</p><div class=fixacts><button class=tb id=fixundo>Undo</button>" +
+    "<button class=tb id=fixclose>Close</button></div><p class='fixmsg small' id=fixmsg role=status></p>", "seqdone", false);
+  $("fixundo").addEventListener("click", () => {
+    FIX.set("unattached", key, null); afterFix(); closeFix();
+    say(inApp() ? "The moves are back on the page." : "Your correction is removed. " + applyWords());
   });
 }
 function nodeByKey(key){ for (const id in D.nodes) if (D.nodes[id].key === key) return id; return null; }
@@ -1231,25 +1251,37 @@ function penClick(b){
 // the app's worker says what follows (driver.suggest): the next printed moves to join, a move the
 // numbering says is missing, or a box that does not read, whose move the reader makes in turn. So
 // the reader weaves the line through what the program could not read, until it reads on its own.
+// A correction the book refuses is taken back, and the last one the book took can be undone.
 // TH.step: "own" (the move printed in the box), "gap" (a move missing before it), "next" (moves the
-// program reads on, to join or skip), "wait" (the worker applies or reads), "tap" (nothing found:
-// the reader taps the next box), "done". TH.kind: what a move made stores: "seq" (a box in no line:
-// its move and the join), "line" (a move of a line: its move), "join" (the moves read on: the join),
-// "gap" (a gap in the text: the moves given for it).
+// program reads on, to join or skip), "wait" (the worker applies, reads, or undoes), "tap" (nothing
+// found: the reader taps the next box), "done". TH.kind: what a move made stores: "seq" (a box in no
+// line: its move and the join), "line" (a move of a line: its move), "join" (the moves read on: the
+// join), "gap" (a gap in the text: the moves given for it). TH.anchor is the move the board's
+// position follows, and TH.aspec where it is printed (anchorSpec), which finds it again after a new
+// reading of the chapter; TH.ply is the ply the box's printed number names, TH.boxSan its move as
+// the program reads it there.
 const TH = {on: false, step: null, kind: null, key: null, box: null, seq: null, page: null, node: null,
-  anchor: null, fen: null, uci: null, before: [], need: 0, made: 0, cand: null, next: null, skip: [],
-  req: 0, probe: 0, seqn: 0, wait: null, sent: null, prev: null, stored: false, self: false, said: "",
-  promo: null, offer: null, raw: null};
-function threadEnd(){
+  anchor: null, aspec: null, fen: null, uci: null, before: [], need: 0, made: 0, cand: null, sure: false,
+  next: null, skip: [], req: 0, probe: 0, seqn: 0, wait: null, sent: null, prev: null, last: null, undo: null,
+  stored: false, self: false, said: "", promo: null, offer: null, raw: null, ply: null, boxSan: null,
+  html: "", changed: 0};
+// (the fields a correction's refusal or undo puts back)
+const TH_KEEP = ["kind", "key", "box", "seq", "page", "node", "raw", "ply", "boxSan", "anchor", "aspec", "before",
+  "step", "next", "need", "made", "cand", "sure"];
+function threadEnd(keepMarks){
   if (!TH.on && !TH.step) return;
   Object.assign(TH, {on: false, step: null, kind: null, key: null, box: null, seq: null, page: null, node: null,
-    anchor: null, fen: null, uci: null, before: [], need: 0, made: 0, cand: null, next: null, skip: [],
-    req: 0, probe: 0, wait: null, sent: null, prev: null, stored: false, said: "", promo: null, offer: null, raw: null});
-  for (const el of document.querySelectorAll("#ov .mark.seqcur")) el.classList.remove("seqcur");
+    anchor: null, aspec: null, fen: null, uci: null, before: [], need: 0, made: 0, cand: null, sure: false,
+    next: null, skip: [], req: 0, probe: 0, wait: null, sent: null, prev: null, last: null, undo: null,
+    stored: false, said: "", promo: null, offer: null, raw: null, ply: null, boxSan: null, html: "", changed: 0});
+  if (!keepMarks) for (const el of document.querySelectorAll("#ov .mark.seqcur")) el.classList.remove("seqcur");
+  // the bar names the chosen move again
+  setState();
 }
 function threadSource(){
-  // the position a move on the board starts from while the thread asks for one, or null
-  if (!TH.fen || TH.promo || (TH.step === "done" && !inApp())) return null;
+  // the position a move on the board starts from while the thread asks for one, or null (the line
+  // read to its end takes no more moves: they would be stored nowhere)
+  if (!TH.fen || TH.promo || TH.step === "done" || (TH.step === "wait" && TH.wait === "undo")) return null;
   return {id: TH.anchor, at: TH.anchor, fen: TH.fen, gap: null, thread: true};
 }
 // a move chosen by the thread: the page and the board stay with the thread's sheet
@@ -1258,16 +1290,37 @@ function threadSelect(id, opts){
   TH.self = true;
   try { selectNode(id, opts); } finally { TH.self = false; }
 }
+function threadSetAnchor(id){
+  TH.anchor = id;
+  TH.aspec = id != null && D.nodes[id] ? anchorSpec(id) : null;
+}
+// the move a place written by anchorSpec names, in the chapter as it reads now, or null
+function nodeFromSpec(sp){
+  let id = sp ? nodeByKey(sp.after) : null;
+  for (const s of (sp ? sp.before : [])) {
+    if (!id) return null;
+    id = D.nodes[id].children.find(c => D.nodes[c].san === s && D.nodes[c].main) ||
+      D.nodes[id].children.find(c => D.nodes[c].san === s) || null;
+  }
+  return id;
+}
+// a new reading of the chapter (a patch) may give the moves new ids: the thread finds its own again
+function threadRebase(){
+  if (!TH.on) return;
+  const id = nodeFromSpec(TH.aspec);
+  if (id) TH.anchor = id;
+  if (TH.kind === "line" && TH.key) TH.node = nodeByKey(TH.key) || TH.node;
+}
 function ordinal(k){
   const t = k % 100;
   return k + (t >= 11 && t <= 13 ? "th" : ["th", "st", "nd", "rd"][k % 10] || "th");
 }
 function fenPly(fen){ const f = fen.split(" "); return 2 * (parseInt(f[5] || "1", 10) - 1) + (f[1] === "b" ? 1 : 0); }
-// "Black's 5th move": the move the side to move makes in a position
-function plyWords(fen){
-  const f = fen.split(" ");
-  return (f[1] === "b" ? "Black" : "White") + "'s " + ordinal(parseInt(f[5] || "1", 10)) + " move";
-}
+// "Black's 5th move": the move of a ply, or the move the side to move makes in a position
+function plyText(ply){ return (ply % 2 ? "Black" : "White") + "'s " + ordinal(Math.floor(ply / 2) + 1) + " move"; }
+function plyWords(fen){ return fen ? plyText(fenPly(fen)) : ""; }
+// a move as the book numbers it: "5.Qc1", "5…f5"
+function moveWords(fen, san){ const f = fen.split(" "); return f[5] + (f[1] === "b" ? "…" : ".") + san; }
 // the move a SAN names in a position, as [SAN, UCI], or null
 function sanIn(fen, san){ const legal = CJ.legalMoves(fen); return legal.find(x => x[0] === san) || matchSan(san, legal); }
 // the position after the thread's anchor and the moves made after it
@@ -1289,14 +1342,20 @@ function lastText(){
     moveText(TH.anchor, true) : "the start";
   let fen = nodeFen(TH.anchor), t = "";
   for (const s of TH.before) {
-    const f = fen.split(" "), m = sanIn(fen, s);
-    t = f[5] + (f[1] === "b" ? "…" : ".") + s;
+    const m = sanIn(fen, s);
+    t = moveWords(fen, s);
     fen = CJ.after(fen, m[1]);
   }
   return t;
 }
-// the printed box of a suggestion, as "6.c4"
-function boxText(r){ return (r.number != null ? r.number + (r.black ? "…" : ".") : "") + shown(r.raw); }
+// the box asked about, by its move as the program reads it there ("13.Qe3"), or null (its printed
+// text may be junk: the lit box shows it)
+function boxName(){
+  if (!TH.boxSan) return null;
+  return TH.ply == null ? TH.boxSan : (Math.floor(TH.ply / 2) + 1) + (TH.ply % 2 ? "…" : ".") + TH.boxSan;
+}
+// " (page 13)" for a page other than the one shown
+function pageNote(p){ return p != null && p !== S.page ? " (" + esc(pageName(p)) + ")" : ""; }
 // the moves the program reads on, numbered from the thread's position: "6.c4 Bh6 7.e3 f4 …"
 function nextText(r){
   let fen = TH.fen, out = [];
@@ -1330,6 +1389,11 @@ function branchEnd(id){
     cur = nx;
   }
 }
+// the page of the printed move the thread's position follows
+function anchorPage(){
+  const id = TH.aspec ? nodeByKey(TH.aspec.after) : TH.anchor;
+  return id && D.nodes[id] ? D.nodes[id].page : null;
+}
 // the move printed before a box in reading order: the nearest box with a move, on its page or the one
 // before, with a position after it
 function boxBefore(page, pos){
@@ -1342,22 +1406,50 @@ function boxBefore(page, pos){
   }
   return null;
 }
-// the ply the number printed before a box in no line names (null when none is printed there)
-function printedPly(key){
-  const u = D.unattached.find(x => x.key === key);
-  const m = u && /^\s*(\d{1,3})\s*(\.\s*\.\s*\.|…)?/.exec(u.text || "");
-  return m ? 2 * (parseInt(m[1], 10) - 1) + (m[2] ? 1 : 0) : null;
+// the ply the number printed before a box of a sequence in no line names (the sequence's text holds
+// the numbers: "6 c4 Bh6 7 e3", "8 ...fxe3"), or null
+function printedPly(seq, key){
+  const u = D.unattached.find(x => x.key === seq);
+  if (!u || !u.text) return null;
+  // the box is the sequence's k-th move: its boxes in reading order
+  let k = 0, found = false;
+  for (let p = u.page; !found && p in D.pages && p <= u.page + 3; p++)
+    for (const m of D.pages[p].marks) {
+      if (m.seq !== seq) continue;
+      if (m.key === key) { found = true; break; }
+      k++;
+    }
+  if (!found) return null;
+  const plies = [];
+  let ply = null, next = null;
+  for (const w of u.text.split(/\s+/)) {
+    if (!w) continue;
+    const num = /^(\d{1,3})(\.*|…)$/.exec(w);
+    if (num) {
+      const white = 2 * (parseInt(num[1], 10) - 1);
+      // a number printed again for Black's move, or with its dots
+      next = num[2].length > 1 || num[2] === "…" || ply === white ? white + 1 : white;
+      continue;
+    }
+    if (/^(\.{2,}|…)$/.test(w)) { if (next != null && next % 2 === 0) next += 1; continue; }
+    if (/^(\.{2,}|…)/.test(w) && next != null && next % 2 === 0) next += 1;
+    ply = next != null ? next : ply != null ? ply + 1 : null;
+    next = null;
+    plies.push(ply);
+  }
+  return k < plies.length ? plies[k] : null;
 }
-// a box in no line whose printed number lies ahead of the position: the moves the text lacks first
+// a box whose printed number lies ahead of the position: the moves the text lacks first; one that
+// lies behind or far ahead says so
 function threadNeed(){
-  TH.need = 0; TH.made = 0; TH.cand = null; TH.step = "own";
-  const want = TH.fen ? printedPly(TH.key) : null;
+  TH.need = 0; TH.made = 0; TH.cand = null; TH.sure = false; TH.step = "own";
+  const want = TH.fen ? TH.ply : null;
   const k = want != null ? want - fenPly(TH.fen) : 0;
   if (k > 0 && k <= 4) {
     TH.need = k; TH.step = "gap";
     // the worker offers the moves the words between may stand for
     if (inApp()) threadPost(true);
-  }
+  } else if (k) TH.said = "It is printed as " + plyText(want) + ".";
 }
 function threadPost(probe){
   const n = D.nodes[TH.anchor], id = ++TH.seqn;
@@ -1369,14 +1461,21 @@ function threadPost(probe){
 function threadTap(b){
   const m = b.dataset.mark != null ? D.pages[S.page].marks[parseInt(b.dataset.mark, 10)] : null;
   if (!m) return false;
+  // a box of the moves the sheet offers to join: the tap joins them
+  if (TH.on && TH.step === "next" && TH.next && m.key && (m.key === TH.next.key ||
+      (TH.next.decoded || []).some(d => d.key === m.key))) { threadStore(null, ""); return true; }
+  // the box asked about: the sheet stays as it is
+  if (TH.on && m.key && m.key === TH.box && TH.page === S.page) return true;
   const id = b.dataset.node;
   if (id) {
     const n = D.nodes[id];
     // (a gap, a move whose position the gap before it leaves unknown, a move the reader added or
     // read, a start: their own editors)
     if (!n || n.parent == null || !n.key || n.gap || !beforeFen(n) || n.corrected === "added" || n.region) return false;
-    // while the move of a box in no line is asked for, a move tapped is the one it follows
-    if (TH.on && TH.kind === "seq" && (TH.step === "own" || TH.step === "gap")) {
+    // while the move of a box in no line is asked for, a move tapped on its page (or the page before)
+    // is the one it follows
+    if (TH.on && TH.kind === "seq" && (TH.step === "own" || TH.step === "gap") &&
+        (S.page === TH.page || S.page === TH.page - 1)) {
       if (n.fen) threadAnchor(id, markBox(b));
       return true;
     }
@@ -1398,34 +1497,39 @@ function threadTree(id){
   return true;
 }
 function threadAnchor(id, box){
-  TH.anchor = id; TH.before = []; TH.said = "";
+  threadSetAnchor(id); TH.before = []; TH.said = "";
   threadSelect(id, box ? {at: box} : {fromPage: true});
   TH.fen = threadFen();
   threadNeed();
   threadShow();
 }
 function threadBegin(o){
-  // a thread under way goes on from its line's last move and the moves made after it
-  const going = TH.on && TH.anchor != null && D.nodes[TH.anchor] && (TH.stored || TH.next) && o.kind === "seq" ?
-    {anchor: TH.anchor, before: TH.before.slice(), skip: TH.skip.slice(), stored: TH.stored} : null;
+  // a thread under way goes on from its line's last move and the moves made after it (not while the
+  // book is still applying a move, whose line's last move is not known yet, nor from the correction of
+  // a move of a line, whose position is the one before that move)
+  const going = TH.on && TH.anchor != null && D.nodes[TH.anchor] && (TH.stored || TH.next) && o.kind === "seq" &&
+    TH.kind !== "line" && !(TH.step === "wait" && TH.wait === "patch") ?
+    {anchor: TH.anchor, aspec: TH.aspec, before: TH.before.slice(), skip: TH.skip.slice(), stored: TH.stored,
+      last: TH.last} : null;
   if (RV.edit && RV.edit.kind !== "thread") closeFix();
   threadEnd();
   Object.assign(TH, {on: true, kind: o.kind, key: o.key, box: o.box || o.key, seq: o.seq || null, page: o.page,
     node: o.node || null, raw: o.raw || null}, going || {});
   if (o.kind === "line") {
     // the position before the move: the board shows it, and the move list the move
-    TH.anchor = D.nodes[o.node].parent;
+    threadSetAnchor(D.nodes[o.node].parent);
     threadSelect(o.node, {at: o.at});
     TH.fen = threadFen();
     TH.step = "own";
   } else {
+    TH.ply = printedPly(o.seq, o.key);
     // (a move printed without its number after a comment follows the move the text prints it after)
     const u = seqInfo(o.seq), after = u && u.key === o.key && u.after ? nodeByKey(u.after) : null;
     if (going) threadSelect(TH.anchor, {fromPage: true});
-    else if (after && D.nodes[after].fen) { TH.anchor = after; threadSelect(after, {fromPage: true}); }
+    else if (after && D.nodes[after].fen) { threadSetAnchor(after); threadSelect(after, {fromPage: true}); }
     else {
       const b = boxBefore(o.page, o.pos);
-      TH.anchor = b ? b.node : null;
+      threadSetAnchor(b ? b.node : null);
       if (b) threadSelect(b.node, b.page === S.page ? {at: b} : {fromPage: true});
     }
     TH.fen = threadFen();
@@ -1446,13 +1550,19 @@ function threadReveal(){
   const el = document.querySelector("#ov .mark.seqcur");
   if (el) revealMark(el);
 }
+// the bar under a phone's page names the move the board shows
+function threadLabel(){
+  const t = $("mtxt");
+  if (t && TH.fen) t.innerHTML = "<span class=n>" + esc(lastText()) + "</span>";
+}
 function threadShow(){
   if (!TH.on) return;
   const B = [];
   let line = "";
-  // the move offered: the one the worker read there, or a box in no line that reads as a legal move
-  const cand = TH.step === "gap" && TH.cand ? TH.cand[TH.made] : TH.step === "own" && TH.cand ? TH.cand[0] :
-    TH.step === "own" && TH.kind === "seq" && TH.raw ? TH.raw : null;
+  // the move offered: for a move the text lacks, the one the worker is sure of; for the box's own
+  // move, the one the program read there, or the box's text when it is a legal move
+  const cand = TH.step === "gap" && TH.cand && TH.sure ? TH.cand[TH.made] :
+    TH.step === "own" && TH.cand ? TH.cand[0] : TH.step === "own" && TH.kind === "seq" && TH.raw ? TH.raw : null;
   const play = cand && TH.fen ? sanIn(TH.fen, cand) : null;
   if (TH.promo) {
     line = "Promote the pawn to";
@@ -1461,62 +1571,92 @@ function threadShow(){
   } else if (TH.step === "own") {
     const n = TH.kind === "line" ? D.nodes[TH.node] : null;
     if (!TH.fen) line = "Tap the move these moves follow.";
-    else if (n && n.san && n.status !== "failed") line = "Make the move printed here on the board.";
-    else line = "After <span class=n>" + esc(lastText()) + "</span>, make the move printed here on the board.";
-    if (play) B.push(["thplay", "Play " + play[0], () => threadMove(play)]);
-    if (TH.kind === "seq") B.push(["thnot", "Not a move", threadDismiss]);
-    B.push(["thmore", "More", threadMore]);
+    else if (n && n.san && n.status !== "failed") line = "Play this move" + pageNote(TH.page) + ".";
+    else line = "After <span class=n>" + esc(lastText()) + "</span>, play this move" + pageNote(TH.page) + ".";
+    if (play) B.push(["thplay", "Play " + play[0], () => threadMove(play), true]);
+    if (threadMoreTarget()) B.push(["thmore", "More", threadMore]);
   } else if (TH.step === "gap") {
-    line = esc(plyWords(TH.fen)) + " is missing " + (TH.next ? "before <span class=n>" + esc(boxText(TH.next)) +
-      "</span>" : "here") + ". Make it on the board.";
-    if (play) B.push(["thplay", "Play " + play[0], () => threadMove(play)]);
+    const name = boxName();
+    line = esc(plyWords(TH.fen)) + " is missing" + (name ? " before <span class=n>" + esc(name) + "</span>" : "") +
+      pageNote(TH.page) + "." + (play ? "" : " Play it on the board.");
+    if (play) B.push(["thplay", "Play " + play[0], () => threadMove(play), true]);
     if (TH.next) B.push(["thskip", "Skip", threadSkip]);
+    if (threadMoreTarget()) B.push(["thmore", "More", threadMore]);
   } else if (TH.step === "next") {
-    line = "Next: <span class=n>" + esc(nextText(TH.next)) + "</span> (" + esc(pageName(TH.next.page)) + ")";
-    B.push(["thjoin", "Join", () => threadStore(null)], ["thskip", "Skip", threadSkip]);
+    line = "Next: <span class=n>" + esc(nextText(TH.next)) + "</span>" + pageNote(TH.next.page);
+    B.push(["thjoin", "Join", () => threadStore(null, ""), true], ["thskip", "Skip", threadSkip]);
   } else if (TH.step === "wait") {
-    line = TH.wait === "patch" ? "Applying your move." : "Looking for what follows.";
+    line = TH.wait === "undo" ? "Undoing." : TH.wait === "suggest" ? "Looking for what follows." :
+      TH.sent && TH.sent.kind === "join" && TH.sent.san == null ? "Joining." : "Applying your move.";
   } else if (TH.step === "tap") {
     line = "Tap the next move on the page.";
   } else if (TH.step === "done") {
     line = inApp() ? "The line reads to its end." : "Stored. Copy the corrections on the contents page into the chat.";
   }
-  B.push(TH.step === "done" ? ["thclose", "Close", closeSheet] : ["thcancel", "Cancel", closeSheet]);
+  // the last move the book took can be taken back
+  if (TH.last && !TH.promo && TH.step !== "wait") B.push(["thundo", "Undo" + (TH.last.text ? " " + TH.last.text : ""), threadUndo]);
+  if (!TH.promo) B.push(TH.step === "done" ? ["thclose", "Close", threadCancel] : ["thcancel", "Cancel", threadCancel]);
   let h = "<p class=thl>" + line + "</p><p class='fixmsg small' id=fixmsg role=status></p>";
-  h += "<div class=fixacts>" + B.map(b => "<button class=tb id=" + b[0] + ">" + esc(b[1]) + "</button>").join("") + "</div>";
+  h += "<div class=fixacts>" + B.map(b => "<button class='tb" + (b[3] ? " primary" : "") + "' id=" + b[0] + ">" +
+    esc(b[1]) + "</button>").join("") + "</div>";
+  // (a sheet that changed under the reader's finger: the offer in its first place waits a moment, so
+  // that the second tap of a double tap does not take an offer not read yet)
+  if (h !== TH.html) { TH.html = h; TH.changed = performance.now(); }
   showFix(h, "thread", false);
-  for (const b of B) $(b[0]).addEventListener("click", b[2]);
+  // (the info panel's "Correct this move" is not offered while the thread asks for a move)
+  if ($("fixthis")) renderInfo();
+  for (const b of B) $(b[0]).addEventListener("click", b[3] ? () => { if (performance.now() - TH.changed >= 400) b[2](); } : b[2]);
   if (TH.said) setMsg(TH.said, "bad");
   // the board shows the thread's position, with the move offered drawn on it
   TH.offer = play ? play[1] : null;
   renderBoard();
   threadPaint();
+  threadLabel();
   keepChooserInView();
 }
-function threadMore(){
-  // the box's full editor: the place of a box in no line, or the move's own corrections
-  const seq = TH.seq, node = TH.kind === "line" ? TH.node : null;
-  closeFix();
-  if (node) openMove(node); else if (seq) openSeq(seq);
+// the box's full editor: the place of a box in no line (or that it is no move), the gap's moves, or
+// the move's own corrections; null when it has none
+function threadMoreTarget(){
+  if (TH.kind === "gap" && TH.key) return () => openGap(TH.key);
+  const node = TH.kind === "line" ? TH.node : TH.key && !TH.seq ? nodeByKey(TH.key) : null;
+  if (node && D.nodes[node]) return () => openMove(node);
+  if (TH.seq && seqInfo(TH.seq)) { const seq = TH.seq; return () => openSeq(seq); }
+  return null;
 }
-function threadDismiss(){
-  const seq = TH.seq || TH.key, key = TH.key;
-  FIX.set("unattached", seq, {attach_to: "dismiss"});
-  afterFix();
-  if (inApp() && TH.stored) { TH.skip.push(key); TH.said = ""; threadAsk(); }
-  else { closeFix(); say("Marked as no move."); }
+function threadMore(){
+  const open = threadMoreTarget();
+  closeFix();
+  if (open) open();
 }
 function threadSkip(){
   TH.skip.push(TH.key);
   TH.said = "";
   threadAsk();
 }
+// Cancel or Close (or Escape): the thread ends, the corrections made stay, and the page goes back to
+// the line's last move when the thread had led it away
+function threadCancel(){
+  const back = TH.stored && TH.anchor != null && D.nodes[TH.anchor] ? TH.anchor : null;
+  closeSheet();
+  if (back && !boxesOn(back, S.page).length && (OCC[back] || []).length) selectNode(back, {scrollPage: true});
+}
 // a move made on the board while the thread asks for one
 function threadMove(m){
   if (!TH.on || !TH.fen) return;
   TH.said = "";
+  // the move the line already holds there: nothing to correct, the move is chosen
+  if (TH.step === "own" && TH.kind === "line") {
+    const n = D.nodes[TH.node];
+    if (n && n.san && n.status !== "failed" && n.uci === m[1]) {
+      const id = TH.node;
+      closeFix();
+      selectNode(id, {fromPage: true, scrollPage: true});
+      return;
+    }
+  }
+  const text = moveWords(TH.fen, m[0]);
   TH.fen = CJ.after(TH.fen, m[1]); TH.uci = m[1];
-  if (TH.step === "own") { threadStore(m[0]); return; }
+  if (TH.step === "own") { threadStore(m[0], text); return; }
   TH.before.push(m[0]);
   if (TH.step === "gap") {
     if (TH.cand && TH.cand[TH.made] !== m[0]) TH.cand = null;
@@ -1525,7 +1665,7 @@ function threadMove(m){
     TH.cand = null;
     // the box's own move next; a gap in the text is filled; moves read on are offered again from here
     if (TH.kind === "seq") { TH.step = "own"; threadShow(); return; }
-    if (TH.kind === "gap") { threadStore(null); return; }
+    if (TH.kind === "gap") { threadStore(null, TH.before.join(" ")); return; }
     threadAsk();
     return;
   }
@@ -1534,36 +1674,75 @@ function threadMove(m){
   if (TH.step === "wait" && TH.wait === "patch") { threadShow(); return; }
   threadAsk();
 }
+// the thread as it stands, to put back when the book refuses a correction or the reader undoes it
+function threadState(){
+  const st = {};
+  for (const k of TH_KEEP) st[k] = Array.isArray(TH[k]) ? TH[k].slice() : TH[k];
+  return st;
+}
+function threadRestore(st){
+  Object.assign(TH, st, {before: st.before.slice()});
+  threadRebase();
+  TH.fen = threadFen();
+  if (!TH.fen) TH.step = "tap";
+  if (TH.page != null && TH.page !== S.page && (TH.page in D.pages)) showPage(TH.page);
+}
 // the correction a move (or Join) makes, stored and sent to the worker
-function threadStore(san){
-  TH.prev = {anchor: TH.anchor, before: TH.before.slice(), kind: TH.kind, key: TH.key, box: TH.box, seq: TH.seq,
-    page: TH.page, next: TH.next, node: TH.node};
+function threadStore(san, text){
   const spec = TH.anchor != null ? anchorSpec(TH.anchor) : null;
-  const join = () => {
+  if (TH.kind !== "line" && TH.kind !== "gap" && !spec) {
+    TH.said = "The line has no printed move to go on from."; TH.fen = threadFen(); threadShow(); return;
+  }
+  // what the correction changes, as it stands now (the corrections a refusal or Undo puts back)
+  const parts = TH.kind === "line" ? [["moves", TH.key]] : TH.kind === "gap" ? [["gaps", TH.key]] :
+    TH.kind === "seq" ? [["moves", TH.key], ["connect", TH.key]] : [["connect", TH.key]];
+  const snap = parts.map(([p, k]) => [p, k, FIX.get(p, k) == null ? null : JSON.parse(JSON.stringify(FIX.get(p, k)))]);
+  const state = threadState();
+  // (a gap in the text asks for its moves again from the first)
+  if (TH.kind === "gap") {
+    state.before = state.before.slice(0, state.before.length - state.made);
+    state.need = state.made; state.made = 0; state.cand = null;
+  }
+  if (TH.kind === "line") FIX.set("moves", TH.key, {san});
+  else if (TH.kind === "gap") {
+    // the moves given for the gap before the thread's position stay, and the moves made follow them
+    const g = gapInfo(TH.key), k = g.filled.indexOf(TH.anchor);
+    const given = k >= 0 ? g.filled.slice(0, k + 1).map(id => D.nodes[id].san) : [];
+    FIX.set("gaps", TH.key, {san: given.concat(TH.before)});
+  } else {
+    if (TH.kind === "seq") FIX.set("moves", TH.key, {san});
     // (the keys in the order corrections.py writes them, as the store compares them)
     const c = {after: spec.after}, bf = spec.before.concat(TH.before);
     if (bf.length) c.before = bf;
     FIX.set("connect", TH.key, c);
-  };
-  if (TH.kind === "line") FIX.set("moves", TH.key, {san});
-  else if (TH.kind === "gap") FIX.set("gaps", TH.key, {san: TH.before.slice()});
-  else {
-    if (!spec) { TH.said = "The line has no printed move to go on from."; TH.fen = threadFen(); threadShow(); return; }
-    if (TH.kind === "seq") FIX.set("moves", TH.key, {san});
-    join();
   }
-  TH.sent = {kind: TH.kind, key: TH.key, san, after: spec ? spec.after : null};
+  const [part, pkey] = parts[parts.length - 1];
+  TH.sent = {kind: TH.kind, key: TH.key, san, after: spec ? spec.after : null, part, pkey};
+  TH.prev = {snap, state, text, part, pkey};
   TH.stored = true; TH.before = []; TH.need = 0; TH.made = 0; TH.cand = null; TH.next = null;
   TH.step = "wait"; TH.wait = "patch";
   afterFix();
   // the reader opened from a file applies nothing: the corrections wait for the next run
-  if (!inApp()) TH.step = "done";
+  if (!inApp()) { TH.step = "done"; TH.last = TH.prev; TH.prev = null; TH.sent = null; }
   threadShow();
 }
 // the book holds the correction, or says why it does not
 function threadPatched(p){
-  if (TH.step !== "wait" || TH.wait !== "patch" || !TH.sent) return;
-  const s = TH.sent, id = nodeByKey(s.key), n = id ? D.nodes[id] : null;
+  if (TH.step !== "wait") return;
+  if (TH.wait === "undo") {
+    const u = TH.undo;
+    if (!u || FIX.pending(u.part, u.pkey)) return;
+    TH.undo = null;
+    threadRestore(u.state);
+    threadShow();
+    threadReveal();
+    return;
+  }
+  if (TH.wait !== "patch" || !TH.sent) return;
+  const s = TH.sent;
+  // (a patch for an earlier correction, which the worker sent before this one: the answer is still to come)
+  if (FIX.pending(s.part, s.pkey)) return;
+  const id = nodeByKey(s.key), n = id ? D.nodes[id] : null;
   let ok = !!n;
   if (ok && (s.kind === "seq" || s.kind === "join")) { const a = nodeByKey(s.after); ok = !!a && D.nodes[a].line === n.line; }
   if (ok && s.kind === "line") ok = !!n.san && sanKey(n.san) === sanKey(s.san);
@@ -1571,28 +1750,45 @@ function threadPatched(p){
   if (!ok) {
     // (a new reading of the chapter while the book is read is not the answer)
     if (p.reading !== undefined) return;
-    const u = seqInfo(s.key) || seqInfo(TH.prev.seq);
-    const why = (u && u.reason) || (n && n.reason) || "the program could not place it";
-    const was = TH.prev;
-    Object.assign(TH, {anchor: was.anchor, before: was.before, key: was.key, box: was.box, seq: was.seq, page: was.page,
-      node: was.node, next: was.next, sent: null, said: "Not joined: " + why + "."});
-    TH.fen = threadFen();
-    if (was.kind === "gap") { TH.kind = "gap"; TH.need = TH.before.length || 1; TH.made = 0; TH.before = []; TH.fen = threadFen(); TH.step = "gap"; }
-    else { TH.kind = was.kind === "join" ? "seq" : was.kind; TH.step = "own"; }
-    threadShow();
+    const u = seqInfo(s.key) || seqInfo(TH.prev.state.seq);
+    const why = ((u && u.reason) || (n && n.reason) || "the program could not place it").replace(/, so it does not join after .*$/, "");
+    threadRefused(s.kind === "line" ? "Not taken: " + why + "." : cap(why) + ".");
     return;
   }
-  TH.sent = null; TH.prev = null;
+  TH.last = TH.prev; TH.prev = null; TH.sent = null;
   // the reader is on the line's last move; moves made meanwhile go on from it when it is that move
   const end = branchEnd(id);
   if (end !== id) TH.before = [];
-  TH.anchor = end;
+  threadSetAnchor(end);
   threadSelect(end, {fromPage: true});
   TH.fen = threadFen();
   threadAsk();
 }
+// a correction the book refuses (or could not apply) is taken back: the store holds what it held
+// before, and the sheet asks again, saying why
+function threadRefused(said){
+  const was = TH.prev;
+  TH.prev = null; TH.sent = null;
+  if (!was) { TH.step = "tap"; TH.said = said; threadShow(); return; }
+  for (const [p, k, v] of was.snap) FIX.set(p, k, v);
+  afterFix();
+  threadRestore(was.state);
+  TH.said = said;
+  threadShow();
+}
+// Undo: the last correction the book took is taken back, and the sheet asks for that move again
+function threadUndo(){
+  const u = TH.last;
+  if (!u) return;
+  TH.last = null; TH.next = null; TH.req = 0; TH.probe = 0; TH.said = "";
+  for (const [p, k, v] of u.snap) FIX.set(p, k, v);
+  afterFix();
+  if (!inApp()) { threadRestore(u.state); threadShow(); threadReveal(); return; }
+  TH.undo = u; TH.step = "wait"; TH.wait = "undo";
+  threadShow();
+}
 function threadAsk(){
-  TH.next = null; TH.cand = null; TH.need = 0; TH.made = 0;
+  TH.next = null; TH.cand = null; TH.sure = false; TH.need = 0; TH.made = 0;
   if (!inApp()) { TH.step = "done"; threadShow(); return; }
   TH.step = "wait"; TH.wait = "suggest";
   threadPost(false);
@@ -1604,21 +1800,29 @@ function threadSuggested(a){
   const r = a.result || {};
   if (a.id === TH.probe) {
     TH.probe = 0;
-    if (TH.step === "gap" && r.key === TH.key && r.between && r.between.length) { TH.cand = r.between[0]; threadShow(); }
+    if (TH.step === "gap" && r.key === TH.key) {
+      if (r.between && r.between.length) { TH.cand = r.between[0]; TH.sure = !!r.sure; }
+      if (r.san) TH.boxSan = r.san;
+      threadShow();
+    }
     return;
   }
   if (a.id !== TH.req || TH.step !== "wait") return;
   TH.req = 0;
   if (r.done) { TH.step = "done"; threadShow(); return; }
   const from = r.after_node && D.nodes[r.after_node] ? r.after_node : r.after ? nodeByKey(r.after) : null;
-  if (from && from !== TH.anchor) { TH.anchor = from; threadSelect(from, {fromPage: true}); }
+  if (from && from !== TH.anchor) { threadSetAnchor(from); threadSelect(from, {fromPage: true}); }
+  // (the page of the line's last printed move: the box may stand on the page after it)
+  const near = anchorPage();
   TH.fen = threadFen();
   Object.assign(TH, {key: r.key, box: r.key, seq: r.kind === "run" ? r.key : null, page: r.page, next: r, made: 0,
-    cand: null, need: 0, node: null, raw: r.raw || null});
+    cand: null, sure: false, need: 0, node: null, raw: r.raw || null, boxSan: r.san || null,
+    ply: r.number != null ? 2 * (r.number - 1) + (r.black ? 1 : 0) : null});
   if (r.kind === "gap" || r.number_gap > 0) {
     TH.kind = r.kind === "gap" ? "gap" : "join";
     TH.step = "gap"; TH.need = Math.max(1, r.number_gap || 0);
     TH.cand = r.between && r.between.length ? r.between[0] : null;
+    TH.sure = !!r.sure;
   } else if (r.kind !== "failed" && r.decoded && r.decoded.length) {
     TH.kind = "join"; TH.step = "next";
   } else {
@@ -1628,8 +1832,9 @@ function threadSuggested(a){
     TH.step = "own";
     TH.cand = r.decoded && r.decoded.length ? [r.decoded[0].san] : null;
   }
-  // the page turns to the box when the box is on another page
-  if (r.page !== S.page && (r.page in D.pages)) showPage(r.page);
+  // the page turns to the box when it stands on the page after the line's last printed move (or on
+  // that page); a box further on is named by its page, and the reader turns to it
+  if (r.page !== S.page && (r.page in D.pages) && (near == null || r.page <= near + 1)) showPage(r.page);
   threadShow();
   threadReveal();
 }
@@ -1641,9 +1846,9 @@ function threadNoSuggestion(id, text){
   threadShow();
 }
 function threadFailed(text){
-  if (!(TH.on && TH.step === "wait" && TH.wait === "patch")) return;
-  TH.step = "tap"; TH.said = text; TH.sent = null;
-  threadShow();
+  if (!(TH.on && TH.step === "wait")) return;
+  if (TH.wait === "patch") { threadRefused(text); return; }
+  if (TH.wait === "undo") { TH.undo = null; TH.step = "tap"; TH.said = text; threadShow(); }
 }
 
 /* ---------------- corrections applied at once (the browser app) */
@@ -1704,9 +1909,11 @@ function applyPatch(p){
       openSeq(edit.key);
       said = "Not placed" + (u.reason ? ": " + u.reason : "") + ".";
       setMsg(said, "bad");
-    } else { closeFix(); said = u ? "Marked as no variation." : "Placed in the line."; }
+    } else if (u) { said = "Marked as no move."; seqDismissed(edit.key); }
+    else { closeFix(); said = "Placed in the line."; }
   }
   // the thread goes on once the book holds the move made on the board
+  threadRebase();
   const thread = !!(edit && edit.kind === "thread" && TH.on);
   if (thread && p.corrections) threadPatched(p);
   // the move made on the board: it is chosen once the book holds it
@@ -1736,7 +1943,7 @@ function initPencil(){
     if (e.key !== "Escape") return;
     if (PEN.connect) { stopConnect(); say(""); }
     // Escape ends the thread; the corrections made stay
-    if (TH.on) closeFix();
+    if (TH.on) threadCancel();
   });
   window.addEventListener("message", (e) => {
     if (e.source !== window.parent || e.source === window) return;
@@ -1781,7 +1988,9 @@ function moveSource(box){
   return known ? {id, at: known, fen: nodeFen(known), gap: gapKeyOf(id)} : null;
 }
 function boardBoxes(){ return [$("board"), $("minibox"), $("dpanel")].filter(Boolean); }
-function srcSig(src){ return src ? src.at + "|" + src.fen : ""; }
+// (the thread's position keeps a piece chosen while the book applies a move: a new reading changes the
+// move it follows, not the position)
+function srcSig(src){ return !src ? "" : src.thread ? "thread|" + src.fen : src.at + "|" + src.fen; }
 function squareAt(svg, x, y){
   const r = svg.getBoundingClientRect(), H = TOP + 8 * SQ + M;
   if (!r.width) return null;
@@ -2162,6 +2371,12 @@ function initBoardMoves(){
       const dragged = !!d.ghost;
       if (d.ghost) { d.ghost.remove(); const p = d.svg.querySelector("use.lifted"); if (p) p.classList.remove("lifted"); }
       if (cancel) { paintBoards(); return; }
+      // (the board drawn again under the finger, as a new reading came: the move lands on the new one)
+      if (!d.svg.isConnected) {
+        const svg = boardSvgOf(box), src = moveSource(box);
+        if (!svg || !src || src.fen !== d.src.fen) { BM.pick = null; paintBoards(); return; }
+        d.svg = svg; d.src = src;
+      }
       const sq = squareAt(d.svg, e.clientX, e.clientY);
       if (d.own && dragged) {
         // a drop on a square the piece can reach plays the move; any other drop puts it back

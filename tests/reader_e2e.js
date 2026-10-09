@@ -743,8 +743,10 @@ async function openChapterOf(page, p) {
         if (m) check("iPhone 13: the current move stays on the page above the board (" + i + ")",
                      m.top >= 0 && m.bottom <= m.boardTop + 1, m);
       }
-      // a correction: the sheet above the bar, a smaller board in the bar, the page above them. The
-      // pencil shows in reading mode (and Show reading moves nothing on the page, so the window
+      // a correction: the pencil's tap asks for the move on the board, so the sheet stands above the
+      // full board, which stays at the foot of the window above the bar, and the page above them (the
+      // small board of the bar is not shown: one board, with squares a finger fits). The pencil shows
+      // in reading mode (and Show reading moves nothing on the page, so the window
       // goes back to where it was)
       const yRead = await pp.evaluate(() => window.scrollY);
       await pp.tap("#showread");
@@ -771,14 +773,15 @@ async function openChapterOf(page, p) {
         const f = document.getElementById("fix").getBoundingClientRect(), bar = document.getElementById("mbar").getBoundingClientRect();
         const m = document.querySelector("#mini.on svg"), mr = m ? m.getBoundingClientRect() : null;
         const k = document.querySelector("#ov .mark[data-node='" + id + "']").getBoundingClientRect();
+        const blk = document.getElementById("boardblock").getBoundingClientRect();
         return { fixTop: f.top, fixBottom: f.bottom, barTop: bar.top, mini: mr && { top: mr.top, bottom: mr.bottom, w: mr.width },
+                 blkTop: blk.top, blkBottom: blk.bottom,
                  mark: { top: k.top, bottom: k.bottom }, sw: document.documentElement.scrollWidth, w: window.innerWidth,
                  stick: document.body.classList.contains("stickboard") };
       }, vis);
-      check("iPhone 13: a correction shows its sheet above the bar, a board beside the bar's controls and the move above them",
-            !fx.stick && Math.abs(fx.fixBottom - fx.barTop) <= 2 && fx.fixTop >= 100 && fx.mini && fx.mini.w >= 150 &&
-            fx.mini.top >= fx.barTop - 1 && fx.mini.bottom <= 664 + 1 && fx.mark.top >= 0 && fx.mark.bottom <= fx.fixTop &&
-            fx.sw <= fx.w, fx);
+      check("iPhone 13: a correction shows its sheet above the board, the board above the bar and the move above them",
+            fx.stick && !fx.mini && Math.abs(fx.blkBottom - fx.barTop) <= 2 && Math.abs(fx.fixBottom - fx.blkTop) <= 2 &&
+            fx.fixTop >= 60 && fx.mark.top >= 0 && fx.mark.bottom <= fx.fixTop && fx.sw <= fx.w, fx);
       await pp.screenshot({ path: path.join(screens, "sticky_390x664_correction.png") });
       out.screenshots.push("sticky_390x664_correction.png");
       await pp.tap("#thcancel, #fixclose");

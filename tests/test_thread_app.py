@@ -60,4 +60,5 @@ def test_the_reader_threads_the_line_in_the_app(tmp_path):
             "the line holds the whole game",
             "Close leaves no sheet, no thread and no joining"} <= names
     assert sum(n.startswith("Show reading sits under the board") for n in names) == 4
+    assert sum(n.startswith("a Show reading is on screen") for n in names) == 4
     print(json.dumps(res["timings"], indent=1))
