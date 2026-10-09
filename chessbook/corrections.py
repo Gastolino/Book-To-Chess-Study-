@@ -10,7 +10,8 @@ selection (selection.py), and in the browser under
      "unattached": {"201:96,410:Qh5": {"attach_to": "201:118,342:tLlxf6t"},
                     "202:40,88:Rd1": {"attach_to": "dismiss"}},
      "glyphs":     {"tLl": "N"},
-     "connect":    {"203:52,120:e4": {"after": "202:310,96:Nf3"}},
+     "connect":    {"203:52,120:e4": {"after": "202:310,96:Nf3"},
+                    "12:103,214:c4": {"after": "11:272,579:'it'et", "before": ["f5"]}},
      "disconnect": {"204:80,300:Qh5": {"start": "here"},
                     "204:90,410:Rd1": {"start": "p204-1"},
                     "205:60,90:Kf2":  {"remove": true}},
@@ -42,7 +43,17 @@ connect      the key of the first move of a run (or of any move of a line:
              the moves from it on) and the key of the move after which the
              run continues ("after"). The run continues the main line there
              when that move ends it, and forms a variation from it otherwise,
-             provided its first move is legal there.
+             provided its first move is legal there. That move may be one
+             that another correction placed (a run joined or tied to a line
+             before), so that joins follow one another. "before" lists the
+             moves, in SAN and in order, that the book's text lacks between
+             that move and the run (unprinted or unreadable): they are played
+             first. When the run continues the main line, its printed move
+             number must follow the move chosen (counting the moves given
+             "before"): a run printed as "6.c4" after 5.Qc1 is refused, with
+             the reason naming Black's fifth move as missing. The keys stand
+             in the order "after", "before", as the browser writes them, and
+             an empty "before" is left out.
 disconnect   the key of a move of a line. {"start": "here"} starts a new line
              with that move, from the position before it; {"start": <diagram
              id>} starts the new line from that diagram instead; {"remove":
@@ -177,6 +188,14 @@ def normalise(data):
         if after == key:
             raise ValueError(f"The correction of {key!r} joins a move to itself.")
         out["connect"][key] = {"after": after}
+        before = (v or {}).get("before") if isinstance(v, dict) else None
+        if isinstance(before, str):
+            before = before.split()
+        if before:
+            if not isinstance(before, list) or \
+                    not all(isinstance(x, str) and x.strip() for x in before):
+                raise ValueError(f"The moves given before {key!r} are not a list of moves.")
+            out["connect"][key]["before"] = [x.strip() for x in before]
     for key, v in (data.get("disconnect") or {}).items():
         parse_key(key)
         v = v if isinstance(v, dict) else {}
