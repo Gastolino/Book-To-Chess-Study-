@@ -2332,7 +2332,10 @@ function fromHash(){
     if (S.page !== p) return true;
     const b = key ? BOX[key] : null;
     if (b && b.page === p) { selectNode(b.node, {at: b, scrollPage: !view}); return true; }
-    if (at[2] && D.nodes[at[2]] && boxesOn(at[2], p).length) {
+    // (a move printed nowhere, such as the start position or a move the reader added, is chosen
+    // when its line runs on that page)
+    const n = at[2] ? D.nodes[at[2]] : null, L = n ? D.lines[n.line] : null;
+    if (n && (boxesOn(at[2], p).length || (!OCC[at[2]] && L && L.page <= p && p <= L.end_page))) {
       selectNode(at[2], {fromPage: true, scrollPage: !view}); return true;
     }
     defaultView();

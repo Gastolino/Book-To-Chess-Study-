@@ -148,6 +148,12 @@ function check(name, cond, detail) {
     s = await press("bstart");
     check("Home goes to the start position and keeps the page", s.page === P.page + 1 && s.lit.length === 0 &&
           (await page.evaluate(() => window.READER.nodes[window.readerState.nodeId].parent === null)), s);
+    // the start position, printed nowhere, comes back from the address on the same page
+    const home = s;
+    await page.reload();
+    await page.waitForFunction(() => window.readerState && window.readerState.page);
+    s = await st();
+    check("the address gives back the start position on its page", s.page === home.page && s.node === home.node, { s, home });
     s = await press("bend");
     check("End goes to the end of the line, forward", s.page >= P.page + 1 && s.lit.length === 1 &&
           (await page.evaluate(() => window.READER.nodes[window.readerState.nodeId].children.length === 0)), s);
