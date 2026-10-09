@@ -528,6 +528,9 @@ worker.onmessage = (e) => {
   } else if (m.type === "words" || m.type === "region") {
     // the reader's section of a page: the words around a tap, or the program's reading of it
     toView(m.type === "words" ? { words: m } : { regionRead: m });
+  } else if (m.type === "suggest") {
+    // what follows a move the reader joined: the next printed move the line does not hold
+    toView({ suggested: m });
   } else if (m.type === "patch") {
     prepared = {};
     patched(m);
@@ -549,6 +552,11 @@ worker.onmessage = (e) => {
     if (m.during === "words" || m.during === "region") {
       // the reader says why the section was not read, and the reader may type its moves
       toView({ regionFailed: m.text, id: m.id });
+      return;
+    }
+    if (m.during === "suggest") {
+      // the reader goes on without a suggestion
+      toView({ suggestFailed: m.text, id: m.id });
       return;
     }
     working(false);
@@ -849,6 +857,11 @@ window.addEventListener("message", (e) => {
   if (e.data && (e.data.words || e.data.region)) {
     // the reader asks for the words of a spot of a page, or for the program's reading of a section
     worker.postMessage(Object.assign({ type: e.data.words ? "words" : "region" }, e.data.words || e.data.region));
+    return;
+  }
+  if (e.data && e.data.suggest) {
+    // the reader asks what follows a move it joined to its line ({after, before, skip, id})
+    worker.postMessage(Object.assign({ type: "suggest", chapter: openChapter }, e.data.suggest));
     return;
   }
   LIB.fromReader(e.data);
