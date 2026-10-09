@@ -36,12 +36,16 @@ def apply(state, book, fix, chapters=None, window=None):
     """Apply the corrections fix to the book (book.json as a dict, changed in
     place). chapters limits the replay of lines that a changed piece symbol
     touches to those chapters, and window to the lines that start within
-    that many pages of the first of them (a small batch). Returns {"lines",
-    "removed", "pages", "pending", "seconds"}."""
+    that many pages of the first of them (a small batch). The corrections
+    the program made by itself (read_on) that no longer apply, since a move
+    before them changed, are dropped (assemble._Builder.apply_checked):
+    book["corrections"] holds the set kept. Returns {"lines", "removed",
+    "pages", "pending", "seconds"}."""
     t0 = time.perf_counter()
     b = state["builder"]
     fix = fixes.normalise(fix or {})
-    res = b.apply_fix(fix, chapters, window)
+    res = b.apply_checked(fix, chapters, window)
+    fix = b.fix
     _update(state, book, fix, res)
     res["seconds"] = round(time.perf_counter() - t0, 3)
     return res
@@ -61,13 +65,22 @@ def read_on(state, book, fix, after, chapters=None, pages=None, skip=None):
     program made: {"connect": {...}, "gaps": {...}}), "joined", "filled",
     "moves", "stop", "until", "end" (see read_on), "lines", "removed",
     "pages", "pending" (as apply() gives them, for all the steps together)
-    and "seconds"}."""
+    and "seconds"}.
+
+    skip holds the keys of the program's corrections that the reader
+    removed: they are stored as declined (corrections.decline), so that the
+    program does not make them again, now or after the book is read again.
+    The program's corrections that a change of the moves before them made
+    stale are dropped first (apply_checked) and read on again from the
+    move corrected."""
     t0 = time.perf_counter()
     b = state["builder"]
     fix = fixes.normalise(fix or {})
-    res = b.apply_fix(fix, chapters)
-    out = b.read_on(after, chapters, assemble.READ_ON_PAGES if pages is None else int(pages),
-                    skip or ())
+    for k in skip or ():
+        if fixes.KEY_RE.match(str(k or "")):
+            fix = fixes.decline(fix, str(k))
+    res = b.apply_checked(fix, chapters)
+    out = b.read_on(after, chapters, assemble.READ_ON_PAGES if pages is None else int(pages))
     ch = out.pop("changes")
     for k in ("lines", "removed", "pages"):
         res[k] = sorted(set(res[k]) | set(ch[k]))

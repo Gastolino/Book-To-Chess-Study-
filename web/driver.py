@@ -610,7 +610,8 @@ def read_on(after, name="", corrections_json=None, opts_json=None):
     opts_json: {"pages": the pages to read past the move's page at least
     (assemble.READ_ON_PAGES), "skip": keys of boxes where the program must
     not join or fill by itself (its corrections that the reader removed): it
-    stops there}.
+    stops there, and the corrections returned keep them ("declined"), so
+    that it does not make them again}.
 
     The worker runs it before any other reading (web/worker.js). While the
     book is read, it applies to the chapter's own reading (made now when

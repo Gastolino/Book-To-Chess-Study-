@@ -34,9 +34,15 @@ GAME = ("d4 Nf6 Bg5 c5 Bxf6 gxf6 d5 Qb6 Qc1 f5 c4 Bh6 e3 f4 exf4 Bxf4 Qxf4 Qxb2 
 QC1 = {"san": "Qc1"}
 
 
-def make_long(path, diagram=True):
+def make_long(path, diagram=True, variation=False, note=False, misread=False, other_game=False,
+              far=False, slip=False):
     """test_thread.make_wells, with the rest of the game on page 6
-    (a diagram after 12.d6 when diagram)."""
+    (a diagram after 12.d6 when diagram). For the rules of reading on:
+    variation adds a variation in a note ("4...Qa5+ 5.c3 Qb6", after which
+    "6.c4 Bh6 7.e3" would read); note prints "6.c4 Bh6 7.e3 f4" in the
+    notes' font; misread prints 4...Qb6 as "Qb8" (the program reads it as
+    Qb6); other_game prints another game's header before "6.c4 ..." and
+    far a page of prose; slip prints 10...Qxa1 as "Qxa7"."""
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
@@ -57,8 +63,10 @@ def make_long(path, diagram=True):
     w.mixed([("Wells - Shirov, ", True), ("Gibraltar 2006", False)])
     w.line("1.d4 Nf6 2.Bg5 c5 3.Bxf6 gxf6", bold=True)
     w.line("Shirov recaptures towards the centre.", indent=8)
-    w.line("4.d5 Qb6", bold=True)
+    w.line("4.d5 Qb8" if misread else "4.d5 Qb6", bold=True)
     w.line("Black aims at the weak b2 square.", indent=8)
+    if variation:
+        w.line("Or 4...Qa5+ 5.c3 Qb6 with play.", indent=8)
     w.prose(n=1)
     w.picture("4", caption="White to move")
     w.col(1)
@@ -69,11 +77,19 @@ def make_long(path, diagram=True):
     w.prose(n=3)
     w.line("5.'it'et", bold=True)
     w.prose(until=H - 60)
+    if far:
+        w.page()
+        w.prose(until=H - 60)
+        w.col(1)
+        w.prose(until=H - 60)
     w.page()
+    if other_game:
+        w.line("GAME TWO", bold=True, size=11, x=80)
+        w.mixed([("Kramnik - Leko, ", True), ("Brissago 2004", False)])
     w.line("An awkward looking response.", bold=True)
     w.line("IS Shirov calls on the help of the f-pawn.", indent=8)
     w.prose(n=3)
-    w.line("6.c4 Bh6 7.e3 f4", bold=True)
+    w.line("6.c4 Bh6 7.e3 f4", bold=not note)
     w.line("The intention is to leave White with", indent=8)
     w.line("a weak pawn on e3.")
     w.line("8.exf4 Bxf4 9.Qxf4 Qxb2", bold=True)
@@ -83,7 +99,7 @@ def make_long(path, diagram=True):
     w.prose(until=H - 60)
     w.page()
     w.prose(n=2)
-    w.line("10.Ne2 Qxa1 11.Nc3 Qb2", bold=True)
+    w.line("10.Ne2 Qxa7 11.Nc3 Qb2" if slip else "10.Ne2 Qxa1 11.Nc3 Qb2", bold=True)
     w.line("The queen has to come back.", indent=8)
     w.line("12.d6", bold=True)
     w.line("A pawn on d6 cuts the board in two.", indent=8)
@@ -105,6 +121,12 @@ def make_long(path, diagram=True):
         w.prose(until=H - 60)
     w.save(path)
     return path
+
+
+def at(n):
+    """The position after the game's first n moves, as the program's
+    corrections hold it ("at")."""
+    return " ".join(_fen(n).fen().split()[:2])
 
 
 def _fen(n):
@@ -184,9 +206,10 @@ def comparable(b):
             [p["marks"] for p in b["pages"]], [p["diagrams"] for p in b["pages"]])
 
 
-def the_reader(book):
-    """The reader's own correction: 5.Qc1 for the junk, joined after 4...Qb6."""
-    qb6, itet = key_of(book, "Qb6"), key_of(book, "'it'et")
+def the_reader(book, qb6="Qb6"):
+    """The reader's own correction: 5.Qc1 for the junk, joined after 4...Qb6
+    (printed as qb6)."""
+    qb6, itet = key_of(book, qb6), key_of(book, "'it'et")
     return {"moves": {itet: QC1}, "connect": {itet: {"after": qb6}}}, itet
 
 
@@ -223,8 +246,10 @@ def test_one_read_on_threads_the_whole_game(fresh):
     assert mark["corrected"] == "connected" and mark["auto"]
     # the corrections it made, in the stored form
     d6 = nodes[22]["key"]
-    assert res["auto"] == {"connect": {c4: {"after": itet, "before": ["f5"], "auto": True},
-                                       qe3: {"after": d6, "before": ["Qc2"], "auto": True}}}
+    assert res["auto"] == {"connect": {c4: {"after": itet, "before": ["f5"], "auto": True,
+                                            "at": at(10)},
+                                       qe3: {"after": d6, "before": ["Qc2"], "auto": True,
+                                             "at": at(24)}}}
     assert res["corrections"]["connect"] == dict(fix["connect"], **res["auto"]["connect"])
     assert fixes.normalise(res["corrections"]) == res["corrections"]
     assert book["corrections"] == res["corrections"]
@@ -341,6 +366,25 @@ def test_auto_corrections_round_trip():
     plain = fixes.normalise({"connect": {a: {"after": b, "auto": False}}, "gaps": {a: ["Qc2"]}})
     assert plain["connect"][a] == {"after": b} and plain["gaps"][a] == {"san": ["Qc2"]}
     assert fixes.auto_part(plain) == {}
+    # the position the program joined from ("at"), kept in its own entries only
+    pos = at(10)
+    data = fixes.normalise({"connect": {a: {"at": pos + " KQkq - 0 6", "auto": True, "after": b}},
+                            "gaps": {a: {"san": ["Qc2"], "auto": True, "at": pos}}})
+    assert list(data["connect"][a]) == ["after", "auto", "at"] and data["connect"][a]["at"] == pos
+    assert data["gaps"][a] == {"san": ["Qc2"], "auto": True, "at": pos}
+    assert "at" not in fixes.normalise({"connect": {a: {"after": b, "at": pos}}})["connect"][a]
+    with pytest.raises(ValueError):
+        fixes.normalise({"connect": {a: {"after": b, "auto": True, "at": "a board"}}})
+    # the reader's removal of the program's join: stored, and the entry gone
+    gone = fixes.decline(data, a, "connect")
+    assert gone["declined"] == {a: {"part": "connect"}} and a not in gone["connect"]
+    assert gone["gaps"][a] == data["gaps"][a]
+    gone = fixes.decline(data, a)                        # (every entry of the program's there)
+    assert gone["declined"] == {a: {"part": "connect"}} and not gone["connect"] and not gone["gaps"]
+    assert fixes.normalise({"declined": {a: True}})["declined"] == {a: {"part": "connect"}}
+    assert fixes.count(gone)["declined"] == 1
+    with pytest.raises(ValueError):
+        fixes.normalise({"declined": {a: {"part": "moves"}}})
 
 
 def test_the_driver_answers_read_on(tmp_path, monkeypatch):
@@ -357,7 +401,8 @@ def test_the_driver_answers_read_on(tmp_path, monkeypatch):
     driver.chapter(name, lambda *_: None)
     out = json.loads(driver.read_on(itet, name, json.dumps(fix), json.dumps({"pages": 5})))
     assert out["chapter"] == name and not out["queued"] and out["patch"]["nodes"]
-    assert out["auto"]["connect"][c4] == {"after": itet, "before": ["f5"], "auto": True}
+    assert out["auto"]["connect"][c4] == {"after": itet, "before": ["f5"], "auto": True,
+                                          "at": at(10)}
     assert out["corrections"]["connect"][c4]["auto"] and out["patch"]["corrections"] == out["corrections"]
     assert out["filled"][0]["san"] == ["f5"] and out["moves"] >= 14 and "seconds" in out
     assert {"stop", "joined", "until", "end", "pending"} <= set(out)
@@ -398,7 +443,8 @@ def test_a_book_still_read_reads_on_in_its_chapter(tmp_path, monkeypatch):
     while not job.done:
         job.step()
     final = job.final
-    assert final["corrections"]["connect"][c4] == {"after": itet, "before": ["f5"], "auto": True}
+    assert final["corrections"]["connect"][c4] == {"after": itet, "before": ["f5"], "auto": True,
+                                                   "at": at(10)}
     assert sans(final)[:11] == sans_of(GAME[:11])
 
 
@@ -412,9 +458,208 @@ def test_the_app_plumbs_read_on_first(tmp_path):
     assert 'Object.assign({ type: "readOn", chapter: openChapter }, e.data.readOn)' in page
     assert "toView({ readOnDone: done })" in page and "toView({ readOnFailed: m.text, id: m.id })" in page
     assert 'patched({ chapter: m.chapter, result: r })' in page
+    # the reader keeps the reader's removals of the program's joins (corrections.py "declined")
+    from chessbook.review_js import CORRECTIONS_JS, REVIEW_JS
+    assert '"added",\n    "declined"];' in CORRECTIONS_JS
+    assert 'if (was && was.auto) FIX.set("declined", src.key, {part: "connect"});' in REVIEW_JS
     worker = (ROOT / "web" / "worker.js").read_text(encoding="utf-8")
     assert 'msg.type === "readOn"' in worker and "driver.read_on(" in worker
     run = worker[worker.index("async function run("):worker.index("onmessage =")]
     assert "await first();" in run
     more = worker[worker.index('msg.type === "correct-more"'):]
     assert more.index("await first();") < more.index("driver.correct_more(")
+
+
+# ---------------------------------------------------------------- the rules
+# read_on runs by itself after every correction the reader makes, so it never
+# joins or fills a move it is not sure of: it stops and leaves it to the reader.
+
+@pytest.fixture(scope="module")
+def variant(tmp_path_factory):
+    """Books made by make_long with options, built once each."""
+    made = {}
+
+    def get(**kw):
+        name = "-".join(sorted(kw)) or "plain"
+        if name not in made:
+            tmp = tmp_path_factory.mktemp(name)
+            pdf = make_long(tmp / "wells.pdf", **kw)
+            state = {}
+            fens, readings = _diagrams(kw.get("diagram", True))
+            book = build_book(pdf, output_dir=tmp / "out", books_dir=tmp / "books", state=state,
+                              diagram_fens=fens, readings=readings)
+            made[name] = (tmp, pdf, book, state)
+        tmp, pdf, book, state = made[name]
+        live.apply(state, book, {})
+        return tmp, pdf, book, state
+    return get
+
+
+def test_a_variation_does_not_read_on_by_itself(variant):
+    """A note's variation ("4...Qa5+ 5.c3 Qb6") after which the game's next
+    run ("6.c4 Bh6 7.e3") would read: the program reads on by itself only
+    along a game's main line."""
+    _, _, book, state = variant(variation=True)
+    var = next(n for n in book["nodes"].values() if n.get("san") == "Qb6" and not n["main"])
+    c4 = key_of(book, "c4")
+    res = live.read_on(state, book, {}, var["key"])
+    assert res["auto"] == {} and res["joined"] == [] and res["filled"] == []
+    assert c4 in {u["key"] for u in book["unattached"]}
+    assert not any(n.get("auto") for n in book["nodes"].values())
+
+
+def test_a_note_in_the_next_column_is_not_the_game(variant):
+    """The game's next moves printed in the notes' font: not joined, the
+    reader is asked."""
+    _, _, book, state = variant(note=True)
+    fix, itet = the_reader(book)
+    c4 = key_of(book, "c4")
+    res = live.read_on(state, book, fix, itet)
+    assert res["auto"] == {} and sans(book) == sans_of(GAME[:9])
+    assert not res["stop"]["done"] and res["stop"]["key"] == c4
+    assert "printed as a note" in res["stop"]["reason"]
+
+
+def test_another_games_run_is_not_joined(variant):
+    """Another game's header printed before "6.c4 ...": the program does not
+    join it to the game it reads on (the reader may)."""
+    _, _, book, state = variant(other_game=True)
+    fix, itet = the_reader(book)
+    c4 = key_of(book, "c4")
+    res = live.read_on(state, book, fix, itet)
+    assert res["auto"] == {} and sans(book) == sans_of(GAME[:9])
+    assert res["stop"]["done"] and "another game" in res["stop"]["reason"]
+    assert res["stop"]["next"]["key"] == c4
+
+
+def test_a_far_run_is_not_joined(variant):
+    """"6.c4 ..." printed two pages after 5.Qc1, though only one move is
+    missing before it and f5 would decide it: too far to join by itself or
+    to ask about."""
+    _, _, book, state = variant(far=True)
+    fix, itet = the_reader(book)
+    c4 = key_of(book, "c4")
+    res = live.read_on(state, book, fix, itet)
+    assert res["auto"] == {} and res["filled"] == [] and sans(book) == sans_of(GAME[:9])
+    assert res["stop"]["done"] and res["stop"]["reason"] == "nothing more follows the line nearby"
+    assert res["stop"]["next"]["key"] == c4 and res["stop"]["next"]["page"] == 6
+
+
+def test_no_reading_on_after_a_misread_move(variant):
+    """4...Qb6 printed as "Qb8" (the program reads Qb6, the only queen move
+    that fits): the line holds a misread move, and the program does not
+    build on it; once the reader names it, it reads on."""
+    _, _, book, state = variant(misread=True)
+    fix, itet = the_reader(book, "Qb8")
+    qb8 = key_of(book, "Qb8")
+    res = live.read_on(state, book, fix, itet)
+    assert res["auto"] == {} and sans(book) == sans_of(GAME[:9])
+    assert not res["stop"]["done"] and "where the book prints Qb8" in res["stop"]["reason"]
+    fix["moves"][qb8] = {"san": "Qb6"}
+    res = live.read_on(state, book, fix, itet)
+    assert sans(book) == sans_of(GAME) and res["auto"]["connect"]
+
+
+@pytest.mark.parametrize("how", [{"start": "here"}, {"remove": True}])
+def test_read_on_respects_the_readers_split(variant, how):
+    """The reader ended the line before 4.d5 (a new line from it, or its moves
+    in no line): reading on from 3...gxf6 does not join them back."""
+    _, _, book, state = variant()
+    d5 = key_of(book, "d5")
+    fix = {"disconnect": {d5: how}}
+    live.apply(state, book, fix)
+    assert sans(book) == GAME[:6]
+    res = live.read_on(state, book, fix, key_of(book, "gxf6"))
+    assert res["auto"] == {} and sans(book) == GAME[:6]
+    if "start" in how:
+        assert res["stop"]["done"] and res["stop"]["reason"] == "you ended the line here"
+        assert res["stop"]["next"]["key"] == d5
+    else:
+        assert d5 in {u["key"] for u in book["unattached"]}
+
+
+def test_a_removal_is_stored_and_kept(variant):
+    """The reader removes the program's join of 6.c4 (corrections.decline,
+    or skip): the corrections keep it ("declined"), and the program does not
+    join it again, also in a book read again with them."""
+    tmp, pdf, book, state = variant()
+    fix, itet = the_reader(book)
+    c4 = key_of(book, "c4")
+    full = live.read_on(state, book, fix, itet)["corrections"]
+    gone = fixes.decline(full, c4)
+    assert c4 not in gone["connect"] and gone["declined"] == {c4: {"part": "connect"}}
+    assert fixes.normalise(gone) == gone
+    live.apply(state, book, gone)
+    assert sans(book) == sans_of(GAME[:9])
+    res = live.read_on(state, book, gone, itet)
+    assert res["auto"] == {} and sans(book) == sans_of(GAME[:9])
+    assert res["stop"]["key"] == c4 and "took back" in res["stop"]["reason"]
+    assert res["corrections"]["declined"] == {c4: {"part": "connect"}}
+    # skip stores it the same way
+    live.apply(state, book, full)
+    res = live.read_on(state, book, {k: v for k, v in full.items() if k != "connect"} |
+                       {"connect": {k: v for k, v in full["connect"].items() if k != c4}},
+                       itet, skip=[c4])
+    assert res["corrections"]["declined"] == {c4: {"part": "connect"}} and res["auto"] == {}
+    # a book read again with the corrections
+    again = build(tmp, pdf, gone)
+    assert again["corrections"]["declined"] == {c4: {"part": "connect"}}
+    assert sans(again) == sans_of(GAME[:9])
+
+
+def test_the_programs_entries_are_checked_again(variant):
+    """A correction of a move before the program's joins: entries made from
+    a position that changed are dropped and read again from the move
+    corrected; when the reader takes back their own move, the program's
+    entries after it go too."""
+    _, _, book, state = variant()
+    fix, itet = the_reader(book)
+    c4 = key_of(book, "c4")
+    full = live.read_on(state, book, fix, itet)["corrections"]
+    assert set(full["connect"]) == {itet, c4, key_of(book, "Qe3")}
+    # 5.Qd2 for 5.Qc1: every position after it changes
+    other = copy.deepcopy(full)
+    other["moves"][itet] = {"san": "Qd2"}
+    live.apply(state, book, other)
+    assert fixes.auto_part(book["corrections"]) == {}
+    assert sans(book)[:9] == sans_of(GAME[:8] + ["Qd2"]) and len(sans(book)) == 9
+    # (read on from it again, the program reads only what the new position decides)
+    res = live.read_on(state, book, other, itet)
+    for v in res["auto"].get("connect", {}).values():
+        assert v["at"] != at(10)
+    # an entry of an earlier version (no "at"): dropped, and read again
+    old = copy.deepcopy(full)
+    del old["connect"][c4]["at"]
+    live.apply(state, book, old)
+    assert fixes.auto_part(book["corrections"]) == {} and sans(book) == sans_of(GAME[:9])
+    res = live.read_on(state, book, old, itet)
+    assert res["corrections"]["connect"] == full["connect"] and sans(book) == sans_of(GAME)
+    # the reader takes back their own 5.Qc1: the program's joins after it go
+    mine = copy.deepcopy(full)
+    del mine["moves"][itet], mine["connect"][itet]
+    live.apply(state, book, mine)
+    assert sans(book) == GAME[:8] and fixes.auto_part(book["corrections"]) == {}
+
+
+def test_a_join_stops_before_a_misread_move(variant):
+    """10...Qxa1 printed as "Qxa7" in the run the program joins (the only
+    reading that fits is Qxa1, at a cost): it joins the run up to 10.Ne2
+    and leaves the rest to the reader; once the reader names the move and
+    joins it, the program reads on to the end of the game."""
+    tmp, pdf, book, state = variant(slip=True)
+    fix, itet = the_reader(book)
+    c4, qxa7 = key_of(book, "c4"), key_of(book, "Qxa7")
+    res = live.read_on(state, book, fix, itet)
+    assert sans(book) == sans_of(GAME[:19])
+    assert list(res["auto"]["connect"]) == [c4] and res["filled"][0]["san"] == ["f5"]
+    assert not res["stop"]["done"] and res["stop"]["key"] == qxa7
+    assert "Qxa7" in res["stop"]["reason"]
+    assert qxa7 in {u["key"] for u in book["unattached"]}
+    # the same in a book read again with the corrections
+    assert sans(build(tmp, pdf, res["corrections"])) == sans_of(GAME[:19])
+    fix = copy.deepcopy(res["corrections"])
+    ne2 = game(book)[-1]["key"]
+    fix["moves"][qxa7] = {"san": "Qxa1"}
+    fix["connect"][qxa7] = {"after": ne2}
+    res = live.read_on(state, book, fix, qxa7)
+    assert sans(book) == sans_of(GAME)

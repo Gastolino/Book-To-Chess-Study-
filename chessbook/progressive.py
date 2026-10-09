@@ -272,7 +272,7 @@ class Job:
                                   dotless=c["numbering"]["dotless"], readings=readings)
         b.finalize(self.fix)
         book = assemble._book_dict(c["pdf"], c["doc"], c["chapters"], diagrams, selection, b,
-                                   c["glyphs"], c["structure"], readings, self.fix, c["letters"])
+                                   c["glyphs"], c["structure"], readings, b.fix, c["letters"])
         book["reading"] = "first"
         self.solo[k] = {"book": book, "keep": {"builder": b, "readings": readings}}
         self.timeline.setdefault(f"chapter {k} read alone", round(time.perf_counter() - self.t0, 1))
