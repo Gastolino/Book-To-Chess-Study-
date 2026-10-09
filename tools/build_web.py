@@ -538,6 +538,15 @@ worker.onmessage = (e) => {
   } else if (m.type === "suggest") {
     // what follows a move the reader joined: the next printed move the line does not hold
     toView({ suggested: m });
+  } else if (m.type === "readOn") {
+    // the correction applied and the line read on by itself: the patch goes to the reader as a
+    // correction's does, then what the program joined, the corrections it made and where it stopped
+    prepared = {};
+    const r = m.result || {};
+    patched({ chapter: m.chapter, result: r });
+    const done = Object.assign({ id: m.id, chapter: m.chapter }, r);
+    delete done.patch;
+    toView({ readOnDone: done });
   } else if (m.type === "patch") {
     prepared = {};
     patched(m);
@@ -564,6 +573,11 @@ worker.onmessage = (e) => {
     if (m.during === "suggest") {
       // the reader goes on without a suggestion
       toView({ suggestFailed: m.text, id: m.id });
+      return;
+    }
+    if (m.during === "readOn") {
+      // the correction or the reading on failed: the reader says why, and keeps its corrections
+      toView({ readOnFailed: m.text, id: m.id });
       return;
     }
     working(false);
@@ -869,6 +883,13 @@ window.addEventListener("message", (e) => {
   if (e.data && e.data.suggest) {
     // the reader asks what follows a move it joined to its line ({after, before, skip, id})
     worker.postMessage(Object.assign({ type: "suggest", chapter: openChapter }, e.data.suggest));
+    return;
+  }
+  if (e.data && e.data.readOn) {
+    // a correction made while threading a line, to apply and read on from at once, before any
+    // other reading ({after, corrections, pages, skip, id}; chapter: the reader's file)
+    if (e.data.chapter) openChapter = e.data.chapter;
+    worker.postMessage(Object.assign({ type: "readOn", chapter: openChapter }, e.data.readOn));
     return;
   }
   LIB.fromReader(e.data);
