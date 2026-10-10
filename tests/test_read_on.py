@@ -35,7 +35,7 @@ QC1 = {"san": "Qc1"}
 
 
 def make_long(path, diagram=True, variation=False, note=False, misread=False, other_game=False,
-              far=False, slip=False, lacking=False):
+              far=False, slip=False, lacking=False, between=False):
     """test_thread.make_wells, with the rest of the game on page 6
     (a diagram after 12.d6 when diagram). For the rules of reading on:
     variation adds a variation in a note ("4...Qa5+ 5.c3 Qb6", after which
@@ -44,7 +44,8 @@ def make_long(path, diagram=True, variation=False, note=False, misread=False, ot
     Qb6); other_game prints another game's header before "6.c4 ..." and
     far a page of prose; slip prints 10...Qxa1 as "Qxa7"; lacking prints
     5.Qc1 as such, so that the game goes on with "6.c4 ..." in its own text,
-    which lacks 5...f5 (a gap in the line)."""
+    which lacks 5...f5 (a gap in the line); between prints other moves in
+    the game's font ("17.Rb1 Qa5") between "5.'it'et" and "6.c4 ..."."""
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
@@ -78,6 +79,9 @@ def make_long(path, diagram=True, variation=False, note=False, misread=False, ot
     w.line("No doubt he was encouraged by White.", indent=8)
     w.prose(n=3)
     w.line("5.Qc1" if lacking else "5.'it'et", bold=True)
+    if between:
+        w.line("Compare a later game.", indent=8)
+        w.line("17.Rb1 Qa5", bold=True)
     w.prose(until=H - 60)
     if far:
         w.page()
@@ -530,7 +534,7 @@ def test_another_games_run_is_not_joined(variant):
     c4 = key_of(book, "c4")
     res = live.read_on(state, book, fix, itet)
     assert res["auto"] == {} and sans(book) == sans_of(GAME[:9])
-    assert res["stop"]["done"] and "another game" in res["stop"]["reason"]
+    assert res["stop"]["done"] and "another game" in res["stop"]["reason"] and "ask" not in res["stop"]
     assert res["stop"]["next"]["key"] == c4
 
 
@@ -544,7 +548,23 @@ def test_a_far_run_is_not_joined(variant):
     res = live.read_on(state, book, fix, itet)
     assert res["auto"] == {} and res["filled"] == [] and sans(book) == sans_of(GAME[:9])
     assert res["stop"]["done"] and res["stop"]["reason"] == "nothing more follows the line nearby"
-    assert res["stop"]["next"]["key"] == c4 and res["stop"]["next"]["page"] == 6
+    assert res["stop"]["next"]["key"] == c4 and res["stop"]["next"]["page"] == 6 and "ask" not in res["stop"]
+
+
+def test_moves_printed_between_are_left_to_the_reader(variant):
+    """Other moves printed between 5.Qc1 and "6.c4 ...": the program does
+    not join the run by itself, but the line may go on there, so its stop
+    says so ("ask"), and the reader is asked about the run as before."""
+    _, _, book, state = variant(between=True)
+    fix, itet = the_reader(book)
+    c4 = key_of(book, "c4")
+    res = live.read_on(state, book, fix, itet)
+    assert res["auto"] == {} and sans(book) == sans_of(GAME[:9])
+    stop = res["stop"]
+    assert stop["done"] and stop["ask"] and stop["next"]["key"] == c4
+    assert stop["reason"] == "other moves are printed between the line's end and 6.c4"
+    s = live.suggest(state, itet)
+    assert s["key"] == c4 and s["number_gap"] == 1 and s["between"][0] == ["f5"]
 
 
 def test_no_reading_on_after_a_misread_move(variant):

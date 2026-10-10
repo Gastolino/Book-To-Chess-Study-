@@ -5537,7 +5537,9 @@ class _Builder:
             if note and gap:
                 continue
             if ply is None or note:
-                decs = self.dec.run(fen, _first_moves(tail.tokens, 1))
+                # (read_on looks at the run's first token only, as it was swept: a run whose first
+                # word is no move, such as a note's, is passed over rather than offered)
+                decs = self.dec.run(fen, tail.tokens[:1] if until is not None else _first_moves(tail.tokens, 1))
                 if not decs or decs[0].status == "failed":
                     continue
             out = self.suggestion(kind, m, page, tail, cur, fen, gap, want, last, between)
@@ -5835,7 +5837,9 @@ class _Builder:
         "diagram"}], "moves" (moves the line gained), "stop" (the box where
         it stopped, as suggest() gives it, with "reason"; or {"done": true,
         "reason"}, with "next" when moves are printed further on that it
-        does not ask about), "until" (the last page read) and "end" (the key
+        does not ask about, and "ask": true when the line may yet go on
+        there, or where it could not go on from the line's end: the reader
+        is to be asked), "until" (the last page read) and "end" (the key
         of the line's last printed move), "changes" (apply_fix's lists,
         together)}. Where the move to go on from stands in no line (the
         replay refused the reader's correction there), it reads nothing and
@@ -5882,8 +5886,9 @@ class _Builder:
             try:
                 s = self.suggest(anchor, until=until, between=False)
             except ValueError as e:
-                # (the line's end is not a known position, or its move is gone): it stops
-                stop = {"done": True, "reason": str(e)[:1].lower() + str(e)[1:].rstrip(".")}
+                # (the line's end is not a known position, or its move is gone): it stops, and the
+                # reader is asked from there
+                stop = {"done": True, "reason": str(e)[:1].lower() + str(e)[1:].rstrip("."), "ask": True}
                 break
             result = self.line_by_id[line_id].result
             if result and (s.get("done") or s["kind"] in ("run", "line")) and \
@@ -5907,9 +5912,9 @@ class _Builder:
                 stop = self.read_on_stop(s, "you took back the program's reading here")
                 break
             far = self.read_on_near(s) or \
-                (s.get("past_game") and "another game begins before the next moves")
+                (s.get("past_game") and ("another game begins before the next moves", False))
             if far:
-                stop = self.read_on_end(s, far)
+                stop = self.read_on_end(s, *far)
                 break
             step = self.read_on_step(s)
             if "stop" in step:
@@ -5951,11 +5956,16 @@ class _Builder:
                                         "pages": sorted(changes["pages"]),
                                         "pending": changes["pending"]}}
 
-    def read_on_end(self, s, why):
+    def read_on_end(self, s, why, ask=False):
         """read_on() ends without asking the reader about the box s (as
-        suggest() gives it): {"done": true, "reason", "next": the box}."""
-        return {"done": True, "reason": why,
-                "next": {k: s.get(k) for k in ("kind", "key", "page", "bbox", "raw", "number_gap")}}
+        suggest() gives it): {"done": true, "reason", "next": the box}; ask:
+        other moves are printed before it, so the line may go on there, and
+        the reader is to be asked about it ("ask": true)."""
+        out = {"done": True, "reason": why,
+               "next": {k: s.get(k) for k in ("kind", "key", "page", "bbox", "raw", "number_gap")}}
+        if ask:
+            out["ask"] = True
+        return out
 
     def read_on_stop(self, s, why):
         """Where read_on() stops: the box s (as suggest() gives it) with the
@@ -5992,22 +6002,24 @@ class _Builder:
         the line: on the page of the line's last printed move or the next,
         with no other printed move between them in reading order (a note's
         move may stand between when the line is a game's main line printed
-        in the moves' own font). Else the reason read_on() ends there."""
+        in the moves' own font). Else (the reason read_on() ends there, and
+        whether the reader is to be asked about the box: other printed moves
+        stand between, so the line may go on there)."""
         an = self.node_of(s["after"]) if s.get("after") else None
         m = self.mark_of(an) if an is not None else None
         if m is None:
             return None             # (read_on_step stops there, for the reader)
         pa, pb = self.nodes[an]["page"], s["page"]
         if pb > pa + 1:
-            return "nothing more follows the line nearby"
+            return "nothing more follows the line nearby", False
         ca, cb = self.chapter_at(pa), self.chapter_at(pb)
         box = next((x for x in self.marks.get(pb, []) if x.get("key") == s["key"]), None)
         if ca is None or cb is None or box is None:
-            return "nothing more follows the line nearby"
+            return "nothing more follows the line nearby", False
         notes = self.nodes[s["after_node"]]["main"] and self.main_printed(s["after_node"])
         here, there = (ca, m["_o"]), (cb, box["_o"])
         if any(here < at < there for at in getattr(self, "header_at", ())):
-            return "another game begins before the next moves"
+            return "another game begins before the next moves", False
         for p in range(pa, pb + 1):
             ci = self.chapter_at(p)
             for x in self.marks.get(p, []):
@@ -6017,7 +6029,7 @@ class _Builder:
                     continue
                 label = (f"{s['number']}{'...' if s['black'] else '.'}" if s.get("number") is not None
                          else "") + self.shown_move(s["raw"])
-                return f"other moves are printed between the line's end and {label}"
+                return f"other moves are printed between the line's end and {label}", True
         return None
 
     def read_on_anchor(self, cur):
