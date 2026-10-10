@@ -2812,14 +2812,17 @@ class _Builder:
         the run starts at). The program does not invent them: the decoded part
         of the line ends with a node that marks the gap, and with follow the
         run's moves come after it as unread text, since the position there is
-        unknown."""
+        unknown. Returns "auto" when the program supplied every move the text
+        lacks (read_on, fill_gap): the moves after them are then read only as
+        far as they read beyond doubt (run_ops, reading_cut)."""
         if not self.replaying:
             L.ops.append(("gap", run, P, follow))
         page = self.place_of(run.tokens[0], run.ci)[0]
         key = self.key_of(run.moves[0], run.ci) if run.moves else None
         fill, stale = self.fill_gap(L, run, P, page, key) if self.replaying else ([], "")
         if L.next_ply >= P:
-            return                  # the reader gave every move the text lacks
+            # the reader gave every move the text lacks ("auto": the program did)
+            return "auto" if fill and self.nodes[L.main_nodes[-1]].get("auto") else None
         missing = P - L.next_ply
         what = _ply_words(L.next_ply)
         if missing > 1:
@@ -4631,7 +4634,9 @@ class _Builder:
 
     def run_ops(self, L, ops):
         state = {"vars": defaultdict(list), "last": None}
-        for op in ops:
+        ops, i = list(ops), 0
+        while i < len(ops):
+            op, i = ops[i], i + 1
             kind = op[0]
             runs = self.op_runs(op)
             if runs:
@@ -4643,7 +4648,10 @@ class _Builder:
                     self.set_corrected(L.main_nodes[n0], "split")
                     L.first_split = False
             elif kind == "gap":
-                self.gap(L, op[1], op[2], op[3])
+                if self.gap(L, op[1], op[2], op[3]) == "auto":
+                    # the program filled the gap by itself (read_on): the line's own
+                    # moves after it read on only as far as they read beyond doubt
+                    ops[i:] = self.reading_cut(L, ops[i:], L.last_fen, checked=False)
             elif kind == "notes":
                 state = {"vars": defaultdict(list), "last": None}
             elif kind in ("note", "unplaced", "dismiss", "long"):
@@ -4880,41 +4888,58 @@ class _Builder:
                               "the moves before it stand in no line", src=L)
         return sub[:k] + ([("main", head)] if head is not None else [])
 
-    def reading_cut(self, L, sub, fen):
-        """The ops of a join the program made by itself (read_on) that
-        continues the main line from the position fen, with its first run cut
-        before the first move that does not read beyond doubt: one that does
-        not read, reads two ways alike, or reads only as a move to another
-        square than the one printed (or, read with doubt, where no square can
-        be read). The moves from there on stand in no line, for the reader."""
-        k = next((i for i, o in enumerate(sub) if o[0] == "main"), None)
-        if k is None:
-            return sub
-        run = self.forced(sub[k][1])
-        cut, label = None, ""
-        for i, (t, d) in enumerate(zip(run.moves, self.dec.run(fen, run.tokens, keep=False))):
-            if t.forced:
-                continue                # (the reader's own move)
-            says = self.printed_says(t.raw, d)
-            if d.status in ("failed", "ambiguous") or says is False or \
-                    (says is None and d.status != "ok"):
-                if i == 0:
-                    return sub          # (read_on checked the first move: it stands)
-                cut = run.tokens.index(t)
-                label = (f"{t.number}{'...' if t.black else '.'}" if t.number is not None
-                         else "") + self.shown_move(t.raw)
-                if d.san and says is False:
-                    label += f", which the program reads as {d.san} only"
-                break
-        if cut is None:
-            return sub
-        head, tail = self.cut_run(sub[k][1], cut)
-        self.unplaced(self.forced(tail), f"the program cannot read {label} beyond doubt, so it "
-                                         "joins the moves only up to it", src=L)
-        for o in sub[k + 1:]:
-            if o[0] in ("main", "note", "unplaced"):
-                self.unplaced(o[1], "the moves before it stand in no line", src=L)
-        return sub[:k] + ([("main", head)] if head is not None else [])
+    def reading_cut(self, L, sub, fen, checked=True):
+        """The ops sub that continue the main line of L from the position fen
+        with moves the program brought in by itself (read_on: a join, or the
+        moves after a gap it filled), cut before the first move that does not
+        read beyond doubt: one that does not read, reads two ways alike, or
+        reads only as a move to another square than the one printed (or, read
+        with doubt, where no square can be read). Every main run is read, in
+        turn, from the position the runs before it reach (the notes between
+        them aside), up to an op that decides the main line otherwise (a gap,
+        the reader's join). The moves from the cut on stand in no line, for
+        the reader. checked: read_on read the first move itself, and it
+        stands."""
+        pos, first = fen, True
+        for k, o in enumerate(sub):
+            if o[0] in ("note", "notes", "unplaced", "dismiss", "long"):
+                continue                # (the notes: the main line's position stays)
+            if o[0] != "main" or not pos:
+                return sub
+            run = self.forced(o[1])
+            decs = self.dec.run(pos, run.tokens, keep=False)
+            cut, label = None, ""
+            for i, t in enumerate(run.moves):
+                d = decs[i] if i < len(decs) else None
+                if t.forced and d is not None:
+                    continue            # (the reader's own move)
+                says = self.printed_says(t.raw, d) if d is not None else None
+                if d is None or d.status in ("failed", "ambiguous") or says is False or \
+                        (says is None and d.status != "ok"):
+                    if first and i == 0 and checked:
+                        return sub      # (read_on checked the first move: it stands)
+                    cut = run.tokens.index(t)
+                    label = (f"{t.number}{'...' if t.black else '.'}" if t.number is not None
+                             else "") + self.shown_move(t.raw)
+                    if d is not None and d.san and says is False:
+                        label += f", which the program reads as {d.san} only"
+                    break
+            if cut is None:
+                pos = next((d.fen for d in reversed(decs) if d.fen), None)
+                first = False
+                continue
+            head, tail = self.cut_run(o[1], cut)
+            why = f"the program cannot read {label} beyond doubt, so it joins the moves only up to it"
+            if tail is not None:
+                self.unplaced(self.forced(tail), why, src=L)
+            rest = []
+            for o2 in sub[k + 1:]:
+                if o2[0] in ("main", "note", "unplaced", "long"):
+                    self.unplaced(o2[1], "the moves before it stand in no line", src=L)
+                elif o2[0] in ("dismiss", "graft", "attach"):
+                    rest.append(o2)     # (they say themselves where they stand)
+            return sub[:k] + ([("main", head)] if head is not None else []) + rest
+        return sub
 
     def give_moves(self, L, nid, sans, main, page, auto=False):
         """Play the moves the reader gave after node nid (do_graft found them
@@ -5719,14 +5744,17 @@ class _Builder:
         "reason"}, with "next" when moves are printed further on that it
         does not ask about), "until" (the last page read) and "end" (the key
         of the line's last printed move), "changes" (apply_fix's lists,
-        together)}."""
+        together)}. Where the move to go on from stands in no line (the
+        replay refused the reader's correction there), it reads nothing and
+        says so in "stop"."""
         nid = self.node_of(after)
-        if nid is None:
-            raise ValueError("The program no longer finds the move to go on from.")
-        line_id = self.nodes[nid]["line"]
-        L = self.line_by_id.get(line_id)
+        L = self.line_by_id.get(self.nodes[nid]["line"]) if nid is not None else None
         if L is None:
-            raise ValueError("The program no longer finds the line of that move.")
+            return {"auto": {}, "joined": [], "filled": [], "moves": 0, "until": None, "end": None,
+                    "stop": {"done": True, "reason": "the move to go on from stands in no line, "
+                                                     "so the program does not read on from it"},
+                    "changes": {"lines": [], "removed": [], "pages": [], "pending": []}}
+        line_id = L.id
         # node ids change when the line is replayed: go on from a printed move
         anchor, cur = after, nid
         while cur is not None and not self.nodes[cur].get("key"):
@@ -5758,7 +5786,12 @@ class _Builder:
             return index.find(pg, (x, y), raw)[0] is not None
         stop = None
         for _ in range(READ_ON_STEPS):
-            s = self.suggest(anchor, until=until, between=False)
+            try:
+                s = self.suggest(anchor, until=until, between=False)
+            except ValueError as e:
+                # (the line's end is not a known position, or its move is gone): it stops
+                stop = {"done": True, "reason": str(e)[:1].lower() + str(e)[1:].rstrip(".")}
+                break
             result = self.line_by_id[line_id].result
             if result and (s.get("done") or s["kind"] in ("run", "line")) and \
                     self.nodes[self.node_of(anchor)]["main"]:

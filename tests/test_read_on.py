@@ -35,14 +35,16 @@ QC1 = {"san": "Qc1"}
 
 
 def make_long(path, diagram=True, variation=False, note=False, misread=False, other_game=False,
-              far=False, slip=False):
+              far=False, slip=False, lacking=False):
     """test_thread.make_wells, with the rest of the game on page 6
     (a diagram after 12.d6 when diagram). For the rules of reading on:
     variation adds a variation in a note ("4...Qa5+ 5.c3 Qb6", after which
     "6.c4 Bh6 7.e3" would read); note prints "6.c4 Bh6 7.e3 f4" in the
     notes' font; misread prints 4...Qb6 as "Qb8" (the program reads it as
     Qb6); other_game prints another game's header before "6.c4 ..." and
-    far a page of prose; slip prints 10...Qxa1 as "Qxa7"."""
+    far a page of prose; slip prints 10...Qxa1 as "Qxa7"; lacking prints
+    5.Qc1 as such, so that the game goes on with "6.c4 ..." in its own text,
+    which lacks 5...f5 (a gap in the line)."""
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
@@ -75,7 +77,7 @@ def make_long(path, diagram=True, variation=False, note=False, misread=False, ot
     w.line("DARK SQUARES", bold=True, size=11, x=265)
     w.line("No doubt he was encouraged by White.", indent=8)
     w.prose(n=3)
-    w.line("5.'it'et", bold=True)
+    w.line("5.Qc1" if lacking else "5.'it'et", bold=True)
     w.prose(until=H - 60)
     if far:
         w.page()
@@ -663,3 +665,48 @@ def test_a_join_stops_before_a_misread_move(variant):
     fix["connect"][qxa7] = {"after": ne2}
     res = live.read_on(state, book, fix, qxa7)
     assert sans(book) == sans_of(GAME)
+
+
+def test_a_gap_fill_stops_before_a_misread_move(variant):
+    """The game's own text lacks 5...f5 (a gap in the line) and prints
+    10...Qxa1 as "Qxa7" further on, past the moves read_on reads to decide
+    the fill: the program supplies f5, but the line's moves after it read
+    on only up to 10.Ne2; the rest is left to the reader, as after a join."""
+    tmp, pdf, book, state = variant(lacking=True, slip=True)
+    qc1, c4, qxa7 = key_of(book, "Qc1"), key_of(book, "c4"), key_of(book, "Qxa7")
+    assert sans(book)[:9] == sans_of(GAME[:9])
+    gap = game(book)[9]
+    assert gap["status"] == "failed" and gap.get("gap") == c4
+    res = live.read_on(state, book, {}, qc1)
+    assert res["auto"] == {"gaps": {c4: {"san": ["f5"], "auto": True, "at": at(9)}}}
+    assert [f["how"] for f in res["filled"]] == ["decisive"] and res["joined"] == []
+    assert sans(book) == sans_of(GAME[:19])
+    assert not any(n["status"] in ("failed", "guessed") and n.get("key") for n in game(book))
+    assert qxa7 in {u["key"] for u in book["unattached"]}
+    assert not res["stop"]["done"] and res["stop"]["key"] == qxa7
+    # the same in a book read again with the corrections
+    assert sans(build(tmp, pdf, res["corrections"])) == sans_of(GAME[:19])
+    # once the reader names the move, the program reads on through 12.d6 (13.Qe3, which
+    # the text printed after the line broke, starts a line of its own: the reader joins it)
+    fix = copy.deepcopy(res["corrections"])
+    fix["moves"][qxa7] = {"san": "Qxa1"}
+    fix["connect"][qxa7] = {"after": game(book)[-1]["key"]}
+    res = live.read_on(state, book, fix, qxa7)
+    assert sans(book) == sans_of(GAME[:23])
+    assert res["stop"]["key"] == key_of(book, "Qe3")
+
+
+def test_read_on_from_a_move_in_no_line_stops(variant):
+    """The reader's join is refused (its first move is not legal after the
+    move the reader gave before it): read_on, run from it, reads nothing and
+    says why, rather than fail; the correction itself is applied."""
+    _, _, book, state = variant()
+    fix, itet = the_reader(book)
+    c4 = key_of(book, "c4")
+    fix["connect"][c4] = {"after": itet, "before": ["Qa5+"]}
+    res = live.read_on(state, book, fix, c4)
+    assert res["auto"] == {} and res["joined"] == [] and res["filled"] == []
+    assert res["stop"]["done"] and "stands in no line" in res["stop"]["reason"]
+    assert res["moves"] == 0 and res["end"] is None
+    assert sans(book) == sans_of(GAME[:9])
+    assert any(u["key"] == c4 and "not a legal move" in u["reason"] for u in book["unattached"])
