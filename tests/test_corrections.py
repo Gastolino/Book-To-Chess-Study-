@@ -172,7 +172,8 @@ def test_schema_and_pasted_text():
     assert data["glyphs"] == {"tLl": "N"} and data["moves"]["4:116,496:Zq9"] == {"san": "Nxd5"}
     assert data["unattached"]["4:258,68:Qh5+"] == {"attach_to": "dismiss"}
     assert fixes.count(data) == {"diagrams": 1, "moves": 1, "unattached": 1, "glyphs": 1,
-                                 "connect": 0, "disconnect": 0, "gaps": 0, "added": 0}
+                                 "connect": 0, "disconnect": 0, "gaps": 0, "added": 0,
+                                 "declined": 0}
     for bad in ({"diagrams": {"p5-1": {"fen": "8/8/8/8/8/8/8/8 w - - 0 1"}}},
                 {"diagrams": {"page five": {"fen": ENDING_FEN}}},
                 {"moves": {"Zq9": {"san": "Nxd5"}}},

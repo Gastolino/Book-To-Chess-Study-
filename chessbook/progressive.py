@@ -163,6 +163,37 @@ class Job:
             return {"patch": patch, "pending": [], "queued": False}
         return {"patch": None, "pending": [], "queued": True}
 
+    def read_on(self, fix, name, after, pages=None, skip=()):
+        """Apply the reader's corrections (the whole set) and read on by
+        itself from the move after (live.read_on) while the book is read:
+        in the solo reading of the chapter, made now when the chapter has
+        none (the corrected chapter comes first; the pages read are then the
+        chapter's). The corrections the program made join the set that the
+        final book gets. Returns live.read_on's result with "patch" and
+        "queued" (no reading of the chapter can be made yet: nothing read)."""
+        self.fix = fixes.normalise(fix)
+        self.ctx["fix"] = self.fix
+        k = self.chapter_index(name)
+        fresh = k not in self.solo
+        if fresh:
+            if not self._can_solo(k):
+                return {"patch": None, "queued": True, "corrections": self.fix, "auto": {},
+                        "joined": [], "filled": [], "moves": 0, "stop": None, "until": None,
+                        "end": None}
+            self._solo(k)
+        s = self.solo[k]
+        res = live.read_on(s["keep"], s["book"], self.fix, after, chapters={k}, pages=pages,
+                           skip=skip)
+        self.fix = res["corrections"]
+        self.ctx["fix"] = self.fix
+        if fresh:
+            res["patch"] = self._patch(name, "Your correction is applied.")
+        else:
+            ch = s["book"]["chapters"][k]
+            res["patch"], self.data[name] = live.chapter_patch(s["book"], ch, self.data.get(name))
+        res["queued"] = False
+        return res
+
     # ------------------------------------------------------------ the work
     def _first_pages(self):
         """The pages Stage 1 is to inspect first: those of the chapter wanted."""
@@ -241,7 +272,7 @@ class Job:
                                   dotless=c["numbering"]["dotless"], readings=readings)
         b.finalize(self.fix)
         book = assemble._book_dict(c["pdf"], c["doc"], c["chapters"], diagrams, selection, b,
-                                   c["glyphs"], c["structure"], readings, self.fix, c["letters"])
+                                   c["glyphs"], c["structure"], readings, b.fix, c["letters"])
         book["reading"] = "first"
         self.solo[k] = {"book": book, "keep": {"builder": b, "readings": readings}}
         self.timeline.setdefault(f"chapter {k} read alone", round(time.perf_counter() - self.t0, 1))

@@ -17,7 +17,8 @@ CORRECTIONS_JS = r"""
 function makeCorrections(applied, opts){
   // applied: the corrections the build used ({diagrams, moves, unattached, glyphs}).
   const key = "chessbook-corrections:" + opts.pdf + ":" + opts.pageCount;
-  const PARTS = ["diagrams", "moves", "unattached", "glyphs", "connect", "disconnect", "gaps", "added"];
+  const PARTS = ["diagrams", "moves", "unattached", "glyphs", "connect", "disconnect", "gaps", "added",
+    "declined"];
   function canon(src){
     const o = {version: 1};
     for (const p of PARTS) {
@@ -1174,7 +1175,12 @@ function wireLineActions(id){
   on("joinline", () => startConnect(src.key, moveText(first, true)));
   on("lineundo", () => {
     FIX.set("disconnect", n.key, null);
-    if (src && src.key) FIX.set("connect", src.key, null);
+    if (src && src.key) {
+      // a join the program made by itself, once removed, is not made again (corrections.py "declined")
+      const was = FIX.get("connect", src.key);
+      FIX.set("connect", src.key, null);
+      if (was && was.auto) FIX.set("declined", src.key, {part: "connect"});
+    }
     done("Your change to the line is removed. " + applyWords());
   });
 }

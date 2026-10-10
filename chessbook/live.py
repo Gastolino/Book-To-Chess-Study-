@@ -36,12 +36,70 @@ def apply(state, book, fix, chapters=None, window=None):
     """Apply the corrections fix to the book (book.json as a dict, changed in
     place). chapters limits the replay of lines that a changed piece symbol
     touches to those chapters, and window to the lines that start within
-    that many pages of the first of them (a small batch). Returns {"lines",
-    "removed", "pages", "pending", "seconds"}."""
+    that many pages of the first of them (a small batch). The corrections
+    the program made by itself (read_on) that no longer apply, since a move
+    before them changed, are dropped (assemble._Builder.apply_checked):
+    book["corrections"] holds the set kept. Returns {"lines", "removed",
+    "pages", "pending", "seconds"}."""
     t0 = time.perf_counter()
     b = state["builder"]
     fix = fixes.normalise(fix or {})
-    res = b.apply_fix(fix, chapters, window)
+    res = b.apply_checked(fix, chapters, window)
+    fix = b.fix
+    _update(state, book, fix, res)
+    res["seconds"] = round(time.perf_counter() - t0, 3)
+    return res
+
+
+def read_on(state, book, fix, after, chapters=None, pages=None, skip=None):
+    """Apply the corrections fix (the whole set, with the reader's latest),
+    then read on by itself from the move after (a token key or a node id),
+    as assemble._Builder.read_on does: through the rest of the chapter and
+    at least pages pages (assemble.READ_ON_PAGES) after the move's page,
+    joining what clearly continues its line and supplying the moves the
+    evidence decides, stored as the program's corrections ("auto": true).
+    book (book.json as a dict) is brought up to date once, at the end, and
+    holds the corrections with the program's ("corrections").
+
+    Returns {"corrections" (the whole set now), "auto" (the corrections the
+    program made: {"connect": {...}, "gaps": {...}}), "joined", "filled",
+    "moves", "stop", "until", "end" (see read_on), "lines", "removed",
+    "pages", "pending" (as apply() gives them, for all the steps together)
+    and "seconds"}.
+
+    skip holds the keys of the program's corrections that the reader
+    removed: they are stored as declined (corrections.decline), so that the
+    program does not make them again, now or after the book is read again.
+    The program's corrections that a change of the moves before them made
+    stale are dropped first (apply_checked) and read on again from the
+    move corrected."""
+    t0 = time.perf_counter()
+    b = state["builder"]
+    fix = fixes.normalise(fix or {})
+    for k in skip or ():
+        if fixes.KEY_RE.match(str(k or "")):
+            fix = fixes.decline(fix, str(k))
+    res = b.apply_checked(fix, chapters)
+    out = b.read_on(after, chapters, assemble.READ_ON_PAGES if pages is None else int(pages))
+    ch = out.pop("changes")
+    for k in ("lines", "removed", "pages"):
+        res[k] = sorted(set(res[k]) | set(ch[k]))
+    # (a line a step took away and a step taken back brought again stays)
+    res["removed"] = [lid for lid in res["removed"] if lid not in b.line_by_id]
+    if out["auto"]:
+        res["pending"] = ch["pending"]
+    fix = b.fix
+    _update(state, book, fix, res)
+    res.update(out)
+    res["corrections"] = fix
+    res["seconds"] = round(time.perf_counter() - t0, 3)
+    return res
+
+
+def _update(state, book, fix, res):
+    """Bring book.json (book, a dict) up to date with the builder after
+    apply_fix gave res."""
+    b = state["builder"]
     gone = set(res["lines"]) | set(res["removed"])
     nodes = book["nodes"]
     for nid in [k for k, n in nodes.items() if n["line"] in gone]:
@@ -82,8 +140,6 @@ def apply(state, book, fix, chapters=None, window=None):
         {pg["page"]: pg["marks"] for pg in book["pages"]}, book.get("letters"),
         fix["glyphs"]).most_common())
     _recount(book, b, fix)
-    res["seconds"] = round(time.perf_counter() - t0, 3)
-    return res
 
 
 def suggest(state, after, before=None, skip=None):
@@ -112,7 +168,7 @@ def _recount(book, b, fix):
         if n["parent"] is None:
             continue
         c = counts[line_chapter[n["line"]]]
-        what = assemble.CORRECTED_COUNTS.get(n.get("corrected"))
+        what = None if n.get("auto") else assemble.CORRECTED_COUNTS.get(n.get("corrected"))
         if what:
             c["corrected"][what] += 1
         if n.get("corrected") == "added":
