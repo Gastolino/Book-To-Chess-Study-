@@ -8,6 +8,15 @@ function say(text) {
   postMessage({ type: "progress", text: String(text) });
 }
 
+// what went wrong, in the words of the error: a Python error's last line, without its traceback
+// and the name of its kind ("ValueError: f5 is not a legal move…" says "f5 is not a legal move…")
+function errorWords(err) {
+  const text = String(err && err.message ? err.message : err);
+  const lines = text.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (!lines.length || !/^Traceback/.test(lines[0])) return text;
+  return lines[lines.length - 1].replace(/^[A-Za-z_.]*(Error|Exception|Exit|Interrupt)\b:?\s*/, "");
+}
+
 // numpy and OpenCV (for reading the board pictures and the figurines' shapes)
 // come from Pyodide itself. A book opened from its stored reading needs neither
 // to show, so they load after the worker is ready; reading a book, a
@@ -59,14 +68,22 @@ async function gzip(bytes, how) {
 // read at a time: a new "process" message ends the steps of the one before.
 let job = 0, pace = 0;
 const pause = () => new Promise((resolve) => setTimeout(resolve, pace));
+// A read-on after a correction ("readOn") comes before any other reading: while one is at
+// work (or waits for the board libraries), the book's reading steps and the piece-symbol
+// replays of the other chapters ("correct-more") wait for it.
+let urgent = null;
+async function first() {
+  while (urgent) await urgent;
+}
 async function run(id, t0) {
   for (;;) {
     await pause();
+    await first();
     if (id !== job) return;
     let out;
     try { out = JSON.parse(driver.step()); }
     catch (err) {
-      postMessage({ type: "error", during: "process", text: String(err && err.message ? err.message : err) });
+      postMessage({ type: "error", during: "process", text: errorWords(err) });
       return;
     }
     for (const ev of out.events) {
@@ -162,6 +179,7 @@ onmessage = async (event) => {
       postMessage({ type: "patch", chapter: msg.chapter, result: JSON.parse(out) });
     } else if (msg.type === "correct-more") {
       await boardsP;
+      await first();
       // a piece-symbol correction reaching the other chapters, a few at a time;
       // the patch is for the chapter the worker opened last
       const result = JSON.parse(driver.correct_more(JSON.stringify(msg.chapters), msg.chapter || ""));
@@ -177,6 +195,32 @@ onmessage = async (event) => {
       const result = JSON.parse(driver.read_region(msg.page, JSON.stringify(msg.rect), msg.at, msg.side || "after",
                                                    msg.other || null));
       postMessage({ type: "region", id: msg.id, result });
+    } else if (msg.type === "suggest") {
+      // what follows a move the reader joined to its line: the next printed move the line does
+      // not hold, read with the state that applies corrections
+      await boardsP;
+      const result = JSON.parse(driver.suggest(msg.after, msg.chapter || "", JSON.stringify(msg.before || []),
+                                               JSON.stringify(msg.skip || [])));
+      postMessage({ type: "suggest", id: msg.id, result });
+    } else if (msg.type === "readOn") {
+      // after a correction: apply it and read on by itself from the corrected move, through the
+      // rest of the chapter and the next pages, before any other reading; one patch at the end,
+      // with the corrections the program made and where it stopped (driver.read_on)
+      let release;
+      const mine = new Promise((resolve) => { release = resolve; });
+      urgent = mine;
+      try {
+        await boardsP;
+        // (the corrections as the reader stores them: its text, or the object)
+        const fix = msg.corrections == null ? null :
+          typeof msg.corrections === "string" ? msg.corrections : JSON.stringify(msg.corrections);
+        const result = JSON.parse(driver.read_on(msg.after, msg.chapter || "", fix,
+                                                 JSON.stringify({ pages: msg.pages, skip: msg.skip || [] })));
+        postMessage({ type: "readOn", id: msg.id, chapter: msg.chapter, result });
+      } finally {
+        if (urgent === mine) urgent = null;
+        release();
+      }
     } else if (msg.type === "index") {
       postMessage({ type: "page", name: "index.html", hash: msg.hash || "", html: driver.index() });
     } else if (msg.type === "timeline") {
@@ -192,6 +236,6 @@ onmessage = async (event) => {
   } catch (err) {
     // the type of the failed request lets the page say what did not happen
     postMessage({ type: "error", during: msg.type, chapter: msg.chapter || "", id: msg.id,
-                  text: String(err && err.message ? err.message : err) });
+                  text: errorWords(err) });
   }
 };

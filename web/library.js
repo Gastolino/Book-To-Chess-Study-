@@ -673,7 +673,8 @@ const LIB = (() => {
       go.className = "tb";
       go.textContent = String(m.page);
       go.setAttribute("aria-label", "Open " + titleOf(b) + " at the bookmark on page " + m.page);
-      go.addEventListener("click", () => api.open(b, null, null, { chapter: m.chapter || null, page: m.page, node: m.node || null }));
+      go.addEventListener("click", () => api.open(b, null, null, { chapter: m.chapter || null, page: m.page, node: m.node || null,
+                                                                   key: m.key || null }));
       el.appendChild(go);
       if (i < list.length - 2) el.append(", ");
       else if (i === list.length - 2) el.append(" and ");
@@ -886,8 +887,9 @@ const LIB = (() => {
     if (api.on && cur && !cur.ephemeral && rec && rec.id === cur.id && rec.chapter && rec.page) {
       const mm = meta(cur.id);
       const p = mm.position;
-      if (!p || p.data.chapter !== rec.chapter || p.data.page !== rec.page || p.data.node !== (rec.node || null)) {
-        mm.position = { data: { chapter: rec.chapter, page: rec.page, node: rec.node || null },
+      if (!p || p.data.chapter !== rec.chapter || p.data.page !== rec.page || p.data.node !== (rec.node || null) ||
+          (p.data.key || null) !== (rec.key || null)) {
+        mm.position = { data: { chapter: rec.chapter, page: rec.page, node: rec.node || null, key: rec.key || null },
                         updated: Date.now(), sent: (p && p.sent) || 0 };
         saveMeta(cur.id, mm);
       }
@@ -1092,8 +1094,8 @@ const LIB = (() => {
   // the store could not keep). resume is the shell's session record when
   // the app comes back to the book: it opens where the reader was (the
   // record's chapter, page, move and view) rather than at the place stored;
-  // at = {chapter, page, node} opens it at a bookmark instead of the place
-  // last read.
+  // at = {chapter, page, node, key} opens it at a bookmark instead of the
+  // place last read.
   api.open = async function (b, given, resume, at) {
     if (busy) return;
     busy = true;
@@ -1123,7 +1125,7 @@ const LIB = (() => {
         const marks = ((bookmarksOf(b).data || {}).bookmarks || []).filter((m) => m && m.page);
         const same = marks.find((m) => m.page === at.page);
         api.current.position = { chapter: at.chapter || (same && same.chapter) || (api.current.position || {}).chapter,
-                                 page: at.page, node: at.node || null };
+                                 page: at.page, node: at.node || null, key: at.key || null };
       }
       if (!given) store.update(b.id, { opened: Date.now() }).catch(() => {});
       if (!ready) say("The reader is still starting. The book opens in a moment.");
@@ -1263,7 +1265,9 @@ const LIB = (() => {
       const cur = api.current;
       if (!openChapter || !/^ch\d+\.html$/.test(openChapter)) return;
       const mm = meta(cur.id);
-      mm.position = { data: { chapter: openChapter, page: d.position.page, node: d.position.node || null },
+      // (the key names the box of the move on that page, which a new reading keeps)
+      mm.position = { data: { chapter: openChapter, page: d.position.page, node: d.position.node || null,
+                              key: d.position.key || null },
                       updated: Date.now(), sent: (mm.position && mm.position.sent) || 0 };
       saveMeta(cur.id, mm);
       schedule(POSITION_DELAY);

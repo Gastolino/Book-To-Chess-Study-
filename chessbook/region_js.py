@@ -259,7 +259,7 @@ function regionUp(e, cancel){
     // it under a handle's reach, is chosen, as a tap on that move would choose it
     RG.swallow = performance.now();
     const hit = markUnder(e.clientX, e.clientY);
-    if (hit) selectNode(hit, {fromPage: true});
+    if (hit) selectNode(hit.node, {at: hit});
     return;
   }
   RG.swallow = performance.now();
@@ -274,12 +274,13 @@ function regionUp(e, cancel){
   regionSelected();
 }
 function markUnder(x, y){
-  // the move whose box lies under a point of the window, beneath the section drawn over the page
+  // the move box (indexBoxes) that lies under a point of the window, beneath the section drawn over
+  // the page
   const box = $("rgsel");
   if (box) box.style.pointerEvents = "none";
   const el = document.elementsFromPoint(x, y).find(t => t.matches && t.matches("#ov .mark[data-node]"));
   if (box) box.style.pointerEvents = "";
-  return el ? el.dataset.node : null;
+  return el ? markBox(el) : null;
 }
 function regionClick(e){
   // (the capture phase of the page's clicks) the click after a drag or a tap that made a section
@@ -792,7 +793,7 @@ function localRegions(){
     if (!e.rect || (held[key] || []).some(h => sameEntry(h, e))) continue;
     if (playLocal(key, e)) changed = true;
   }
-  if (S.node && !D.nodes[S.node]) { S.node = null; }
+  if (S.node && !D.nodes[S.node]) { S.node = null; S.at = null; }
   return changed;
 }
 function playLocal(key, e){
@@ -837,6 +838,7 @@ function playLocal(key, e){
 function regionRefresh(){
   // the page, its lines and the move list after the shown sections changed
   if (!localRegions()) return;
+  indexBoxes();
   if (S.page) showPage(S.page);
   renderTree(); renderBoard(); layoutPanel(false);
 }

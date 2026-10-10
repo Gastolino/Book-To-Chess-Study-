@@ -29,6 +29,7 @@ import base64
 import hashlib
 import html
 import json
+import urllib.parse
 from pathlib import Path
 
 import chess.svg
@@ -65,6 +66,7 @@ STATUS_WORDS = {
     "unattached": "Placed in no line",
     "corrected": "Corrected by you",
     "added": "Added by you",
+    "auto": "Joined by the program",
 }
 
 # What each kind of picture is, in words for the reader.
@@ -257,7 +259,7 @@ function makeBookmarks(B0, opts){
       const p = parseInt(b && b.page, 10);
       if (!(p >= 1 && p <= opts.pageCount) || seen[p]) continue;
       seen[p] = true;
-      out.push({page: p, node: b.node || null, chapter: b.chapter || null, at: b.at || 0});
+      out.push({page: p, node: b.node || null, key: b.key || null, chapter: b.chapter || null, at: b.at || 0});
     }
     return out.sort((a, b) => a.page - b.page);
   }
@@ -305,11 +307,11 @@ CHAPTER_CSS = r"""
 body:not(.reading) .rtool{display:none}
 /* in the wide bar the reading tools stand in the row with the others (their group adds no box) */
 .rtools{display:contents}
-/* Show reading stays where it is when it is tapped, so that a second tap on the same spot turns
-   reading off again rather than turning on a tool that has just appeared there. In the wide bar,
-   which stands at the right, the reading tools come first and keep their room while hidden (the
-   chapter's title then wraps the same way in both modes); in the compact layout the icon comes
-   first and the tools appear in a strip under the bar (below). */
+/* Show reading sits in the row under the board, between the arrows and the board's own buttons, so
+   that it is at hand where the moves are corrected (in the compact layout, where that row follows the
+   page, the bar at the foot of the window holds it too). In the wide bar, which stands at the right,
+   the reading tools come first and keep their room while hidden (the chapter's title then wraps the
+   same way in both modes); in the compact layout they appear in a strip under the bar (below). */
 @media (min-width:701px) and (orientation:landscape),(min-width:1101px){
 .tools .rtool{order:-1}
 body:not(.reading) .tools .rtool{display:inline-block;visibility:hidden}}
@@ -510,13 +512,14 @@ border:1px solid var(--line);white-space:nowrap}
 .rtools{position:absolute;left:0;right:0;top:100%;z-index:6;display:flex;align-items:center;gap:4px 20px;
 padding:4px 16px;background:var(--bg);border-bottom:1px solid var(--line)}
 body:not(.reading) .rtools{display:none}
-#showread{order:-1}
 .notes{padding-left:16px;padding-right:16px}
 .reader{grid-template-columns:minmax(0,1fr)}
 .pagecol{padding:16px 16px 8px}
 .key > *{grid-area:auto}
 .legend{display:none;visibility:visible}
 .reading .legend{display:flex}
+/* (an entry wider than a phone's window wraps rather than scroll the page sideways) */
+.legend > span{white-space:normal}
 .reading .key .help{display:none}
 .panel{position:static;height:auto;display:block;overflow:visible;border-left:0;padding:0 16px 32px}
 .panel > .pagefoot{border-top:1px solid var(--line);padding-top:12px}
@@ -529,7 +532,7 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mtxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
-#mboard[aria-pressed="true"],#mzoom[aria-pressed="true"]{color:var(--accent)}
+#mboard[aria-pressed="true"],#mzoom[aria-pressed="true"],#mread[aria-pressed="true"]{color:var(--accent)}
 /* the bar's magnifier enlarges the page: the button under the page is for wider screens */
 #zoom{display:none}
 /* The board follows the page picture (the script moves it there from the panel) and, while
@@ -552,7 +555,15 @@ max-width:min(100%,55vh)}
 .mbar.withboard .mtxt{flex:none;padding-top:4px}
 .mbar.withboard .mbtns{justify-content:flex-start;margin:0 0 0 -6px;flex-wrap:wrap}
 .mini svg,.mini canvas{display:block;width:100%;height:auto}
-.mini .co{display:none}}
+.mini .co{display:none}
+/* while the thread asks for a move the board stands at the foot of the window, above the bar, with the
+   sheet above it, wherever the page is scrolled */
+.threadboard .boardblock{position:fixed;left:0;right:0;bottom:var(--barh,50px);z-index:8;margin:0;
+overflow:hidden auto;max-height:calc(100vh - var(--barh,50px) - 96px)}}
+/* the bar's bookmark stands in the top bar too: a phone in reading mode (whose bar holds the pencil) and
+   the narrowest phone leave it out of the bar, so that the current move keeps its room */
+@media (max-width:480px){.reading #mbm{display:none}}
+@media (max-width:360px){#mbm{display:none}}
 /* a tablet held upright: the compact layout with the room it has. The board at the foot of the
    window has the line's title, the analysis and the move list beside it (#side, which the script
    makes), so that page, position and moves show together; the move list scrolls in its own box,
@@ -594,7 +605,11 @@ const IMG = JSON.parse(document.getElementById("images").textContent);
 window.READER = D;
 const $ = (id) => document.getElementById(id);
 const S = {page: null, node: null, line: null, flip: false, diagram: null, mini: null,
-  wanted: null};  // mini: the "Board" button of the phone's bar (null: on while a move or diagram is shown)  // wanted: a move the hash asked for that this reading does not hold yet
+  at: null, last: null, wanted: null};
+// mini: the "Board" button of the phone's bar (null: on while a move or diagram is shown)
+// at: the box the reader is on, {page, key} (the key of a printed move, which a new reading keeps),
+// or null; last: the last box lit, from which the arrows go on after a step that lit none
+// wanted: the place the hash asked for that this reading does not hold yet, {page, node, key}
 const imgCache = {};
 const IMG_KEEP = 4;  // decoded page pictures kept for the diagram crops: the last few pages only
 // the compact layout (one column, the board at the foot of the window): phones, and tablets held
@@ -814,25 +829,27 @@ function nodeFen(id){ const n = D.nodes[id]; return n && n.fen ? n.fen : null; }
 function setState(){
   window.readerState = {fen: S.node ? nodeFen(S.node) : null, nodeId: S.node, page: S.page};
   if (S.diagram) window.readerState.diagram = S.diagram;
-  // the app's library keeps the page and the move last read, to open the book there again
+  // the app's library keeps the page, the move and its box last read, to open the book there again
   if (window.CHESSBOOK_APP && S.page) {
-    parent.postMessage({position: {page: S.page, node: S.node || null, label: label(S.page)}}, "*");
+    parent.postMessage({position: {page: S.page, node: S.node || null, key: atKey(), label: label(S.page)}}, "*");
   }
   const t = $("mtxt");
   if (!t) return;
+  // (while the thread asks for a move, the bar names the move its board shows)
+  if (TH.on && TH.fen) { threadLabel(); return; }
   if (S.node) t.innerHTML = D.nodes[S.node].parent == null ? "Start position" :
     "<span class=n>" + moveHtml(S.node, true) + "</span>";
   else if (S.diagram) t.textContent = cap(diagramLabel(S.diagram));
   else t.innerHTML = "<span class=muted>No move chosen</span>";
 }
 
-// The view, for the app: the page and move as the position message gives them, and how the
+// The view, for the app: the page, move and box as the position message gives them, and how the
 // screen stands (the board's side, the small board on a phone, the enlarged page, and the scroll
 // of the window, the enlarged page, the panel and the move list). The app keeps it, and gives it
-// back in the hash ("#at=PAGE:NODE&v=...") when it reopens the book where the reader was.
+// back in the hash ("#at=PAGE:NODE:KEY&v=...") when it reopens the book where the reader was.
 function readerView(){
   const ps = $("pagescroll"), panel = $("panel"), tree = $("tree");
-  return {page: S.page, node: S.node || null, label: S.page ? label(S.page) : null, f: S.flip ? 1 : 0,
+  return {page: S.page, node: S.node || null, key: atKey(), label: S.page ? label(S.page) : null, f: S.flip ? 1 : 0,
     m: S.mini === null ? null : (S.mini ? 1 : 0), z: ps && ps.classList.contains("zoom") ? 1 : 0,
     y: Math.round(window.scrollY || 0), x: ps ? Math.round(ps.scrollLeft) : 0,
     p: panel ? Math.round(panel.scrollTop) : 0, t: tree ? Math.round(tree.scrollTop) : 0};
@@ -906,6 +923,8 @@ function goPage(p, keepHash){
   p = parseInt(p, 10);
   if (isNaN(p) || p < 1 || p > D.pageCount) { $("pagenum").value = label(S.page); return; }
   say("");
+  // the reader turned the page: the place an address asked for is not waited for any longer
+  S.wanted = null;
   if (!(p in D.pages)) {
     const c = chapterFor(p);
     if (c && c.file && !c.empty) { openFile(c.file + "#page=" + p); }
@@ -1242,7 +1261,8 @@ function showPage(p){
     b.dataset.mark = i;
     const n = m.node ? D.nodes[m.node] : null;
     let t = n ? (n.san || n.assumed || "“" + shown(m.raw) + "”") : "“" + shown(m.raw) + "”";
-    t += ": " + lcfirst(m.corrected || (n && n.corrected) ? D.words.corrected : (D.words[m.status] || m.status));
+    t += ": " + lcfirst(m.auto || (n && n.auto) ? D.words.auto : m.corrected || (n && n.corrected) ? D.words.corrected :
+      (D.words[m.status] || m.status));
     if (m.reason) t += ", because " + m.reason;
     t += ".";
     if (m.ref && n) t = "“" + shown(m.raw) + "” names " + moveText(m.node, true) + ", a move the line has played.";
@@ -1349,10 +1369,11 @@ function bmNote(text, undo){
   bmTimer = setTimeout(() => bmNote(""), 8000);
 }
 function setBookmark(){
-  // the chosen move goes with the bookmark when it is printed on this page (a move chosen
-  // on the page before stays chosen while the pages turn)
-  const node = S.node && D.pages[S.page].marks.some(m => m.node === S.node) ? S.node : null;
-  const b = {page: S.page, node: node, chapter: D.chapter.file, at: Date.now()};
+  // the chosen move and its box go with the bookmark when it is printed on this page (a move
+  // chosen on the page before stays chosen while the pages turn)
+  const box = litBox();
+  const b = {page: S.page, node: box ? box.node : null, key: box ? box.key : null, chapter: D.chapter.file, at: Date.now()};
+  const node = b.node;
   MARKS.set(b);
   bmNote("");
   bookmarkState();
@@ -1393,14 +1414,15 @@ function renderChips(){
   }
 }
 
+// One box at most is lit: the reader's box, or else the current move's box on this page nearest the
+// last box lit, never the other boxes of the same move.
 function highlightMark(scroll){
   for (const el of document.querySelectorAll(".mark.current")) el.classList.remove("current");
-  if (!S.node) return;
-  let first = null;
-  for (const el of document.querySelectorAll(".mark[data-node='" + S.node + "']")) {
-    el.classList.add("current"); if (!first) first = el;
-  }
-  if (first && scroll) revealMark(first);
+  const b = litBox();
+  const el = b ? document.querySelector("#ov .mark[data-mark='" + b.i + "']") : null;
+  if (!el) return;
+  el.classList.add("current");
+  if (scroll) revealMark(el);
 }
 
 // Keep the current move in the part of the screen that is free: above the
@@ -1496,6 +1518,22 @@ function boardSvg(fen, flip, uci, doubt){
   }
   return s + "</svg>";
 }
+// the move the thread offers (a Play button), drawn as an arrow from its square to its target
+function offerArrow(svg, uci, flip){
+  if (!uci || uci.length < 4) return svg;
+  const mid = (sq) => {
+    const f = "abcdefgh".indexOf(sq[0]), r = 8 - parseInt(sq[1], 10);
+    return [M + (flip ? 7 - f : f) * SQ + SQ / 2, TOP + (flip ? 7 - r : r) * SQ + SQ / 2];
+  };
+  const [x1, y1] = mid(uci.slice(0, 2)), [x2, y2] = mid(uci.slice(2, 4));
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+  if (!len) return svg;
+  const ux = dx / len, uy = dy / len, head = 12, back = 9, ex = x2 - ux * head, ey = y2 - uy * head;
+  const a = "<line class='thoff' pointer-events='none' x1='" + (x1 + ux * 10) + "' y1='" + (y1 + uy * 10) + "' x2='" + ex +
+    "' y2='" + ey + "'/><polygon class='thoffh' pointer-events='none' points='" +
+    [x2, y2, ex - uy * back * 0.7, ey + ux * back * 0.7, ex + uy * back * 0.7, ey - ux * back * 0.7].join(",") + "'/>";
+  return svg.replace(/<\/svg>$/, a + "</svg>");
+}
 function sizeCoords(root){
   // the coordinates come out at 10px on screen, whatever the size of the board
   for (const svg of (root || document).querySelectorAll("svg.board")) {
@@ -1538,6 +1576,8 @@ function diagramLabel(id){
 }
 function boardFor(){
   // [kind, html or diagram id, note]
+  // a move asked for on the board (the thread): its position, with the move offered drawn on it
+  if (TH.on && TH.fen) return ["svg", offerArrow(boardSvg(TH.fen, S.flip, TH.uci), TH.offer, S.flip), ""];
   if (S.preview) return ["svg", boardSvg(S.preview.fen, S.flip, S.preview.uci), S.preview.note];
   const n = S.node ? D.nodes[S.node] : null;
   const fen = n ? nodeFen(S.node) : null;
@@ -1631,8 +1671,12 @@ function renderMini(){
   const editing = !!(RV.edit && document.getElementById("fix") && !$("fix").hidden) || RG.draw;
   const want = S.mini === null ? !!(S.node || S.diagram || editing) : S.mini;
   $("mboard").setAttribute("aria-pressed", String(want));
+  // while the thread asks for a move, the move is made on the full board: it stands at the foot of the
+  // window under the sheet, and the small board is not shown (one board, with squares a finger fits)
+  const thread = SMALL.matches && editing && RV.edit && RV.edit.kind === "thread" && kind === "svg";
+  document.body.classList.toggle("threadboard", !!thread);
   document.body.classList.toggle("stickboard", SMALL.matches && want && kind !== "empty" && !editing);
-  const show = SMALL.matches && want && kind !== "empty" && editing && !(RV.edit && RV.edit.kind === "diagram");
+  const show = SMALL.matches && want && kind !== "empty" && editing && !thread && !(RV.edit && RV.edit.kind === "diagram");
   mini.classList.toggle("on", show);
   bar.classList.toggle("withboard", show);
   const box = $("minibox");
@@ -1669,6 +1713,143 @@ function siblings(id){
   const n = D.nodes[id];
   return n && n.parent != null ? D.nodes[n.parent].children : [id];
 }
+
+/* ---------------------------------------------------------------- the reader's place */
+// A move may be printed more than once: a note that repeats the line before it branches off
+// prints its moves again, and "Bf1–b5" names a move the line has played (a reference). The
+// reader's place is one box (S.at), and the arrows follow the boxes in reading order, so that they
+// stay in the sentence being read; they turn the page only the way they go.
+let OCC = {};   // move -> its boxes in reading order
+let ORD = [];   // every box that carries a move, the references left out, in reading order
+let BOX = {};   // box key -> box
+let SPOT = {};  // "page:index" -> box
+// a box: {page, i: its index among the page's marks, key, node, ref, pos: its place in reading order}
+function boxKey(m, p, i){ return m.key || (m.local ? "rg:" + m.node : p + ":#" + i); }
+function indexBoxes(){
+  OCC = {}; ORD = []; BOX = {}; SPOT = {};
+  // the marks of a page are in reading order already, two columns included
+  for (const p of Object.keys(D.pages).map(Number).sort((a, b) => a - b))
+    D.pages[p].marks.forEach((m, i) => {
+      if (!m.node || !D.nodes[m.node]) return;
+      const b = {page: p, i, key: boxKey(m, p, i), node: m.node, ref: !!m.ref, pos: p * 1e5 + i};
+      if (BOX[b.key]) return;
+      BOX[b.key] = b; SPOT[p + ":" + i] = b;
+      (OCC[m.node] = OCC[m.node] || []).push(b);
+      if (!b.ref) ORD.push(b);
+    });
+}
+// the box a place names, while this reading holds it on that page
+function boxAt(at){ const b = at && BOX[at.key]; return b && b.page === at.page ? b : null; }
+function placeOf(b){ return b ? {page: b.page, key: b.key} : null; }
+// the box of a button on the page shown
+function markBox(el){ return el && el.dataset.mark != null ? SPOT[S.page + ":" + el.dataset.mark] || null : null; }
+function boxesOn(id, p){ return (OCC[id] || []).filter(b => b.page === p); }
+// the box nearest to box a in reading order (the first one when there is no a)
+function nearest(boxes, a){
+  if (!a) return boxes[0] || null;
+  let best = null;
+  for (const b of boxes) if (!best || Math.abs(b.pos - a.pos) < Math.abs(best.pos - a.pos)) best = b;
+  return best;
+}
+// the box next to a in reading order: the first after it (dir 1) or the last before it (dir -1)
+function nextBox(a, dir){
+  let lo = 0, hi = ORD.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (ORD[mid].pos <= a.pos) lo = mid + 1; else hi = mid; }
+  if (dir > 0) return ORD[lo] || null;
+  let k = lo - 1;
+  if (k >= 0 && ORD[k].pos === a.pos) k--;
+  return k >= 0 ? ORD[k] : null;
+}
+// a box that prints its move again (a note's repeat of the line, or a reference)
+function repeatBox(b){
+  const n = D.nodes[b.node];
+  return b.ref || (n.key ? b.key !== n.key : (OCC[b.node] || [])[0] !== b);
+}
+// node id comes after node from in its line
+function descends(id, from){
+  for (let c = D.nodes[id] ? D.nodes[id].parent : null; c != null; c = D.nodes[c] ? D.nodes[c].parent : null)
+    if (c === from) return true;
+  return false;
+}
+// the reader's place as the steps read it: {node, at: its box, last: the last box lit, page shown, line}
+function placeNow(){ return {node: S.node, at: boxAt(S.at), last: boxAt(S.last), page: S.page, line: S.line}; }
+// the box lit: the reader's box on the page shown, or else the move's box here nearest the last box
+function litOf(P){
+  if (!P.node) return null;
+  if (P.at && P.at.page === P.page && P.at.node === P.node) return P.at;
+  const here = boxesOn(P.node, P.page);
+  return here.length ? nearest(here, P.last && P.last.page === P.page ? P.last : null) : null;
+}
+function litBox(){ return litOf(placeNow()); }
+// the key of the box the reader is on, for the address and the app
+function atKey(){ const b = litBox(); return b ? b.key : null; }
+// Where a step forward goes from box a (or, when the move has no box here, from the anchor: the
+// last box lit on this page): the next box in reading order when it holds the next move of the
+// sentence; or else the line's next move (want: that move), at its first box after a on this page
+// or the next, else at its box on this page, else at its next box after a on a later page.
+// {node, box}; box null: the board steps, the page stays and nothing is lit.
+function forwardFrom(P, a, anchor, want){
+  const X = P.node, n = D.nodes[X];
+  if (a) {
+    const b = nextBox(a, 1);
+    if (b && D.nodes[b.node].parent === X &&
+        (want ? b.node === want : b.node === nextMove(X) || repeatBox(a) || !n.main)) return {node: b.node, box: b};
+  }
+  const Y = want || nextMove(X);
+  if (!Y) return null;
+  const from = a || anchor, occ = OCC[Y] || [];
+  let box = from ? occ.find(o => o.pos > from.pos && o.page <= from.page + 1) || null : null;
+  if (!box) box = nearest(boxesOn(Y, P.page), from);
+  if (!box && from) box = occ.find(o => o.pos > from.pos) || null;
+  return {node: Y, box};
+}
+// A step back: the box before a in reading order when it holds the move before; or else that
+// move's nearest box before a on this page or the one before, else its box on this page, else its
+// last box on an earlier page; none for the start position.
+function backFrom(P, a, anchor){
+  const X = P.node, par = D.nodes[X].parent;
+  if (par == null || !D.nodes[par]) return null;
+  if (a) { const b = nextBox(a, -1); if (b && b.node === par) return {node: par, box: b}; }
+  const from = a || anchor, occ = OCC[par] || [];
+  let box = from ? occ.filter(o => o.pos < from.pos && o.page >= from.page - 1).pop() || null : null;
+  if (!box) box = nearest(boxesOn(par, P.page), from);
+  if (!box && from) box = occ.filter(o => o.pos < from.pos).pop() || null;
+  return {node: par, box};
+}
+// where a step goes (dir 1 forward, -1 back): {node, box} or null
+function stepPlace(P, dir, want){
+  if (!P.node || !D.nodes[P.node]) return null;
+  const a = litOf(P), anchor = !a && P.last && P.last.page === P.page ? P.last : null;
+  if (a || anchor) return dir > 0 ? forwardFrom(P, a, anchor, want) : backFrom(P, a, anchor);
+  // the reader turned to a page that does not print the move: the arrows go on from this page,
+  // forward to the first move of the line here that comes after it (else the line's first move
+  // here), back to the last one before it (else the line's last move here)
+  if (!want) {
+    const here = ORD.filter(b => b.page === P.page && D.nodes[b.node].line === P.line);
+    if (here.length) {
+      const b = dir > 0 ? here.find(o => descends(o.node, P.node)) || here[0] :
+        here.filter(o => descends(P.node, o.node)).pop() || here[here.length - 1];
+      return {node: b.node, box: b};
+    }
+  }
+  // no move of the line on this page: the board steps alone (a move made on the board shows at its
+  // box on this page, if it has one)
+  const id = want || (dir > 0 ? nextMove(P.node) : D.nodes[P.node].parent);
+  return id != null && D.nodes[id] ? {node: id, box: want ? boxesOn(want, P.page)[0] || null : null} : null;
+}
+// the place after a step: what the next step goes from
+function stepped(P, t){
+  return {node: t.node, at: t.box, last: t.box || P.last, page: t.box ? t.box.page : P.page,
+    line: D.nodes[t.node].line};
+}
+// The box a move chosen by name shows at (the move list, the Review list, the pencil and the
+// links to moves): its box on this page, nearest the last box; else, unless here, its nearest box.
+function placeFor(id, here){
+  const last = boxAt(S.last), ref = last && last.page === S.page ? last : {page: S.page, pos: S.page * 1e5};
+  const on = boxesOn(id, S.page);
+  if (on.length) return nearest(on, ref);
+  return here ? null : nearest(OCC[id] || [], ref);
+}
 function moveNumber(id, needNumber){
   const n = D.nodes[id];
   return n.number != null && (needNumber || !n.black) ? n.number + (n.black ? "…" : ".") : "";
@@ -1688,7 +1869,8 @@ function moveText(id, needNumber){ return moveNumber(id, needNumber) + moveBody(
 function moveHtml(id, needNumber){ return esc(moveNumber(id, needNumber)) + moveBodyHtml(id); }
 function mvHtml(id, needNumber){
   const n = D.nodes[id];
-  let tip = n.corrected === "added" ? D.words.added : n.corrected ? D.words.corrected : (D.words[n.status] || n.status);
+  let tip = n.auto ? (n.corrected === "assumed" ? D.words.inserted : D.words.auto) : n.corrected === "added" ? D.words.added :
+    n.corrected ? D.words.corrected : (D.words[n.status] || n.status);
   if (n.status === "failed" && n.assumed) tip += "; the program assumed " + n.assumed;
   if (n.raw && n.status !== "ok") tip += "; the text recognition read “" + shown(n.raw) + "”";
   const num = moveNumber(id, needNumber);
@@ -1697,6 +1879,7 @@ function mvHtml(id, needNumber){
   const mine = n.corrected === "added" && !(D.nodes[n.parent] && D.nodes[n.parent].corrected === "added");
   return "<button class='" + cls + "' tabindex='-1' data-node='" + id + "' title='" + esc(tip) + "'>" +
     (n.status === "failed" ? "<i class='dot st-failed'></i>" : "") + (mine ? "<i class='dot st-added'></i>" : "") +
+    (n.auto ? "<i class='dot st-auto'></i>" : "") +
     (num ? "<span class=mn>" + esc(num) + "</span>" : "") + "<span class=san>" + moveBodyHtml(id) +
     "</span></button>";
 }
@@ -1819,6 +2002,11 @@ function statusLines(n){
   if (n.corrected === "added")
     return ["added", esc(D.words.added), [n.region ? "You read this move in a section of " + esc(pageName(n.region.page)) +
       " where the program had found no move." : "You added this move on the board, in a variation of your own."].concat(out)];
+  // a move the program supplied, or the first of the moves it joined, when it read on after a correction
+  if (n.auto && (n.corrected === "assumed" || n.corrected === "connected"))
+    return n.corrected === "assumed" ? ["guessed", esc(D.words.inserted),
+      ["The book's text lacks this move: the program supplied it, from the moves printed after it."].concat(out)] :
+      ["auto", esc(D.words.auto), ["The program joined these moves to the line here."].concat(out)];
   if (n.corrected) {
     const why = n.corrected === "move" ? "You gave this move." :
       n.corrected === "placed" ? "You placed this variation here." :
@@ -1866,10 +2054,14 @@ function renderInfo(){
       if (gk && !(RV.edit && RV.edit.kind === "gap"))
         h += "<p class='small rtool'><button class=tb id=fixgapbtn>" + esc(n.gap && n.san ? "Change the moves you gave" :
           gapTitle(gk)) + "</button></p>";
-      else if (n.key && beforeFen(n) && !(RV.edit && RV.edit.node === S.node))
+      else if (n.key && beforeFen(n) && !(RV.edit && (RV.edit.node === S.node || RV.edit.kind === "thread")))
         h += "<p class='small rtool'><button class=tb id=fixthis>Correct this move</button></p>";
       else if (n.corrected === "added" && !(RV.edit && RV.edit.node === S.node))
         h += "<p class=small><button class=tb id=fixadded>Change your variation</button></p>";
+      // the program's own correction (read on after one of the reader's): the reader may remove it
+      const own = autoEntry(S.node);
+      if (own && !(RV.edit && RV.edit.kind === "thread"))
+        h += "<p class='small rtool'><button class=tb id=fixauto>" + esc(autoWords(S.node)) + "</button></p>";
     }
   }
   box.innerHTML = h;
@@ -1877,6 +2069,7 @@ function renderInfo(){
   if ($("fixthis")) $("fixthis").addEventListener("click", () => openMove(S.node));
   if ($("fixadded")) $("fixadded").addEventListener("click", () => openAdded(S.node));
   if ($("fixgapbtn")) $("fixgapbtn").addEventListener("click", () => openGap(gapKeyOf(S.node)));
+  if ($("fixauto")) $("fixauto").addEventListener("click", () => removeAuto(S.node));
 }
 
 function openIfFailed(id){
@@ -1885,6 +2078,11 @@ function openIfFailed(id){
   const n = D.nodes[id];
   if (reading() && n && n.parent != null && n.status === "failed") openMove(id);
 }
+// Choose a move. opts.at: the box it shows at (a box, or null for none: the page stays); a step
+// and a tap on the page give it. opts.fromPage: its box on this page, or none, and the page stays.
+// Otherwise (a move chosen by name) its box on this page, or else its nearest box, whose page shows
+// (opts.page: the page to show when it has none). opts.keepWanted: the place the address asked
+// for is still awaited.
 function selectNode(id, opts){
   opts = opts || {};
   const n = D.nodes[id];
@@ -1893,53 +2091,80 @@ function selectNode(id, opts){
   if (S.diagram) closeDiagram();
   S.preview = null;
   if (RV.edit && !(RV.edit.kind === "move" && RV.edit.node === id) && RV.edit.kind !== "symbol" &&
-      RV.edit.kind !== "region" && !(RV.edit.kind === "gap" && gapKeyOf(id) === RV.edit.key)) closeFix();
+      RV.edit.kind !== "region" && !(RV.edit.kind === "gap" && gapKeyOf(id) === RV.edit.key) &&
+      !(RV.edit.kind === "thread" && TH.self)) closeFix();
   const lineChanged = S.line !== n.line;
   S.node = id; S.line = n.line;
-  if (!opts.fromPage) S.wanted = null;   // the reader chose a move: the wanted one is forgotten
-  const L = D.lines[n.line];
-  const target = n.page || L.page;
-  // a click on a box keeps its page, even when the move belongs to another page as well
-  if (!opts.fromPage && target && target !== S.page && (target in D.pages)) showPage(target);
+  if (!opts.keepWanted) S.wanted = null;   // the reader chose a move: the wanted place is forgotten
+  const box = "at" in opts ? opts.at : placeFor(id, !!opts.fromPage);
+  S.at = placeOf(box);
+  if (box) S.last = S.at;
+  const target = box ? box.page : opts.page;
+  if (target && target !== S.page && (target in D.pages)) showPage(target);
   if (lineChanged) { renderTree(); renderChips(); }
   renderBoard();
   renderInfo();
   layoutPanel(opts.scrollTree !== false);
   highlightMark(!!opts.scrollPage);
   if (treeFocus) { const el = $("tree").querySelector(".mv.cur"); if (el) el.focus({preventScroll: true}); }
-  history.replaceState(null, "", "#node=" + id);
+  placeHash();
   setState();
   // the moves of a section being read go with the move chosen
   regionFollow(id);
 }
+// the address of the place: "#at=PAGE:NODE:KEY", the key of the box lit (encoded)
+function placeHash(){
+  if (!S.node) return;
+  const k = atKey();
+  history.replaceState(null, "", "#at=" + S.page + ":" + S.node + (k ? ":" + encodeURIComponent(k) : ""));
+}
 function firstLineHere(){
   return linesHere()[0] || D.lineOrder[0];
 }
+// the arrows: the next box of the sentence, the page turned only the way they go
 function step(dir){
+  S.wanted = null;
   if (!S.node) {
     const lid = S.line || firstLineHere();
-    if (lid) selectNode(D.lines[lid].root, {scrollPage: true});
+    if (lid) selectNode(D.lines[lid].root, {at: null, scrollPage: true});
     return;
   }
-  const n = D.nodes[S.node];
-  if (dir < 0 && n.parent != null) selectNode(n.parent, {scrollPage: true});
-  if (dir > 0) { const c = nextMove(S.node); if (c) selectNode(c, {scrollPage: true}); }
+  const t = stepPlace(placeNow(), dir);
+  if (t) selectNode(t.node, {at: t.box, scrollPage: true});
 }
+// a move made on the board that the line holds: the step the right arrow makes, to that move
+function stepTo(id){
+  const t = D.nodes[id] && D.nodes[id].parent === S.node ? stepPlace(placeNow(), 1, id) : null;
+  selectNode(id, t ? {at: t.box, scrollPage: true} : {fromPage: true, scrollPage: true});
+}
+// up and down: the move's other variations, at the box nearest this one (a page away at most)
 function sideStep(dir){
+  S.wanted = null;
   if (!S.node) return;
   const sib = siblings(S.node);
-  const k = sib.indexOf(S.node);
-  const j = k + dir;
-  if (j >= 0 && j < sib.length) selectNode(sib[j], {scrollPage: true});
+  const j = sib.indexOf(S.node) + dir;
+  if (j < 0 || j >= sib.length) return;
+  const id = sib[j], P = placeNow(), from = litOf(P) || (P.last && P.last.page === S.page ? P.last : null);
+  let box = nearest(boxesOn(id, S.page), from);
+  if (!box) box = nearest((OCC[id] || []).filter(b => Math.abs(b.page - S.page) === 1), from || {pos: S.page * 1e5});
+  selectNode(id, {at: box, scrollPage: true});
 }
+// Home: the start position, on this page; End: the forward steps to the end of the line
 function toEnd(dir){
+  S.wanted = null;
   if (!S.line) S.line = firstLineHere();
   if (!S.line) return;
-  if (dir < 0) { selectNode(D.lines[S.line].root, {scrollPage: true}); return; }
-  let id = S.node || D.lines[S.line].root;
-  let c;
-  while ((c = nextMove(id))) id = c;
-  selectNode(id, {scrollPage: true});
+  const root = D.lines[S.line].root;
+  if (dir < 0) { selectNode(root, {at: null, scrollPage: true}); return; }
+  let P = placeNow();
+  if (!P.node) P = {node: root, at: null, last: P.last, page: S.page, line: S.line};
+  for (let k = 0; k < 5000; k++) {
+    const t = stepPlace(P, 1);
+    if (!t) break;
+    P = stepped(P, t);
+  }
+  S.last = placeOf(P.last);
+  selectNode(P.node, {at: P.at, scrollPage: true});
 }
 function governing(){
   // a line that began on an earlier page and goes on here: [line, its last move before this page]
@@ -1964,13 +2189,13 @@ function defaultView(){
   // page, or else the first line on the page, at its starting position
   const g = governing();
   if (g) {
-    selectNode(g[1], {fromPage: true});
+    selectNode(g[1], {fromPage: true, keepWanted: true});
     // an explanation, so it shows only while "Show reading" is on
     if (reading()) say("The line “" + title(D.lines[g[0]].title) + "” begins on " + pageName(D.lines[g[0]].page) +
       " and goes on here. The board shows its position at the top of this page.");
     return;
   }
-  S.node = null;
+  S.node = null; S.at = null;
   S.line = linesHere()[0] || null;
   renderChips(); renderTree(); renderBoard(); renderInfo(); layoutPanel(false); highlightMark(false);
   setState();
@@ -1999,7 +2224,7 @@ function showDiagram(id){
   const el = document.querySelector(".diag[data-diagram='" + id + "']");
   if (el) el.classList.add("current");
   // the move list shows this diagram's first line, with no move chosen
-  S.node = null;
+  S.node = null; S.at = null;
   S.line = (d.lines && d.lines.find(l => D.lines[l])) || null;
   renderTree(); renderChips();
   renderBoard(); renderInfo(); highlightMark(false);
@@ -2112,10 +2337,13 @@ function selNote(){
 function setReading(on){
   document.body.classList.toggle("reading", on);
   // the icon's name says what a tap does
-  const b = $("showread"), name = on ? "Hide reading" : "Show reading";
-  b.setAttribute("aria-pressed", String(on));
-  b.setAttribute("aria-label", name);
-  b.title = name;
+  const name = on ? "Hide reading" : "Show reading";
+  for (const b of [$("showread"), $("mread")]) {
+    if (!b) continue;
+    b.setAttribute("aria-pressed", String(on));
+    b.setAttribute("aria-label", name);
+    b.title = name;
+  }
   try { localStorage.setItem("chessbook-reading", on ? "1" : "0"); } catch (e) { /* no storage */ }
   if (on) return;
   // the correction tools show in reading mode only, so none of them may stay at work unseen: the
@@ -2139,17 +2367,32 @@ function setInverted(on){
 let pendingView = null;
 function fromHash(){
   const h = location.hash.replace(/^#/, "");
-  // "at=PAGE:NODE" (the place the app's library stored) chooses the move when this
-  // reading holds it, and shows the page otherwise
-  const at = /^at=(\d+):([^&]*)(?:&v=(.*))?$/.exec(h);
+  // "at=PAGE:NODE:KEY" (the place the app's library or a bookmark stored, or this reader's own
+  // address; "at=PAGE:NODE" from before): the page always shows. The box of the key is chosen
+  // when this reading holds it on that page, else the move when that page prints it, else the
+  // page's own place (defaultView)
+  const at = /^at=(\d+):([^:&]*)(?::([^&]*))?(?:&v=(.*))?$/.exec(h);
   if (at) {
     let view = null;
-    if (at[3]) { try { view = JSON.parse(decodeURIComponent(at[3])); } catch (e) { view = null; } }
+    if (at[4]) { try { view = JSON.parse(decodeURIComponent(at[4])); } catch (e) { view = null; } }
     pendingView = view;
-    if (at[2] && D.nodes[at[2]]) { selectNode(at[2], {scrollPage: !view}); return true; }
-    goPage(at[1], true);
-    // a move this reading does not hold yet (the app is still reading the book): chosen when it comes
-    if (at[2]) S.wanted = at[2];
+    let key = "";
+    try { key = at[3] ? decodeURIComponent(at[3]) : ""; } catch (e) { key = ""; }
+    const p = parseInt(at[1], 10);
+    goPage(p, true);
+    if (S.page !== p) return true;
+    const b = key ? BOX[key] : null;
+    if (b && b.page === p) { selectNode(b.node, {at: b, scrollPage: !view}); return true; }
+    // (a move printed nowhere, such as the start position or a move the reader added, is chosen
+    // when its line runs on that page)
+    const n = at[2] ? D.nodes[at[2]] : null, L = n ? D.lines[n.line] : null;
+    if (n && (boxesOn(at[2], p).length || (!OCC[at[2]] && L && L.page <= p && p <= L.end_page))) {
+      selectNode(at[2], {fromPage: true, scrollPage: !view}); return true;
+    }
+    defaultView();
+    // a place this reading does not hold yet (the app is still reading the book): chosen when it
+    // comes, on this page only
+    if (at[2] || key) S.wanted = {page: p, node: at[2] || null, key: key || null};
     return true;
   }
   // "page=PAGE&turn=1&z=1&y=Y": the reader of the chapter before (or after) turned to this page,
@@ -2165,7 +2408,11 @@ function fromHash(){
   if (!m) return false;
   if (m[1] === "page") { goPage(m[2], true); return true; }
   if (m[1] === "node" && D.nodes[m[2]]) { if (S.node !== m[2]) selectNode(m[2], {scrollPage: true}); return true; }
-  if (m[1] === "line" && D.lines[m[2]]) { selectNode(D.lines[m[2]].root, {scrollPage: true}); return true; }
+  if (m[1] === "line" && D.lines[m[2]]) {
+    const L = D.lines[m[2]];
+    selectNode(L.root, {at: null, page: L.page, scrollPage: true});
+    return true;
+  }
   return false;
 }
 function readingState(){
@@ -2180,6 +2427,7 @@ function init(){
   $("ov").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
+    S.wanted = null;
     if (penClick(b)) return;
     if (b.dataset.eye) { openSymMenu(b); return; }
     if (RV.edit && RV.edit.kind === "seq" && b.dataset.node) {
@@ -2190,7 +2438,8 @@ function init(){
       const i = RV.items.findIndex(it => it.kind === "seq" && it.key === b.dataset.seq);
       if (i >= 0) { openItem(i); return; }
     }
-    if (b.dataset.node) { selectNode(b.dataset.node, {fromPage: true}); openIfFailed(b.dataset.node); return; }
+    // a tap on a box: the reader is on that box (a reference, or a note's repeat, included)
+    if (b.dataset.node) { selectNode(b.dataset.node, {at: markBox(b)}); openIfFailed(b.dataset.node); return; }
     if (b.dataset.diagram) { openDiagram(b.dataset.diagram); return; }
     if (b.dataset.mark) {
       const m = D.pages[S.page].marks[parseInt(b.dataset.mark, 10)];
@@ -2204,11 +2453,13 @@ function init(){
   });
   $("chips").addEventListener("click", (e) => {
     const b = e.target.closest("[data-line]");
-    if (b) selectNode(D.lines[b.dataset.line].root, {scrollPage: true});
+    if (b) selectNode(D.lines[b.dataset.line].root, {at: null, scrollPage: true});
   });
   $("tree").addEventListener("click", (e) => {
     const t = e.target.closest(".mv");
     if (t && t.dataset.node && PEN.connect) { finishConnect(t.dataset.node); return; }
+    // (the move a box in no line follows, while the thread asks for its move)
+    if (t && t.dataset.node && threadTree(t.dataset.node)) return;
     if (t && t.dataset.node) {
       selectNode(t.dataset.node, {scrollTree: false, scrollPage: true});
       openIfFailed(t.dataset.node);
@@ -2292,8 +2543,14 @@ function init(){
   $("pagenum").addEventListener("keydown", (e) => { if (e.key === "Enter") { typedPage(); e.preventDefault(); } });
   $("pagenum").addEventListener("change", typedPage);
   $("pagenum").addEventListener("focus", () => $("pagenum").select());
-  $("showread").addEventListener("click", () => {
-    setReading(!reading()); renderInfo(); layoutPanel(false);
+  // (the bar at the foot of a phone's window holds it too: the row under the board follows the page
+  // there, out of view until a move is chosen)
+  for (const b of [$("showread"), $("mread")]) b.addEventListener("click", () => {
+    const on = !reading();
+    setReading(on);
+    // the pencil is the tool reading mode starts with
+    if (on && !PEN.on) setPencil(true, true);
+    renderInfo(); layoutPanel(false);
   });
   $("zoom").addEventListener("click", () => { setZoom(!$("pagescroll").classList.contains("zoom")); viewChanged(); });
   $("mzoom").addEventListener("click", () => { setZoom(!$("pagescroll").classList.contains("zoom")); viewChanged(); });
@@ -2340,7 +2597,8 @@ function init(){
   window.addEventListener("resize", () => {
     cancelAnimationFrame(resizing);
     resizing = requestAnimationFrame(() => {
-      sizeCoords(document); layoutPanel(false); barHeight();
+      // (an open sheet sits above the bar, which a turned tablet may have changed)
+      sizeCoords(document); layoutPanel(false); barHeight(); placeSheet();
       // the window grew or shrank just after a turn (the app's top bar went away as the page
       // scrolled to its place): the page lands again in the space it has now
       if (landed && performance.now() < landed.until) land(landed.dir, landed.zoom, landed.y);
@@ -2358,9 +2616,12 @@ function init(){
   let rd = false;
   try { rd = localStorage.getItem("chessbook-reading") === "1"; } catch (e) { rd = false; }
   setReading(rd);
+  // (the pencil is the tool reading mode starts with, as when the reader turns it on)
+  if (rd && !PEN.on) setPencil(true, true);
   // the moves of the sections read on the pages that the book does not hold yet (the reader opened
   // from a file), before the address is read, so that it may name one of them
   localRegions();
+  indexBoxes();
   let start = D.chapter.start;
   while (!(start in D.pages) && start <= D.chapter.end) start++;
   showPage(start);
@@ -2411,7 +2672,6 @@ CHAPTER_HTML = """<!doctype html>
 <span class="pnav"><button class="ib" id="prevpage" aria-label="Previous page" title="Previous page (Page Up)">__ICON_BACK__</button>
 <input id="pagenum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Page number"><span class="ptotal small muted" id="pagetotal"></span>
 <button class="ib" id="nextpage" aria-label="Next page" title="Next page (Page Down)">__ICON_FWD__</button></span>
-<button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
 <span class="rtools" role="group" aria-label="Correct the reading"><button class="ib rtool" id="penbtn" aria-pressed="false" aria-label="Pencil: correct what the program read" title="Pencil: a tap on a move, a diagram or a sequence corrects it">__ICON_PENCIL__</button>
 <button class="ib rtool" id="regionbtn" aria-pressed="false" aria-label="Read a section of the page that the program missed" title="Read a section: drag across moves that the program missed">__ICON_SECTION__</button>
 <button class="tb rtool" id="reviewbtn" aria-pressed="false">Review</button></span>
@@ -2444,8 +2704,8 @@ __PGNBTN__
 <span><i class="k wait"></i><i class="u"></i>Waits for board reading (Stage 3)</span>
 <span><i class="k unatt"></i>Placed in no line</span>
 <span><i class="k fixed"></i>Corrected by you</span>
+<span><i class="k auto"></i>Joined by the program</span>
 <span><i class="dot st-added"></i>Added by you on the board</span>
-<span class="penk"><i class="k pen"></i>Pencil on: a tap corrects the move, diagram or sequence</span>
 <span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
 </div>
@@ -2470,6 +2730,8 @@ __PGNBTN__
 <button class="ib" id="bback" title="Previous move (left arrow)" aria-label="Previous move">__ICON_BACK__</button>
 <button class="ib" id="bfwd" title="Next move (right arrow)" aria-label="Next move">__ICON_FWD__</button>
 <button class="ib" id="bend" title="End of the line (End)" aria-label="End of the line">__ICON_END__</button>
+<span class="gap"></span>
+<button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
 <span class="gap"></span>
 <button class="ib" id="bflip" title="Turn the board round" aria-label="Turn the board round">__ICON_FLIP__</button>
 <button class="ib" id="bcpu" aria-pressed="false" title="Analysis with Stockfish" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
@@ -2498,7 +2760,8 @@ __PGNBTN__
 <div class="mbar" id="mbar" aria-label="Current move">
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
 <div class="mside"><span class="mtxt" id="mtxt"></span><span class="meval small" id="mevalnum"></span>
-<span class="mbtns"><button class="ib rtool" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
+<span class="mbtns"><button class="ib" id="mread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
+<button class="ib rtool" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
 <button class="ib rtool" id="mregion" aria-pressed="false" aria-label="Read a section of the page that the program missed">__ICON_SECTION__</button>
 <button class="ib" id="mcpu" aria-pressed="false" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
 <button class="ib" id="mbm" aria-pressed="false" aria-label="Bookmark this page">__ICON_BOOKMARK__</button>
@@ -2537,7 +2800,7 @@ def chapter_data(book, ch, pgn_text, engine=False):
                 "folio": pg.get("folio"),
                 "diagrams": pg["diagrams"],
                 "marks": [{k: m[k] for k in ("bbox", "node", "status", "raw", "line", "reason",
-                                             "key", "seq", "symbol", "known", "corrected", "ref")
+                                             "key", "seq", "symbol", "known", "corrected", "auto", "ref")
                            if k in m} for m in pg["marks"]]}
     lines = {}
     order = []
@@ -2563,7 +2826,7 @@ def chapter_data(book, ch, pgn_text, engine=False):
                 nn["alternatives"] = n["alternatives"]
             if n.get("reason"):
                 nn["reason"] = n["reason"]
-            for k in ("key", "corrected", "gap", "added", "added_before", "added_stale", "region"):
+            for k in ("key", "corrected", "auto", "gap", "added", "added_before", "added_stale", "region"):
                 if n.get(k):
                     nn[k] = n[k]
             if n.get("gap") and not n.get("san"):
@@ -2849,7 +3112,7 @@ function bookmarkList(){
     const name = pageName(b.page, D.folios[b.page - 1]);
     if (file) {
       const a = document.createElement("a");
-      a.href = file + "#at=" + b.page + ":" + (b.node || "");
+      a.href = file + "#at=" + b.page + ":" + (b.node || "") + (b.key ? ":" + encodeURIComponent(b.key) : "");
       a.textContent = name;
       el.appendChild(a);
     } else el.append(name);
@@ -2985,14 +3248,15 @@ __CHAPTERS__
 
 def bookmarks_of(book):
     """The bookmarks a build was given, one per page at most, in page order:
-    [{page, node, chapter, at}, ...]."""
+    [{page, node, key, chapter, at}, ...] (key: the box of the move)."""
     out, seen = [], set()
     for b in book.get("bookmarks") or []:
         p = b.get("page") if isinstance(b, dict) else None
         if not isinstance(p, int) or p < 1 or p > book["page_count"] or p in seen:
             continue
         seen.add(p)
-        out.append({"page": p, "node": b.get("node"), "chapter": b.get("chapter"), "at": b.get("at") or 0})
+        out.append({"page": p, "node": b.get("node"), "key": b.get("key"), "chapter": b.get("chapter"),
+                    "at": b.get("at") or 0})
     return sorted(out, key=lambda b: b["page"])
 
 
@@ -3009,6 +3273,8 @@ def bookmarks_line(book, folios):
         ch = next((c for c in book["chapters"] if c["start"] <= b["page"] <= c["end"]), None)
         if ch and ch.get("file"):
             href = f'{ch["file"]}#at={b["page"]}:{b.get("node") or ""}'
+            if b.get("key"):
+                href += ":" + urllib.parse.quote(b["key"], safe="")
             parts.append(f'<a href="{html.escape(href)}">{html.escape(name)}</a>')
         else:
             parts.append(html.escape(name))

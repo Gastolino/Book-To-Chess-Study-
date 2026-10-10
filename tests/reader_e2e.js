@@ -355,9 +355,8 @@ async function openChapterOf(page, p) {
     check("with Show reading on, a focused box shows the blue focus outline",
           focused.visible && focused.color === accent && focused.style === "solid", focused);
     await page.evaluate(() => document.activeElement && document.activeElement.blur());
-    // the pencil, a tool of reading mode, goes off with it
-    await page.click("#penbtn");
-    check("the pencil turns on in reading mode", await page.evaluate(() => document.body.classList.contains("pencil") &&
+    // the pencil, the tool reading mode starts with, goes off with it
+    check("the pencil comes on with reading mode", await page.evaluate(() => document.body.classList.contains("pencil") &&
       document.getElementById("penbtn").getAttribute("aria-pressed") === "true"));
     await page.click("#showread");
     const hiddenAgain = await page.evaluate(() => ({ on: document.body.classList.contains("reading"),
@@ -421,7 +420,8 @@ async function openChapterOf(page, p) {
             await page.evaluate(() => !document.getElementById("dpanel").hidden));
       await page.click("#dclose");
     } else await page.click("#showread");
-    // reading mode: a tap on the diagram opens its panel
+    // reading mode, with the pencil it starts with turned off: a tap on the diagram opens its panel
+    if (await page.evaluate(() => document.body.classList.contains("pencil"))) await page.click("#penbtn");
     await diag.click();
     const panel = await page.evaluate((id) => {
       const p = document.getElementById("dpanel");
@@ -743,8 +743,10 @@ async function openChapterOf(page, p) {
         if (m) check("iPhone 13: the current move stays on the page above the board (" + i + ")",
                      m.top >= 0 && m.bottom <= m.boardTop + 1, m);
       }
-      // a correction: the sheet above the bar, a smaller board in the bar, the page above them. The
-      // pencil shows in reading mode (and Show reading moves nothing on the page, so the window
+      // a correction: the pencil's tap asks for the move on the board, so the sheet stands above the
+      // full board, which stays at the foot of the window above the bar, and the page above them (the
+      // small board of the bar is not shown: one board, with squares a finger fits). The pencil shows
+      // in reading mode (and Show reading moves nothing on the page, so the window
       // goes back to where it was)
       const yRead = await pp.evaluate(() => window.scrollY);
       await pp.tap("#showread");
@@ -754,9 +756,9 @@ async function openChapterOf(page, p) {
       check("iPhone 13: in reading mode the boxes are outlined or underlined as before, the current move in the accent colour",
             r390.reading && r390.others.length > 0 && r390.current &&
             accentOutline(r390.current, accent0), { others: r390.others.length, current: r390.current });
-      check("iPhone 13: in reading mode the pencil shows in the bar, and Show reading is pressed",
-            r390.mpen && r390.pen && r390.showread.pressed === "true" && r390.showread.label === "Hide reading", r390);
-      await pp.tap("#mpen");
+      check("iPhone 13: in reading mode the pencil shows in the bar, on, and Show reading is pressed",
+            r390.mpen && r390.pen && r390.showread.pressed === "true" && r390.showread.label === "Hide reading" &&
+            (await pp.evaluate(() => document.getElementById("mpen").getAttribute("aria-pressed"))) === "true", r390);
       const vis = await pp.evaluate(() => {
         const b = document.getElementById("boardblock").getBoundingClientRect();
         const el = [...document.querySelectorAll("#ov .mark")].find((e) => {
@@ -771,17 +773,18 @@ async function openChapterOf(page, p) {
         const f = document.getElementById("fix").getBoundingClientRect(), bar = document.getElementById("mbar").getBoundingClientRect();
         const m = document.querySelector("#mini.on svg"), mr = m ? m.getBoundingClientRect() : null;
         const k = document.querySelector("#ov .mark[data-node='" + id + "']").getBoundingClientRect();
+        const blk = document.getElementById("boardblock").getBoundingClientRect();
         return { fixTop: f.top, fixBottom: f.bottom, barTop: bar.top, mini: mr && { top: mr.top, bottom: mr.bottom, w: mr.width },
+                 blkTop: blk.top, blkBottom: blk.bottom,
                  mark: { top: k.top, bottom: k.bottom }, sw: document.documentElement.scrollWidth, w: window.innerWidth,
-                 stick: document.body.classList.contains("stickboard") };
+                 stick: document.body.classList.contains("stickboard"), held: document.body.classList.contains("threadboard") };
       }, vis);
-      check("iPhone 13: a correction shows its sheet above the bar, a board beside the bar's controls and the move above them",
-            !fx.stick && Math.abs(fx.fixBottom - fx.barTop) <= 2 && fx.fixTop >= 100 && fx.mini && fx.mini.w >= 150 &&
-            fx.mini.top >= fx.barTop - 1 && fx.mini.bottom <= 664 + 1 && fx.mark.top >= 0 && fx.mark.bottom <= fx.fixTop &&
-            fx.sw <= fx.w, fx);
+      check("iPhone 13: a correction shows its sheet above the board, the board above the bar and the move above them",
+            fx.held && !fx.mini && Math.abs(fx.blkBottom - fx.barTop) <= 2 && Math.abs(fx.fixBottom - fx.blkTop) <= 2 &&
+            fx.fixTop >= 60 && fx.mark.top >= 0 && fx.mark.bottom <= fx.fixTop && fx.sw <= fx.w, fx);
       await pp.screenshot({ path: path.join(screens, "sticky_390x664_correction.png") });
       out.screenshots.push("sticky_390x664_correction.png");
-      await pp.tap("#fixclose");
+      await pp.tap("#thcancel, #fixclose");
       await pp.tap("#mpen");
       await pp.waitForTimeout(200);
       const back = await g();
@@ -925,6 +928,8 @@ async function openChapterOf(page, p) {
         await fp.evaluate((fid) => document.querySelector("#ov .mark[data-node='" + fid + "']").click(), fid);
         const readTap = await look();
         check("in reading mode the same tap opens its corrector", readTap.reading && readTap.fix, readTap);
+        // (the pencil comes on with reading mode: its sheet asks for the move, and More has the rest)
+        if (await fp.$("#thmore")) await fp.click("#thmore");
         if (!(await fp.$("#joinline"))) { await fp.click("#showread"); continue; }
         await fp.click("#joinline");
         check("Continue the line… waits for a tap", (await look()).joining);

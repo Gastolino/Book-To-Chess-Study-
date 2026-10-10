@@ -221,9 +221,12 @@ function check(name, cond, detail) {
     s = await state(page);
     check("a tap on the box chooses the move", s.san === "Nb4", s);
 
-    // the pencil opens the section again; Remove these moves removes it
-    await page.click("#penbtn");
-    await page.click(".mark[data-node='" + markId + "']");
+    // the pencil opens the section again; Remove these moves removes it (reading mode, kept over the
+    // reload, brings the pencil with it, so that the tap above opened it already)
+    if (!(await page.evaluate(() => document.body.classList.contains("pencil")))) {
+      await page.click("#penbtn");
+      await page.click(".mark[data-node='" + markId + "']");
+    }
     s = await state(page);
     check("the pencil's tap on the box opens the section", s.open && /Change the moves you read/.test(s.fixText) &&
       await page.inputValue("#rgsan") === "8…Nb4" && near(await section(page), [307, 66, 329, 83], 1.2), s.fixText);
@@ -408,7 +411,8 @@ function check(name, cond, detail) {
     // and the handles there stand inside the page
     await pp.evaluate(() => window.scrollTo(0, 0));
     await pp.waitForTimeout(150);
-    await pp.tap("#mpen");
+    // (the pencil is on with reading mode already)
+    if (!(await pp.evaluate(() => document.body.classList.contains("pencil")))) await pp.tap("#mpen");
     const before = await pp.evaluate(() => ({ left: document.getElementById("pagebox").getBoundingClientRect().left,
       sl: document.getElementById("pagescroll").scrollLeft }));
     const margin = await pp.evaluate(() => READER.pages[4].w - 6);

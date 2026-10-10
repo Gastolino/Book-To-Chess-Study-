@@ -334,6 +334,9 @@ async function run() {
     await a.waitFrame(() => document.body.classList.contains("pencil"));
     await a.inFrame((sel) => document.querySelector(sel).scrollIntoView({ block: "center" }), ".mark[data-node='" + sym.id + "']");
     await (await a.frame()).click(".mark[data-node='" + sym.id + "']");
+    // (the pencil's tap asks for the move on the board: More opens the move's own corrections)
+    await a.waitFrame(() => !!document.getElementById("thmore") || !!document.getElementById("fixsymbol"));
+    await a.inFrame(() => { const b = document.getElementById("thmore"); if (b) b.click(); });
     await a.waitFrame(() => !!document.getElementById("fixsymbol"));
     await (await a.frame()).click("#fixsymbol");
     await a.waitFrame(() => !!document.getElementById("fixsym"));

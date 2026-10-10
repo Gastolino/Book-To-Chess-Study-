@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS books (
   size INTEGER NOT NULL,            -- bytes of the PDF
   added INTEGER NOT NULL,
   opened INTEGER,
-  position TEXT,                    -- JSON {chapter, page, node}: the place last read
+  position TEXT,                    -- JSON {chapter, page, node, key}: the place last read
   position_updated INTEGER,
   reading_version TEXT,             -- the program version that made the stored reading
   reading_size INTEGER,             -- bytes of the reading before gzip

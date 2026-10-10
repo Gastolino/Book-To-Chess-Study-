@@ -270,9 +270,9 @@ const SESSION = (() => {
     // a book opens: the record starts (place: where it opens, or null for the contents page)
     begin(info, place) {
       rec = Object.assign({ id: null, kind: null, title: null, name: null, chapter: null, page: null, node: null,
-                            label: null, view: null }, info);
+                            key: null, label: null, view: null }, info);
       if (place) Object.assign(rec, { chapter: place.chapter || null, page: place.page || null, node: place.node || null,
-                                      label: place.label || null, view: place.view || null });
+                                      key: place.key || null, label: place.label || null, view: place.view || null });
       save();
     },
     title(t) { if (rec && t) { rec.title = t; save(); } },
@@ -283,7 +283,8 @@ const SESSION = (() => {
       if (!rec || !/^ch\\d+\\.html$/.test(openChapter)) return;
       const v = view();
       if (!v || !v.page) return;
-      Object.assign(rec, { chapter: openChapter, page: v.page, node: v.node || null, label: v.label || null, view: v });
+      Object.assign(rec, { chapter: openChapter, page: v.page, node: v.node || null, key: v.key || null,
+                           label: v.label || null, view: v });
       save();
     },
     // the view, a moment after a change
@@ -294,7 +295,10 @@ const SESSION = (() => {
       if (final) stopped = true;
       try { localStorage.removeItem(KEY); } catch (e) { /* no storage */ }
     },
-    place() { return rec && rec.chapter ? { chapter: rec.chapter, page: rec.page, node: rec.node, label: rec.label, view: rec.view } : null; },
+    place() {
+      return rec && rec.chapter ? { chapter: rec.chapter, page: rec.page, node: rec.node, key: rec.key || null,
+                                    label: rec.label, view: rec.view } : null;
+    },
     record() { return rec; },
   };
   // the page hidden, dropped or frozen: the view and the place go to the storage at once
@@ -310,10 +314,13 @@ function backTo(r) {
   const where = r.chapter && r.page ? ", page " + (r.label || r.page) : "";
   return "Back to " + (r.title || "your book") + where;
 }
-// the hash that reopens a chapter at a place: the page, the move and the view
+// the hash that reopens a chapter at a place: the page, the move, the key of its box on that page
+// (the page always shows, and the box decides) and the view
 function placeHash(p) {
   if (!p || !p.page) return "";
-  return "#at=" + p.page + ":" + (p.node || "") + (p.view ? "&v=" + encodeURIComponent(JSON.stringify(p.view)) : "");
+  const key = p.key || (p.view && p.view.key) || "";
+  return "#at=" + p.page + ":" + (p.node || "") + (key ? ":" + encodeURIComponent(key) : "") +
+    (p.view ? "&v=" + encodeURIComponent(JSON.stringify(p.view)) : "");
 }
 // Messages go to the start screen while it shows, and to the top bar after.
 function status(text, error) {
@@ -502,7 +509,7 @@ worker.onmessage = (e) => {
     workSay("Opening the book", null);
     wantOpen = name;
     worker.postMessage({ type: "chapter", name,
-                         hash: place.node || place.view ? placeHash(place) : "#page=" + place.page });
+                         hash: place.node || place.key || place.view ? placeHash(place) : "#page=" + place.page });
   } else if (m.type === "status") {
     if (loading) $("took").textContent = (resumeWords ? resumeWords + ". " : "") + m.text;
     workSay(m.text);
@@ -528,6 +535,19 @@ worker.onmessage = (e) => {
   } else if (m.type === "words" || m.type === "region") {
     // the reader's section of a page: the words around a tap, or the program's reading of it
     toView(m.type === "words" ? { words: m } : { regionRead: m });
+  } else if (m.type === "suggest") {
+    // what follows a move the reader joined: the next printed move the line does not hold
+    toView({ suggested: m });
+  } else if (m.type === "readOn") {
+    // the correction applied and the line read on by itself: the patch goes to the reader as a
+    // correction's does, then what the program joined, the corrections it made and where it stopped
+    prepared = {};
+    working(false);
+    const r = m.result || {};
+    patched({ chapter: m.chapter, result: r });
+    const done = Object.assign({ id: m.id, chapter: m.chapter }, r);
+    delete done.patch;
+    toView({ readOnDone: done });
   } else if (m.type === "patch") {
     prepared = {};
     patched(m);
@@ -549,6 +569,17 @@ worker.onmessage = (e) => {
     if (m.during === "words" || m.during === "region") {
       // the reader says why the section was not read, and the reader may type its moves
       toView({ regionFailed: m.text, id: m.id });
+      return;
+    }
+    if (m.during === "suggest") {
+      // the reader goes on without a suggestion
+      toView({ suggestFailed: m.text, id: m.id });
+      return;
+    }
+    if (m.during === "readOn") {
+      // the correction or the reading on failed: the reader says why, and keeps its corrections
+      working(false);
+      toView({ readOnFailed: m.text, id: m.id });
       return;
     }
     working(false);
@@ -614,7 +645,7 @@ function showBack() {
   let v = null;
   try { const w = $("view").contentWindow; v = w && w.readerView ? w.readerView() : null; } catch (e) { v = null; }
   if (!v || !v.page || !/^ch\d+\.html$/.test(openChapter)) return;
-  backPlace = { chapter: openChapter, page: v.page, node: v.node || null, view: v };
+  backPlace = { chapter: openChapter, page: v.page, node: v.node || null, key: v.key || null, view: v };
   $("backbtn").textContent = "Back to page " + (v.label || v.page);
   $("backbtn").hidden = false;
 }
@@ -851,6 +882,27 @@ window.addEventListener("message", (e) => {
     worker.postMessage(Object.assign({ type: e.data.words ? "words" : "region" }, e.data.words || e.data.region));
     return;
   }
+  if (e.data && e.data.suggest) {
+    // the reader asks what follows a move it joined to its line ({after, before, skip, id})
+    worker.postMessage(Object.assign({ type: "suggest", chapter: openChapter }, e.data.suggest));
+    return;
+  }
+  if (e.data && typeof e.data.tip === "string") {
+    // words of the reader for a few seconds under the bar: how far the program read on, when the
+    // reader closed the sheet meanwhile
+    tip(e.data.tip);
+    return;
+  }
+  if (e.data && e.data.readOn) {
+    // a correction made while threading a line, to apply and read on from at once, before any
+    // other reading ({after, corrections, pages, skip, id}; chapter: the reader's file)
+    if (e.data.chapter) openChapter = e.data.chapter;
+    // (the small book turns its pages while the program reads on)
+    workSay("Reading on from your correction.");
+    working(true);
+    worker.postMessage(Object.assign({ type: "readOn", chapter: openChapter }, e.data.readOn));
+    return;
+  }
   LIB.fromReader(e.data);
   if (e.data && (e.data.position || e.data.view)) { SESSION.soon(); return; }
   if (e.data && e.data.open === "index.html") {
@@ -940,7 +992,7 @@ $("again").addEventListener("click", () => {
   else {
     let v = null;
     try { const w = $("view").contentWindow; v = w && w.readerView ? w.readerView() : null; } catch (e) { v = null; }
-    againPlace = v && v.page ? { chapter: openChapter, page: v.page, node: v.node || null } : null;
+    againPlace = v && v.page ? { chapter: openChapter, page: v.page, node: v.node || null, key: v.key || null } : null;
   }
   outdatedNote = "";
   hideBack();

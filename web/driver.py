@@ -12,7 +12,10 @@ correct() applies the reader's corrections to the book in memory at once
 (chessbook/live.py) and returns a patch for the open chapter reader;
 correct_more() finishes a piece-symbol correction in the other chapters, a
 few at a time. A chapter that opens before correct_more() reaches it gets
-the correction when it is built. The corrections are saved as well, so that
+the correction when it is built. read_on() applies a correction the reader
+makes while threading a line and then reads on by itself from the corrected
+move (joining what clearly continues the line, stored as the program's own
+corrections), before any other work of the worker. The corrections are saved as well, so that
 reading the book again gives the same result. While the book is still
 read, a correction applies to a reading of the open chapter alone, and the
 final book holds every correction.
@@ -567,6 +570,95 @@ def read_region(page, rect_json, at, side="after", other=None):
             alt = {"side": "before" if side == "after" else "after", "fen": str(other), "san": sure[0]["san"]}
     return json.dumps({"text": text, "words": found, "fen": fen, "candidates": cands, "other": alt,
                        "seconds": round(time.perf_counter() - t0, 3)})
+
+
+# ---------------------------------------------------------------- threading a line
+
+def suggest(after, name="", before_json=None, skip_json=None):
+    """What follows a move, for the reader who joins the moves the program
+    could not place to their line one at a time (chessbook/live.py
+    suggest(), assemble._Builder.suggest()): after is the token key or the
+    node id of the move, name the chapter file open in the reader,
+    before_json a JSON list of moves in SAN that the reader gave after it,
+    and skip_json a JSON list of the keys of boxes the reader passed over.
+    While the book is read, the chapter's own reading answers, once it has
+    one. Returns JSON: {"done": true} or the next box, with "seconds"."""
+    t0 = time.perf_counter()
+    before = json.loads(before_json) if before_json else []
+    skip = json.loads(skip_json) if skip_json else []
+    if _loading():
+        job = STATE["job"]
+        s = job.solo.get(job.chapter_index(name)) if name else None
+        if s is None:
+            raise ValueError("The program suggests the next moves once it has read this chapter.")
+        keep = s["keep"]
+    else:
+        _no_state()
+        keep = STATE["keep"]
+    res = live.suggest(keep, str(after), before, skip)
+    res["seconds"] = round(time.perf_counter() - t0, 3)
+    return json.dumps(res)
+
+
+def read_on(after, name="", corrections_json=None, opts_json=None):
+    """After a correction in the chapter file name, read on by itself from
+    the move after (its token key or node id): chessbook/live.py read_on(),
+    assemble._Builder.read_on(). corrections_json is the reader's whole set
+    of corrections with the latest one (the text the reader stores, as
+    correct() takes it; None: the set the book holds now), applied first, so
+    that one call applies the correction, reads on and gives one patch.
+    opts_json: {"pages": the pages to read past the move's page at least
+    (assemble.READ_ON_PAGES), "skip": keys of boxes where the program must
+    not join or fill by itself (its corrections that the reader removed): it
+    stops there, and the corrections returned keep them ("declined"), so
+    that it does not make them again}.
+
+    The worker runs it before any other reading (web/worker.js). While the
+    book is read, it applies to the chapter's own reading (made now when
+    the chapter has none; the pages read are then those of the chapter),
+    and the final book gets the corrections it made.
+
+    Returns JSON: {"patch" (for the chapter, as correct() gives it; None
+    when queued), "pending", "chapter", "queued", "corrections" (the whole
+    set now, with the program's: the reader keeps it), "auto" (the
+    corrections the program made: {"connect": {key: {"after", "before"?,
+    "auto": true}}, "gaps": {key: {"san", "auto": true}}}), "joined",
+    "filled", "moves", "stop", "until", "end" (see assemble read_on),
+    "seconds"}."""
+    t0 = time.perf_counter()
+    opts = json.loads(opts_json) if opts_json else {}
+    pages, skip = opts.get("pages"), opts.get("skip") or []
+    _no_state()
+    if corrections_json:
+        fix = corrections.parse_corrections_text(corrections_json)
+    elif _loading():
+        fix = STATE["job"].fix
+    else:
+        fix = STATE["book"]["corrections"]
+    if _loading():
+        res = STATE["job"].read_on(fix, name, str(after), pages, skip)
+        STATE["data"][name] = STATE["job"].data.get(name, STATE["data"].get(name))
+        STATE["built"].discard(name)
+        corrections.save(res["corrections"], STATE["fix_path"])
+        out = {k: res.get(k) for k in ("patch", "corrections", "auto", "joined", "filled", "moves",
+                                        "stop", "until", "end")}
+        out.update(pending=[], chapter=name, queued=res["queued"],
+                   seconds=round(time.perf_counter() - t0, 3))
+        return json.dumps(out)
+    ch = _chapter_of(name)
+    res = live.read_on(STATE["keep"], STATE["book"], fix, str(after), chapters={ch["index"]},
+                       pages=pages, skip=skip)
+    corrections.save(res["corrections"], STATE["fix_path"])
+    STATE["pending"] = set(res["pending"])
+    patch, data = live.chapter_patch(STATE["book"], ch, STATE["data"].get(name))
+    STATE["data"][name] = data
+    _stale(res, keep=name)
+    out = {k: res[k] for k in ("corrections", "auto", "joined", "filled", "moves", "stop", "until",
+                               "end", "pending")}
+    out.update(patch=patch, chapter=name, queued=False,
+               chapters=len([c for c in STATE["book"]["chapters"] if c["end"] >= c["start"]]),
+               seconds=round(time.perf_counter() - t0, 3))
+    return json.dumps(out)
 
 
 def timeline():
