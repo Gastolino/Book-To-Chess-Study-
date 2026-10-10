@@ -476,6 +476,56 @@ def test_the_app_plumbs_read_on_first(tmp_path):
     assert more.index("await first();") < more.index("driver.correct_more(")
 
 
+
+def test_the_readers_store_keeps_the_programs_corrections():
+    """The reader's store of corrections (review_js.CORRECTIONS_JS, run in
+    node): the program's own corrections that the book holds and the store
+    lacks are kept when a page opens (it read on while the page that asked
+    was gone), unless the reader declined them; those the book drops after a
+    correction go from the store too, unless the reader changed them; a
+    request to read on not answered yet is kept with the corrections."""
+    import shutil
+    import subprocess
+    node = shutil.which("node") or "/opt/node22/bin/node"
+    if not Path(node).exists():
+        pytest.skip("no node")
+    from chessbook.review_js import CORRECTIONS_JS
+    script = CORRECTIONS_JS + r"""
+const mem = {};
+globalThis.localStorage = {getItem: (k) => k in mem ? mem[k] : null, setItem: (k, v) => { mem[k] = v; },
+  removeItem: (k) => { delete mem[k]; }};
+const opts = {pdf: "b.pdf", pageCount: 9, title: "B"};
+const mine = {moves: {q: {san: "Qc1"}}, connect: {q: {after: "b6"}}};
+const auto = {after: "q", before: ["f5"], auto: true, at: "x"};
+const book = {moves: mine.moves, connect: Object.assign({c4: auto, e3: Object.assign({}, auto)}, mine.connect)};
+const out = {};
+let F = makeCorrections({}, opts);
+F.set("moves", "q", mine.moves.q); F.set("connect", "q", mine.connect.q); F.set("declined", "e3", {part: "connect"});
+F.setReading({after: "q", chapter: "ch1.html", id: "a.1"});
+// a page opens while the book holds the program's joins the store lacks
+F = makeCorrections(book, opts);
+out.kept = Object.keys(F.all("connect")).sort();
+out.reading = F.reading();
+F.setReading(null);
+out.noReading = makeCorrections(book, opts).reading();
+// an answer to another page: its program's corrections are kept
+out.again = F.keepAuto({connect: {c4: auto}});
+out.more = F.keepAuto({gaps: {g: {san: ["a5"], auto: true}}}) && !!F.get("gaps", "g");
+// the book drops c4 after a correction; the reader changed g meanwhile
+F.set("gaps", "g", {san: ["a6"], auto: true});
+F.rebase({moves: mine.moves, connect: mine.connect, gaps: {}});
+out.dropped = !F.get("connect", "c4") && !!F.get("gaps", "g") && !!F.get("connect", "q");
+console.log(JSON.stringify(out));
+"""
+    res = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)
+    assert out["kept"] == ["c4", "q"]
+    assert out["reading"] == {"after": "q", "chapter": "ch1.html", "id": "a.1"} and out["noReading"] is None
+    assert out["again"] is False and out["more"] is True
+    assert out["dropped"] is True
+
+
 # ---------------------------------------------------------------- the rules
 # read_on runs by itself after every correction the reader makes, so it never
 # joins or fills a move it is not sure of: it stops and leaves it to the reader.

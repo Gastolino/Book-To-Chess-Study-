@@ -12,7 +12,14 @@
 //   - has the worker fail the first reading on: the sheet says "Not read on: <why>.", the correction
 //     stays as the reader made it and is applied without reading on, and the sheet asks for Black's
 //     5th move, offering f5 (Part C's step); Undo takes the move back;
-//   - turns reading on, taps the "'it'et" box and makes 5.Qc1 on the board: the program reads on
+//   - has the worker answer the next reading on as one made while the book is still read and the
+//     chapter has no reading of its own yet ("queued"): the correction stays, the sheet waits, and
+//     once the book holds the move (a patch) the program reads on from it; Undo then takes it all
+//     back, and the move list and the page come back to 4...Qb6;
+//   - has the program's answer say that it stopped because other moves are printed before the next
+//     box ("ask"): the sheet does not say that the line reads to its end, but asks about the box, as
+//     it did before the program read on by itself;
+//   - taps the "'it'et" box and makes 5.Qc1 on the board: the program reads on
 //     by itself, supplies 5...f5 and joins the game through 12.d6, and stops where Black's 12th move
 //     is missing: the sheet says "Read on to page 6: 14 moves joined." and "Black's 12th move is
 //     missing before 13.Qe3. Play it on the board." (no Play: the program is not sure of a move),
@@ -168,6 +175,75 @@ const GAME = ("d4 Nf6 Bg5 c5 Bxf6 gxf6 d5 Qb6 Qc1 f5 c4 Bh6 e3 f4 exf4 Bxf4 Qxf4
     await lineIs(/play this move/);
     check("Undo takes the move back", JSON.stringify((await fix()).moves) === "{}" &&
           JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 8)), await gameNow());
+    await tapIn("#thcancel");
+
+    // ---------------------------------------------------------------- a reading on queued while the book is read
+    // (the worker answers {readOn} as driver.read_on does when the chapter has no reading yet; then the
+    // chapter's reading arrives holding the correction, which a {correct} of the same set stands for)
+    await page.evaluate(() => {
+      const post = worker.postMessage.bind(worker);
+      window.__sent = [];
+      worker.postMessage = (m, t) => {
+        if (m && m.type) window.__sent.push({ type: m.type, corrections: m.corrections || null });
+        if (m && m.type === "readOn" && !window.__queuedOnce) {
+          window.__queuedOnce = true;
+          const fix = JSON.parse(m.corrections);
+          setTimeout(() => worker.onmessage({ data: { type: "readOn", id: m.id, chapter: m.chapter, result: {
+            patch: null, queued: true, corrections: fix, auto: {}, joined: [], filled: [], moves: 0, stop: null,
+            until: null, end: null, pending: [], chapter: m.chapter } } }), 300);
+          setTimeout(() => post({ type: "correct", corrections: m.corrections, chapter: m.chapter }), 1500);
+          return undefined;
+        }
+        return post(m, t);
+      };
+    });
+    await tapIn(await markSel(itet));
+    await play("d1", "c1");
+    await page.waitForFunction(() => window.__queuedOnce, null, { timeout: 60000 });
+    await page.waitForTimeout(700);
+    const sq = await sheet(), fq = await fix();
+    check("a reading on queued while the book is read keeps the correction, and the sheet waits for the book",
+          sq.line === "Applying your move." && fq.moves[itet] && fq.moves[itet].san === "Qc1" &&
+          JSON.stringify(fq.connect[itet]) === JSON.stringify({ after: await keyOf("Qb6") }), { sq, moves: fq.moves });
+    await lineIs(/is missing before 13/);
+    s0 = await sheet();
+    const sent = await page.evaluate(() => window.__sent.filter((m) => m.type === "readOn" || m.type === "correct"));
+    check("once the book holds the move, the program reads on from it",
+          s0.note === "Read on to page 6: 14 moves joined." && JSON.stringify(sent.map((m) => m.type)) ===
+          JSON.stringify(["readOn", "readOn"]) && JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 23)),
+          { s0, sent: sent.map((m) => m.type) });
+    await tapIn("#thundo");
+    await lineIs(/play this move/);
+    const back = await inFrame(() => ({ page: readerState.page, san: readerState.nodeId && READER.nodes[readerState.nodeId].san }));
+    check("Undo after reading on brings the page and the move list back to 4...Qb6",
+          back.page === 4 && back.san === "Qb6" && JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 8)),
+          back);
+    await tapIn("#thcancel");
+
+    // ---------------------------------------------------------------- the program gave up on moves printed further on
+    // (the answer's stop as read_on gives it where other moves are printed before the next box)
+    await page.evaluate(() => {
+      window.__asked = false;
+      const was = worker.onmessage;
+      worker.onmessage = (e) => {
+        const m = e.data;
+        if (m && m.type === "readOn" && m.result && !window.__asked) {
+          window.__asked = true;
+          m.result.stop = { done: true, ask: true, reason: "other moves are printed between the line's end and 13.Qe3",
+            next: { kind: "run", key: m.result.stop && m.result.stop.key, page: 6 } };
+        }
+        return was(e);
+      };
+    });
+    await tapIn(await markSel(itet));
+    await play("d1", "c1");
+    await lineIs(/is missing before 13|reads to its end/);
+    s0 = await sheet();
+    check("where the program gave up on moves printed further on, the sheet asks about them, and does not say the line ends",
+          s0.note === "Read on to page 6: 14 moves joined." &&
+          s0.line === "Black's 12th move is missing before 13.Qe3. Play it on the board.", s0);
+    await tapIn("#thundo");
+    await lineIs(/play this move/);
     await tapIn("#thcancel");
 
     // ---------------------------------------------------------------- 5.Qc1: read on to the missing move

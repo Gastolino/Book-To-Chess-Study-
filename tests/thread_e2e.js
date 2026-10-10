@@ -104,6 +104,7 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
   };
   const sheet = () => inFrame(() => { const f = document.getElementById("fix");
     return f.hidden ? null : { line: (f.querySelector(".thl") || f).innerText.trim(),
+      note: (f.querySelector(".thr") || { innerText: "" }).innerText.trim(),
       buttons: [...f.querySelectorAll("button")].map((b) => b.textContent.trim()) }; });
   const state = () => inFrame(() => ({ reading: document.body.classList.contains("reading"),
     pencil: document.body.classList.contains("pencil"), joining: document.body.classList.contains("joining"),
@@ -348,10 +349,12 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
                     null, 180000);
     const after = await inFrame((k) => { const el = document.querySelector("#ov .mark.seqcur");
       return { page: readerState.page, box: el ? READER.pages[readerState.page].marks[+el.dataset.mark].key === k : false }; }, nf6);
-    const fw = await fix();
+    const fw = await fix(), took = await sheet();
     check("while the program reads on, the board takes no move and a tap waits; then the tap is taken",
           waiting.line === "Reading on…" && after.page === 4 && after.box && JSON.stringify(fw.added) === "{}" &&
           JSON.stringify(Object.keys(fw.moves)) === JSON.stringify([itet]), { waiting, after, added: fw.added, moves: fw.moves });
+    check("the sheet of the box tapped still says how far the program read, and the correction can be undone",
+          took.note === "Read on to page 5: 9 moves joined." && took.buttons.indexOf("Undo 5.Qc1") >= 0, took);
     check("made again, the line holds the whole game", JSON.stringify(await gameNow()) === JSON.stringify(GAME), await gameNow());
     await tapIn("#thcancel");
     st = await state();

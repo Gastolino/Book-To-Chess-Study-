@@ -887,6 +887,12 @@ window.addEventListener("message", (e) => {
     worker.postMessage(Object.assign({ type: "suggest", chapter: openChapter }, e.data.suggest));
     return;
   }
+  if (e.data && typeof e.data.tip === "string") {
+    // words of the reader for a few seconds under the bar: how far the program read on, when the
+    // reader closed the sheet meanwhile
+    tip(e.data.tip);
+    return;
+  }
   if (e.data && e.data.readOn) {
     // a correction made while threading a line, to apply and read on from at once, before any
     // other reading ({after, corrections, pages, skip, id}; chapter: the reader's file)
