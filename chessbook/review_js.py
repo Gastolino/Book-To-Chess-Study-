@@ -54,6 +54,23 @@ function makeCorrections(applied, opts){
     reset(){ st = canon(applied); try { localStorage.removeItem(key); } catch (e) { /* no storage */ } stored = false; },
     // the book now holds these corrections (the browser app applied them at once)
     rebase(now){ applied = now; },
+    // the whole set at once: the set the book held before a correction (Undo), or the set after the
+    // program read on from one, with its own corrections in it
+    replace(src){ st = canon(src); api.save(); },
+    // the set the program read on with (now) and, on top of it, the changes the reader made since
+    // the request carried sent; true when there were any (they are still to apply)
+    adopt(now, sent){
+      const was = st, base = canon(sent);
+      let mine = false;
+      st = canon(now);
+      for (const p of PARTS) for (const k of new Set(Object.keys(was[p]).concat(Object.keys(base[p])))) {
+        if (same(was[p][k], base[p][k])) continue;
+        mine = true;
+        if (was[p][k] === undefined) delete st[p][k]; else st[p][k] = was[p][k];
+      }
+      st = canon(st); api.save();
+      return mine;
+    },
     stored(){ return stored; }
   };
   return api;
@@ -74,6 +91,11 @@ line-height:0;color:var(--doubt);display:none}
 .reading .eye{display:block}
 .reading .mark.fixed,.k.fixed{outline:1px solid var(--ok)}
 .k.fixed{border-color:var(--ok)}
+/* what the program joined or supplied by itself after a correction: to check, as a doubt is */
+.reading .mark.auto{outline:1px dashed var(--doubt)}
+.k.auto{border:1px dashed var(--doubt)}
+.dot.st-auto{background:var(--doubt)}
+body:not(.reading) .mv .dot.st-auto{display:none}
 .legend .eyek{display:inline-block;width:16px;height:12px;line-height:0;color:var(--doubt)}
 .legend .eyek svg{width:16px;height:12px;fill:none;stroke:currentColor;stroke-width:1.25}
 .mark.seqcur,.reading .mark.seqcur{outline:1.5px solid var(--accent);z-index:3}
@@ -154,6 +176,8 @@ svg.board .hit{fill:transparent;cursor:pointer}
 /* the thread's sheet: one line, then its buttons; the move offered (Play, Join) in the accent colour,
    and on a touch screen each button a tap target of 32 px at least */
 .fix .thl{margin:0}
+/* how far the program read on, above the line that asks: one quiet line */
+.fix .thr{margin:0 0 4px;color:var(--muted)}
 .fix .fixacts .tb.primary{color:var(--accent);font-weight:500}
 @media (pointer:coarse){.fix .fixacts .tb{min-height:32px;padding:6px 0}}
 /* the move the thread offers, as an arrow (the last move keeps its outline) */
@@ -744,7 +768,11 @@ function openGap(key){
   if (fen && done.length) preview(fen, done[done.length - 1][2], "The board shows the position after the moves you gave.");
   else if (g.base) preview(g.base, null, "The board shows the position before the gap.");
   if ($("fixundo")) $("fixundo").addEventListener("click", () => {
-    FIX.set("gaps", key, null); afterFix(); openGap(key);
+    const was = FIX.get("gaps", key);
+    FIX.set("gaps", key, null);
+    // (moves the program supplied by itself, once removed, are not supplied again: corrections.py "declined")
+    if (was && was.auto) FIX.set("declined", key, {part: "gaps"});
+    afterFix(); openGap(key);
     setMsg("The moves you gave are removed. " + applyWords());
   });
   if (!legal.length) return;
@@ -1041,10 +1069,12 @@ function openSymMenu(btn){
 }
 function closeSymMenu(){ const m = $("symmenu"); if (m) { m.hidden = true; m.innerHTML = ""; } }
 
-function afterFix(){
+function afterFix(readFrom){
   // (the reader opened from a file shows the sections read on its pages at once)
   regionRefresh();
-  liveApply();
+  // (a correction of the thread is read on from, in the app: the request's id)
+  const ro = readFrom != null && inApp() ? readOn(readFrom) : 0;
+  if (!ro) liveApply();
   if (RV.on) {
     const keep = RV.cur;
     renderReview();
@@ -1055,6 +1085,7 @@ function afterFix(){
   paintFixes();
   renderInfo();
   placeSheet();
+  return ro;
 }
 function paintFixes(){
   // the boxes and eyes of the page show the corrections stored in this browser
@@ -1070,7 +1101,10 @@ function paintFixes(){
     const fixed = !!(m.corrected || (n && n.corrected) ||
       (n && ["moves", "connect", "disconnect", "gaps"].some((part) => mine(part, n.key))) ||
       (m.seq && (mine("unattached", m.seq) || mine("connect", m.seq))));
-    el.classList.toggle("fixed", fixed);
+    // (a join the program made by itself, when it read on after a correction)
+    const auto = !!(m.auto || (n && n.auto)) && !(n && ["moves", "connect"].some((part) => mine(part, n.key)));
+    el.classList.toggle("fixed", fixed && !auto);
+    el.classList.toggle("auto", auto);
   }
   threadPaint();
 }
@@ -1138,6 +1172,9 @@ function lineActions(id){
   h += "</div><div class='choices lines' id=diagpick hidden></div>";
   if (FIX.get("disconnect", n.key) || (src && src.key && FIX.get("connect", src.key)))
     h += "<div class=fixacts><button class=tb id=lineundo>Remove your change to the line</button></div>";
+  const join = !(src && src.key === n.key) ? FIX.get("connect", n.key) : null;
+  if (join) h += "<div class=fixacts><button class=tb id=joinundo>" + (join.auto ? "Remove the program's join" :
+    "Remove your join") + "</button></div>";
   h += "<p class='small muted'>" + (src && src.key ? "Continue the line… joins the moves from " +
     esc(moveText(first, true)) + " on to another line: you then tap the move after which they follow. " : "") +
     "Not part of this line takes the moves from " + esc(moveText(id, true)) + " to the end of the line out of it.</p>";
@@ -1183,6 +1220,39 @@ function wireLineActions(id){
     }
     done("Your change to the line is removed. " + applyWords());
   });
+  on("joinundo", () => {
+    const was = FIX.get("connect", n.key);
+    FIX.set("connect", n.key, null);
+    if (was && was.auto) FIX.set("declined", n.key, {part: "connect"});
+    done((was && was.auto ? "The program's join is removed. " : "Your join is removed. ") + applyWords());
+  });
+}
+// The program's own corrections, made when it read on after one of the reader's ("auto": a join,
+// with the moves it supplied before it, or the moves it supplied for a gap in the text): the move it
+// supplied or the first it joined shows as doubtful, and the reader may remove the correction, which
+// is then not made again (corrections.py "declined").
+// [part, key] of the program's correction that move id comes from, or null
+function autoEntry(id){
+  const n = D.nodes[id];
+  if (!n || !n.auto) return null;
+  const own = (part, k) => { const v = k ? FIX.get(part, k) : null; return v && v.auto ? [part, k] : null; };
+  if (n.gap) return own("gaps", n.gap);
+  // (a move supplied before a join: the join's first printed move names it)
+  let cur = id;
+  while (cur != null && D.nodes[cur] && !D.nodes[cur].key) cur = cont(cur);
+  return cur != null && D.nodes[cur] ? own("connect", D.nodes[cur].key) : null;
+}
+function autoWords(id){
+  const e = autoEntry(id);
+  return e && e[0] === "connect" ? "Remove the program's join" : "Remove the program's moves";
+}
+function removeAuto(id){
+  const e = autoEntry(id);
+  if (!e) return;
+  FIX.set(e[0], e[1], null);
+  FIX.set("declined", e[1], {part: e[0]});
+  afterFix();
+  say((e[0] === "connect" ? "The program's join is removed. " : "The program's moves are removed. ") + applyWords());
 }
 function startConnect(key, label){
   PEN.connect = {key, label};
@@ -1257,20 +1327,25 @@ function penClick(b){
 // the app's worker says what follows (driver.suggest): the next printed moves to join, a move the
 // numbering says is missing, or a box that does not read, whose move the reader makes in turn. So
 // the reader weaves the line through what the program could not read, until it reads on its own.
-// A correction the book refuses is taken back, and the last one the book took can be undone.
+// In the app each correction is sent with {readOn} (driver.read_on): the worker applies it and reads
+// on by itself, joining and filling what clearly follows (its own corrections, "auto"), and the sheet
+// then says how far it read and asks where it stopped. A correction the book refuses is taken back,
+// and the last one the book took can be undone, with what the program read on after it.
 // TH.step: "own" (the move printed in the box), "gap" (a move missing before it), "next" (moves the
-// program reads on, to join or skip), "wait" (the worker applies, reads, or undoes), "tap" (nothing
+// program reads on, to join or skip), "wait" (the worker applies, reads on, reads, or undoes: TH.wait
+// "patch", "readon", "suggest", "undo"), "tap" (nothing
 // found: the reader taps the next box), "done". TH.kind: what a move made stores: "seq" (a box in no
 // line: its move and the join), "line" (a move of a line: its move), "join" (the moves read on: the
 // join), "gap" (a gap in the text: the moves given for it). TH.anchor is the move the board's
 // position follows, and TH.aspec where it is printed (anchorSpec), which finds it again after a new
 // reading of the chapter; TH.ply is the ply the box's printed number names, TH.boxSan its move as
-// the program reads it there.
+// the program reads it there. TH.note says how far the program read on; TH.held is a box tapped
+// while it reads on, taken once it has answered; TH.ro the id of the request to read on it waits for.
 const TH = {on: false, step: null, kind: null, key: null, box: null, seq: null, page: null, node: null,
   anchor: null, aspec: null, fen: null, uci: null, before: [], need: 0, made: 0, cand: null, sure: false,
   next: null, skip: [], req: 0, probe: 0, seqn: 0, wait: null, sent: null, prev: null, last: null, undo: null,
   stored: false, self: false, said: "", promo: null, offer: null, raw: null, ply: null, boxSan: null,
-  html: "", changed: 0};
+  html: "", changed: 0, note: "", held: null, ro: 0};
 // (the fields a correction's refusal or undo puts back)
 const TH_KEEP = ["kind", "key", "box", "seq", "page", "node", "raw", "ply", "boxSan", "anchor", "aspec", "before",
   "step", "next", "need", "made", "cand", "sure"];
@@ -1279,15 +1354,18 @@ function threadEnd(keepMarks){
   Object.assign(TH, {on: false, step: null, kind: null, key: null, box: null, seq: null, page: null, node: null,
     anchor: null, aspec: null, fen: null, uci: null, before: [], need: 0, made: 0, cand: null, sure: false,
     next: null, skip: [], req: 0, probe: 0, wait: null, sent: null, prev: null, last: null, undo: null,
-    stored: false, said: "", promo: null, offer: null, raw: null, ply: null, boxSan: null, html: "", changed: 0});
+    stored: false, said: "", promo: null, offer: null, raw: null, ply: null, boxSan: null, html: "", changed: 0,
+    note: "", held: null});
   if (!keepMarks) for (const el of document.querySelectorAll("#ov .mark.seqcur")) el.classList.remove("seqcur");
   // the bar names the chosen move again
   setState();
 }
 function threadSource(){
   // the position a move on the board starts from while the thread asks for one, or null (the line
-  // read to its end takes no more moves: they would be stored nowhere)
-  if (!TH.fen || TH.promo || TH.step === "done" || (TH.step === "wait" && TH.wait === "undo")) return null;
+  // read to its end takes no more moves: they would be stored nowhere; nor while the program reads on
+  // from the last one, whose line it changes)
+  if (!TH.fen || TH.promo || TH.step === "done" || (TH.step === "wait" && (TH.wait === "undo" || TH.wait === "readon")))
+    return null;
   return {id: TH.anchor, at: TH.anchor, fen: TH.fen, gap: null, thread: true};
 }
 // a move chosen by the thread: the page and the board stay with the thread's sheet
@@ -1467,6 +1545,8 @@ function threadPost(probe){
 function threadTap(b){
   const m = b.dataset.mark != null ? D.pages[S.page].marks[parseInt(b.dataset.mark, 10)] : null;
   if (!m) return false;
+  // while the program reads on, a tap waits for its answer: it is then taken, on its page
+  if (TH.on && TH.step === "wait" && TH.wait === "readon") { if (m.key) TH.held = {page: S.page, key: m.key}; return true; }
   // a box of the moves the sheet offers to join: the tap joins them
   if (TH.on && TH.step === "next" && TH.next && m.key && (m.key === TH.next.key ||
       (TH.next.decoded || []).some(d => d.key === m.key))) { threadStore(null, ""); return true; }
@@ -1497,6 +1577,8 @@ function threadTap(b){
 }
 // a tap on a move in the move list: the move a box in no line follows, while its move is asked for
 function threadTree(id){
+  // (while the program reads on, the move list waits too)
+  if (TH.on && TH.step === "wait" && TH.wait === "readon") return true;
   if (!(TH.on && TH.kind === "seq" && (TH.step === "own" || TH.step === "gap"))) return false;
   const n = D.nodes[id];
   if (n && n.fen && n.parent != null) threadAnchor(id, null);
@@ -1559,7 +1641,9 @@ function threadReveal(){
 // the bar under a phone's page names the move the board shows
 function threadLabel(){
   const t = $("mtxt");
-  if (t && TH.fen) t.innerHTML = "<span class=n>" + esc(lastText()) + "</span>";
+  // (while the book applies the move made, or reads on from it, the board still shows it)
+  const made = TH.step === "wait" && TH.prev && /^\d/.test(TH.prev.text || "") ? TH.prev.text : null;
+  if (t && TH.fen) t.innerHTML = "<span class=n>" + esc(made || lastText()) + "</span>";
 }
 function threadShow(){
   if (!TH.on) return;
@@ -1580,6 +1664,11 @@ function threadShow(){
     else if (n && n.san && n.status !== "failed") line = "Play this move" + pageNote(TH.page) + ".";
     else line = "After <span class=n>" + esc(lastText()) + "</span>, play this move" + pageNote(TH.page) + ".";
     if (play) B.push(["thplay", "Play " + play[0], () => threadMove(play), true]);
+    // (a move the program joined by itself: its join may go)
+    if (TH.kind === "line" && autoEntry(TH.node)) {
+      const id = TH.node;
+      B.push(["thauto", "Remove join", () => { closeSheet(); removeAuto(id); }]);
+    }
     if (threadMoreTarget()) B.push(["thmore", "More", threadMore]);
   } else if (TH.step === "gap") {
     const name = boxName();
@@ -1593,6 +1682,7 @@ function threadShow(){
     B.push(["thjoin", "Join", () => threadStore(null, ""), true], ["thskip", "Skip", threadSkip]);
   } else if (TH.step === "wait") {
     line = TH.wait === "undo" ? "Undoing." : TH.wait === "suggest" ? "Looking for what follows." :
+      TH.wait === "readon" ? "Reading on…" :
       TH.sent && TH.sent.kind === "join" && TH.sent.san == null ? "Joining." : "Applying your move.";
   } else if (TH.step === "tap") {
     line = "Tap the next move on the page.";
@@ -1602,7 +1692,8 @@ function threadShow(){
   // the last move the book took can be taken back
   if (TH.last && !TH.promo && TH.step !== "wait") B.push(["thundo", "Undo" + (TH.last.text ? " " + TH.last.text : ""), threadUndo]);
   if (!TH.promo) B.push(TH.step === "done" ? ["thclose", "Close", threadCancel] : ["thcancel", "Cancel", threadCancel]);
-  let h = "<p class=thl>" + line + "</p><p class='fixmsg small' id=fixmsg role=status></p>";
+  let h = (TH.note ? "<p class='thr small'>" + esc(TH.note) + "</p>" : "") + "<p class=thl>" + line +
+    "</p><p class='fixmsg small' id=fixmsg role=status></p>";
   h += "<div class=fixacts>" + B.map(b => "<button class='tb" + (b[3] ? " primary" : "") + "' id=" + b[0] + ">" +
     esc(b[1]) + "</button>").join("") + "</div>";
   // (a sheet that changed under the reader's finger: the offer in its first place waits a moment, so
@@ -1636,7 +1727,7 @@ function threadMore(){
 }
 function threadSkip(){
   TH.skip.push(TH.key);
-  TH.said = "";
+  TH.said = ""; TH.note = "";
   threadAsk();
 }
 // Cancel or Close (or Escape): the thread ends, the corrections made stay, and the page goes back to
@@ -1649,7 +1740,7 @@ function threadCancel(){
 // a move made on the board while the thread asks for one
 function threadMove(m){
   if (!TH.on || !TH.fen) return;
-  TH.said = "";
+  TH.said = ""; TH.note = "";
   // the move the line already holds there: nothing to correct, the move is chosen
   if (TH.step === "own" && TH.kind === "line") {
     const n = D.nodes[TH.node];
@@ -1693,16 +1784,19 @@ function threadRestore(st){
   if (!TH.fen) TH.step = "tap";
   if (TH.page != null && TH.page !== S.page && (TH.page in D.pages)) showPage(TH.page);
 }
-// the correction a move (or Join) makes, stored and sent to the worker
+// the correction a move (or Join) makes, stored and sent to the worker: in the app with {readOn}, so
+// that the program reads on from it at once
 function threadStore(san, text){
   const spec = TH.anchor != null ? anchorSpec(TH.anchor) : null;
   if (TH.kind !== "line" && TH.kind !== "gap" && !spec) {
     TH.said = "The line has no printed move to go on from."; TH.fen = threadFen(); threadShow(); return;
   }
-  // what the correction changes, as it stands now (the corrections a refusal or Undo puts back)
+  // what the correction changes, as it stands now (the corrections a refusal or Undo puts back), and
+  // the whole set (Undo after reading on also takes back what the program joined after it)
   const parts = TH.kind === "line" ? [["moves", TH.key]] : TH.kind === "gap" ? [["gaps", TH.key]] :
     TH.kind === "seq" ? [["moves", TH.key], ["connect", TH.key]] : [["connect", TH.key]];
   const snap = parts.map(([p, k]) => [p, k, FIX.get(p, k) == null ? null : JSON.parse(JSON.stringify(FIX.get(p, k)))]);
+  const whole = FIX.object();
   const state = threadState();
   // (a gap in the text asks for its moves again from the first)
   if (TH.kind === "gap") {
@@ -1724,13 +1818,25 @@ function threadStore(san, text){
   }
   const [part, pkey] = parts[parts.length - 1];
   TH.sent = {kind: TH.kind, key: TH.key, san, after: spec ? spec.after : null, part, pkey};
-  TH.prev = {snap, state, text, part, pkey};
-  TH.stored = true; TH.before = []; TH.need = 0; TH.made = 0; TH.cand = null; TH.next = null;
-  TH.step = "wait"; TH.wait = "patch";
-  afterFix();
+  TH.prev = {snap, whole, state, text, part, pkey};
+  TH.stored = true; TH.before = []; TH.need = 0; TH.made = 0; TH.cand = null; TH.next = null; TH.note = "";
+  TH.step = "wait"; TH.wait = inApp() ? "readon" : "patch";
+  TH.ro = afterFix(TH.key);
   // the reader opened from a file applies nothing: the corrections wait for the next run
   if (!inApp()) { TH.step = "done"; TH.last = TH.prev; TH.prev = null; TH.sent = null; }
   threadShow();
+}
+// why the book does not hold the correction sent (TH.sent), in one line; "" when it does
+function threadRefusal(s){
+  const id = nodeByKey(s.key), n = id ? D.nodes[id] : null;
+  let ok = !!n;
+  if (ok && (s.kind === "seq" || s.kind === "join")) { const a = nodeByKey(s.after); ok = !!a && D.nodes[a].line === n.line; }
+  if (ok && s.kind === "line") ok = !!n.san && sanKey(n.san) === sanKey(s.san);
+  if (ok && s.kind === "gap") ok = !!n.fen;
+  if (ok) return "";
+  const u = seqInfo(s.key) || seqInfo(TH.prev.state.seq);
+  const why = ((u && u.reason) || (n && n.reason) || "the program could not place it").replace(/, so it does not join after .*$/, "");
+  return s.kind === "line" ? "Not taken: " + why + "." : cap(why) + ".";
 }
 // the book holds the correction, or says why it does not
 function threadPatched(p){
@@ -1744,31 +1850,65 @@ function threadPatched(p){
     threadReveal();
     return;
   }
+  // (a correction read on from: its patch comes first, then what the program read, readOnDone)
   if (TH.wait !== "patch" || !TH.sent) return;
   const s = TH.sent;
   // (a patch for an earlier correction, which the worker sent before this one: the answer is still to come)
   if (FIX.pending(s.part, s.pkey)) return;
-  const id = nodeByKey(s.key), n = id ? D.nodes[id] : null;
-  let ok = !!n;
-  if (ok && (s.kind === "seq" || s.kind === "join")) { const a = nodeByKey(s.after); ok = !!a && D.nodes[a].line === n.line; }
-  if (ok && s.kind === "line") ok = !!n.san && sanKey(n.san) === sanKey(s.san);
-  if (ok && s.kind === "gap") ok = !!n.fen;
-  if (!ok) {
+  const why = threadRefusal(s);
+  if (why) {
     // (a new reading of the chapter while the book is read is not the answer)
     if (p.reading !== undefined) return;
-    const u = seqInfo(s.key) || seqInfo(TH.prev.state.seq);
-    const why = ((u && u.reason) || (n && n.reason) || "the program could not place it").replace(/, so it does not join after .*$/, "");
-    threadRefused(s.kind === "line" ? "Not taken: " + why + "." : cap(why) + ".");
+    threadRefused(why);
     return;
   }
   TH.last = TH.prev; TH.prev = null; TH.sent = null;
   // the reader is on the line's last move; moves made meanwhile go on from it when it is that move
-  const end = branchEnd(id);
+  const id = nodeByKey(s.key), end = branchEnd(id);
   if (end !== id) TH.before = [];
   threadSetAnchor(end);
   threadSelect(end, {fromPage: true});
   TH.fen = threadFen();
   threadAsk();
+}
+// the program read on from the correction sent ({moves, end, stop, ...}; its corrections are the
+// store's already): one line says how far, and the sheet asks where it stopped
+function threadReadOn(a){
+  const s = TH.sent;
+  if (!s) return;
+  const why = threadRefusal(s);
+  if (why) { TH.held = null; threadRefused(why); return; }
+  TH.last = TH.prev; TH.prev = null; TH.sent = null; TH.before = [];
+  // the line's last move: the one corrected, or the last the program joined after it
+  const end = branchEnd((a.end && nodeByKey(a.end)) || nodeByKey(s.key));
+  threadSetAnchor(end);
+  TH.note = a.moves > 0 ? "Read on to " + pageName(anchorPage()) + ": " + a.moves + (a.moves === 1 ? " move" : " moves") +
+    " joined." : "";
+  const stop = a.stop || {done: true};
+  if (stop.done) {
+    // the line reads to its end: the page turns forward to its last move
+    const p = anchorPage();
+    threadSelect(end, p != null && p > S.page ? {} : {fromPage: true});
+    TH.fen = threadFen();
+    TH.step = "done";
+    threadShow();
+  } else {
+    threadSelect(end, {fromPage: true});
+    threadAt(stop);
+  }
+  say(TH.note);
+  threadHeld();
+}
+// a box tapped while the program read on: taken now, on its page
+function threadHeld(){
+  const h = TH.held;
+  TH.held = null;
+  if (!h || !(h.page in D.pages)) return;
+  const i = D.pages[h.page].marks.findIndex(m => m.key === h.key);
+  if (i < 0) return;
+  if (h.page !== S.page) showPage(h.page);
+  const el = document.querySelector("#ov .mark[data-mark='" + i + "']");
+  if (el) penClick(el);
 }
 // a correction the book refuses (or could not apply) is taken back: the store holds what it held
 // before, and the sheet asks again, saying why
@@ -1776,18 +1916,21 @@ function threadRefused(said){
   const was = TH.prev;
   TH.prev = null; TH.sent = null;
   if (!was) { TH.step = "tap"; TH.said = said; threadShow(); return; }
-  for (const [p, k, v] of was.snap) FIX.set(p, k, v);
+  if (was.whole) FIX.replace(was.whole);
+  else for (const [p, k, v] of was.snap) FIX.set(p, k, v);
   afterFix();
   threadRestore(was.state);
   TH.said = said;
   threadShow();
 }
-// Undo: the last correction the book took is taken back, and the sheet asks for that move again
+// Undo: the last correction the book took is taken back (with what the program read on after it),
+// and the sheet asks for that move again
 function threadUndo(){
   const u = TH.last;
   if (!u) return;
-  TH.last = null; TH.next = null; TH.req = 0; TH.probe = 0; TH.said = "";
-  for (const [p, k, v] of u.snap) FIX.set(p, k, v);
+  TH.last = null; TH.next = null; TH.req = 0; TH.probe = 0; TH.said = ""; TH.note = "";
+  if (u.whole) FIX.replace(u.whole);
+  else for (const [p, k, v] of u.snap) FIX.set(p, k, v);
   afterFix();
   if (!inApp()) { threadRestore(u.state); threadShow(); threadReveal(); return; }
   TH.undo = u; TH.step = "wait"; TH.wait = "undo";
@@ -1816,6 +1959,11 @@ function threadSuggested(a){
   if (a.id !== TH.req || TH.step !== "wait") return;
   TH.req = 0;
   if (r.done) { TH.step = "done"; threadShow(); return; }
+  threadAt(r);
+}
+// the next box the line does not hold (a suggestion, or where the program stopped reading on): the
+// sheet asks for it
+function threadAt(r){
   const from = r.after_node && D.nodes[r.after_node] ? r.after_node : r.after ? nodeByKey(r.after) : null;
   if (from && from !== TH.anchor) { threadSetAnchor(from); threadSelect(from, {fromPage: true}); }
   // (the page of the line's last printed move: the box may stand on the page after it)
@@ -1858,10 +2006,61 @@ function threadFailed(text){
 }
 
 /* ---------------- corrections applied at once (the browser app) */
+// RO: the request to read on under way (its id, and the corrections it carried). A correction made
+// meanwhile waits for its answer, which holds the program's own corrections, and goes after it (as
+// does a second request to read on: queued).
+const RO = {id: 0, n: 0, sent: null, again: false, queued: null};
 function liveApply(){
   if (!inApp()) return;
+  if (RO.id) { RO.again = true; return; }
   say("Applying your correction.");
   parent.postMessage({correct: FIX.text(), chapter: D.chapter.file}, "*");
+}
+// a correction of the thread: the worker applies it and reads on from the move after (its key) at
+// once, before any other reading, through the rest of the chapter and the next five pages at least
+// (driver.read_on); the reader's removals of the program's corrections are in the set ("declined")
+function readOn(after){
+  const id = ++RO.n;
+  if (RO.id) RO.queued = {after, id}; else readOnSend(after, id);
+  return id;
+}
+function readOnSend(after, id){
+  RO.id = id; RO.sent = FIX.object(); RO.again = false;
+  parent.postMessage({readOn: {after, corrections: FIX.text(), pages: 5, skip: [], id},
+    chapter: D.chapter.file}, "*");
+}
+// what goes next: the request queued meanwhile (with the store as it is now), else the corrections
+// made meanwhile, when the book does not hold them yet
+function readOnNext(mine, again){
+  const q = RO.queued;
+  RO.queued = null;
+  if (q) readOnSend(q.after, q.id);
+  else if (mine || (again && FIX.anyPending())) liveApply();
+}
+// the program read on: the set it answers with is the store's (its own corrections, flagged "auto",
+// must hold through the next correction), with the reader's changes made meanwhile on top
+function readOnDone(a){
+  if (!a || !RO.id || a.id !== RO.id) return;
+  const sent = RO.sent, again = RO.again;
+  RO.id = 0; RO.sent = null; RO.again = false;
+  const mine = a.corrections ? FIX.adopt(a.corrections, sent) : false;
+  if (TH.on && TH.step === "wait" && TH.wait === "readon" && TH.ro === a.id) threadReadOn(a);
+  else {
+    // (the thread was closed meanwhile: the page shows what the program joined)
+    paintFixes(); renderInfo();
+    say(a.moves > 0 ? "Read on: " + a.moves + (a.moves === 1 ? " move" : " moves") + " joined." : "");
+  }
+  readOnNext(mine, again);
+}
+// reading on failed: the sheet says why, and the book applies the corrections as the reader made them
+function readOnFailed(text, id){
+  if (!RO.id || id !== RO.id) return;
+  RO.id = 0; RO.sent = null; RO.again = false;
+  const why = "Not read on: " + String(text || "").replace(/\.\s*$/, "") + ".";
+  if (TH.on && TH.step === "wait" && TH.wait === "readon" && TH.ro === id) {
+    TH.wait = "patch"; TH.held = null; TH.said = why; threadShow();
+  } else say(why);
+  readOnNext(true, true);
 }
 function applyPatch(p){
   // the changes the app's worker made to this chapter's data: the page and the move stay put
@@ -1958,6 +2157,8 @@ function initPencil(){
     else if (m.progress) say(m.progress);
     else if (m.failed) { say(m.failed); threadFailed(m.failed); }
     else if (m.suggested) threadSuggested(m.suggested);
+    else if (m.readOnDone) readOnDone(m.readOnDone);
+    else if (m.readOnFailed !== undefined) readOnFailed(m.readOnFailed, m.id);
     else if (m.suggestFailed !== undefined) threadNoSuggestion(m.id, m.suggestFailed);
   });
 }

@@ -66,6 +66,7 @@ STATUS_WORDS = {
     "unattached": "Placed in no line",
     "corrected": "Corrected by you",
     "added": "Added by you",
+    "auto": "Joined by the program",
 }
 
 # What each kind of picture is, in words for the reader.
@@ -1260,7 +1261,8 @@ function showPage(p){
     b.dataset.mark = i;
     const n = m.node ? D.nodes[m.node] : null;
     let t = n ? (n.san || n.assumed || "“" + shown(m.raw) + "”") : "“" + shown(m.raw) + "”";
-    t += ": " + lcfirst(m.corrected || (n && n.corrected) ? D.words.corrected : (D.words[m.status] || m.status));
+    t += ": " + lcfirst(m.auto || (n && n.auto) ? D.words.auto : m.corrected || (n && n.corrected) ? D.words.corrected :
+      (D.words[m.status] || m.status));
     if (m.reason) t += ", because " + m.reason;
     t += ".";
     if (m.ref && n) t = "“" + shown(m.raw) + "” names " + moveText(m.node, true) + ", a move the line has played.";
@@ -1867,7 +1869,8 @@ function moveText(id, needNumber){ return moveNumber(id, needNumber) + moveBody(
 function moveHtml(id, needNumber){ return esc(moveNumber(id, needNumber)) + moveBodyHtml(id); }
 function mvHtml(id, needNumber){
   const n = D.nodes[id];
-  let tip = n.corrected === "added" ? D.words.added : n.corrected ? D.words.corrected : (D.words[n.status] || n.status);
+  let tip = n.auto ? (n.corrected === "assumed" ? D.words.inserted : D.words.auto) : n.corrected === "added" ? D.words.added :
+    n.corrected ? D.words.corrected : (D.words[n.status] || n.status);
   if (n.status === "failed" && n.assumed) tip += "; the program assumed " + n.assumed;
   if (n.raw && n.status !== "ok") tip += "; the text recognition read “" + shown(n.raw) + "”";
   const num = moveNumber(id, needNumber);
@@ -1876,6 +1879,7 @@ function mvHtml(id, needNumber){
   const mine = n.corrected === "added" && !(D.nodes[n.parent] && D.nodes[n.parent].corrected === "added");
   return "<button class='" + cls + "' tabindex='-1' data-node='" + id + "' title='" + esc(tip) + "'>" +
     (n.status === "failed" ? "<i class='dot st-failed'></i>" : "") + (mine ? "<i class='dot st-added'></i>" : "") +
+    (n.auto ? "<i class='dot st-auto'></i>" : "") +
     (num ? "<span class=mn>" + esc(num) + "</span>" : "") + "<span class=san>" + moveBodyHtml(id) +
     "</span></button>";
 }
@@ -1998,6 +2002,11 @@ function statusLines(n){
   if (n.corrected === "added")
     return ["added", esc(D.words.added), [n.region ? "You read this move in a section of " + esc(pageName(n.region.page)) +
       " where the program had found no move." : "You added this move on the board, in a variation of your own."].concat(out)];
+  // a move the program supplied, or the first of the moves it joined, when it read on after a correction
+  if (n.auto && (n.corrected === "assumed" || n.corrected === "connected"))
+    return n.corrected === "assumed" ? ["guessed", esc(D.words.inserted),
+      ["The book's text lacks this move: the program supplied it, from the moves printed after it."].concat(out)] :
+      ["auto", esc(D.words.auto), ["The program joined these moves to the line here."].concat(out)];
   if (n.corrected) {
     const why = n.corrected === "move" ? "You gave this move." :
       n.corrected === "placed" ? "You placed this variation here." :
@@ -2049,6 +2058,10 @@ function renderInfo(){
         h += "<p class='small rtool'><button class=tb id=fixthis>Correct this move</button></p>";
       else if (n.corrected === "added" && !(RV.edit && RV.edit.node === S.node))
         h += "<p class=small><button class=tb id=fixadded>Change your variation</button></p>";
+      // the program's own correction (read on after one of the reader's): the reader may remove it
+      const own = autoEntry(S.node);
+      if (own && !(RV.edit && RV.edit.kind === "thread"))
+        h += "<p class='small rtool'><button class=tb id=fixauto>" + esc(autoWords(S.node)) + "</button></p>";
     }
   }
   box.innerHTML = h;
@@ -2056,6 +2069,7 @@ function renderInfo(){
   if ($("fixthis")) $("fixthis").addEventListener("click", () => openMove(S.node));
   if ($("fixadded")) $("fixadded").addEventListener("click", () => openAdded(S.node));
   if ($("fixgapbtn")) $("fixgapbtn").addEventListener("click", () => openGap(gapKeyOf(S.node)));
+  if ($("fixauto")) $("fixauto").addEventListener("click", () => removeAuto(S.node));
 }
 
 function openIfFailed(id){
@@ -2690,6 +2704,7 @@ __PGNBTN__
 <span><i class="k wait"></i><i class="u"></i>Waits for board reading (Stage 3)</span>
 <span><i class="k unatt"></i>Placed in no line</span>
 <span><i class="k fixed"></i>Corrected by you</span>
+<span><i class="k auto"></i>Joined by the program</span>
 <span><i class="dot st-added"></i>Added by you on the board</span>
 <span><i class="eyek">__EYE__</i>Piece symbol the text recognition could not name</span>
 <span><i class="k off"></i>Diagram left out</span>
@@ -2785,7 +2800,7 @@ def chapter_data(book, ch, pgn_text, engine=False):
                 "folio": pg.get("folio"),
                 "diagrams": pg["diagrams"],
                 "marks": [{k: m[k] for k in ("bbox", "node", "status", "raw", "line", "reason",
-                                             "key", "seq", "symbol", "known", "corrected", "ref")
+                                             "key", "seq", "symbol", "known", "corrected", "auto", "ref")
                            if k in m} for m in pg["marks"]]}
     lines = {}
     order = []
@@ -2811,7 +2826,7 @@ def chapter_data(book, ch, pgn_text, engine=False):
                 nn["alternatives"] = n["alternatives"]
             if n.get("reason"):
                 nn["reason"] = n["reason"]
-            for k in ("key", "corrected", "gap", "added", "added_before", "added_stale", "region"):
+            for k in ("key", "corrected", "auto", "gap", "added", "added_before", "added_stale", "region"):
                 if n.get(k):
                     nn[k] = n[k]
             if n.get("gap") and not n.get("san"):

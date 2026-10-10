@@ -1,6 +1,6 @@
 // End-to-end test of the thread in the browser app (tools/build_web.py), in Chromium, with Python
 // running through Pyodide in the page's worker: the reader corrects a line move by move on the
-// board, and the program reads on from each move (chessbook/review_js.py, "the thread").
+// board, and the program reads on by itself from each move (chessbook/review_js.py, "the thread").
 //
 // Usage:
 //   NODE_PATH=/opt/node22/lib/node_modules node tests/thread_e2e.js SITE_URL BOOK_PDF SCREENS_DIR
@@ -8,7 +8,7 @@
 // BOOK_PDF is the generated book of tests/test_thread.py (make_wells): Wells - Shirov reads to
 // 4...Qb6; White's fifth move is printed as "5.'it'et" and stands in no line; Black's fifth move
 // is missing from the text; "6.c4 Bh6 7.e3 f4 8.exf4 Bxf4 9.Qxf4 Qxb2" stands in no line on the
-// next page. On an iPad held upright, in the dark scheme, the test:
+// next page, and the game ends there. On an iPad held upright, in the dark scheme, the test:
 //   - finds Show reading in the row under the board, between End (#bend) and Turn the board round
 //     (#bflip), on a 375 px phone, an upright iPad, a sideways iPad and a desktop, and a Show reading
 //     on screen there with no move chosen (on the phone and the upright iPad, in the bar at the foot);
@@ -19,12 +19,20 @@
 //     join the program refuses says why in the sheet;
 //   - taps the box again: the move is made on the full board, which stays in view under the sheet
 //     (the small board of the bar is not shown); makes 5.Qc1 there: the correction (its move, and
-//     the join after 4...Qb6) is stored, the line holds 5.Qc1, and the sheet says that Black's 5th
-//     move is missing before 6.c4, with f5 offered and 5.Qc1 to undo;
-//   - makes 5...f5 on the board: the sheet offers the moves read on from there, 6.c4 Bh6 7.e3 ...;
-//   - joins them: the line holds the whole game, the join stores f5 as the move given before it,
-//     and the sheet says the line reads to its end; Undo takes the join back and offers the moves
-//     again, and Join joins them again; Close leaves no thread and no joining.
+//     the join after 4...Qb6) is stored and sent with {readOn}; the sheet says "Reading on…", the
+//     board keeps the position after 5.Qc1 and the small book of the top bar turns its pages; the
+//     program then reads on by itself: it supplies 5...f5 and joins 6.c4 ... 9...Qxb2, the whole
+//     game, with no further tap; the sheet says "Read on to page 5: 9 moves joined." and "The line
+//     reads to its end.", the page turns forward to the line's end, the program's join is stored as
+//     its own ("auto") and shows so (a dashed outline, the legend's "Joined by the program"), and f5
+//     as supplied by the program in the move list;
+//   - Undo takes back 5.Qc1 and the program's join after it, and the sheet asks for the move again;
+//     made again with the worker slowed down, a move made on the board while the program reads on
+//     is not taken, and a box tapped meanwhile is taken once it has answered; the line holds the
+//     whole game; Cancel leaves no thread and no joining;
+//   - the page is loaded again: the program's join is still stored and the line holds the game;
+//   - a tap on the program's join opens the usual sheet, whose "Remove join" removes it and stores
+//     the removal (corrections.py "declined"): the line ends at 5.Qc1 again.
 // Prints one JSON object {ok, checks, errors, screenshots}; the exit code is 1 when a check fails.
 const { chromium } = require("playwright");
 const path = require("path");
@@ -79,11 +87,20 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
   // tap does not take it)
   const tapOffer = async (sel) => { await page.waitForTimeout(450); await tapIn(sel); };
   const tapIn = async (sel) => {
-    const f = await frame();
-    const el = await f.$(sel);
-    if (!el) throw new Error("nothing at " + sel);
-    await el.scrollIntoViewIfNeeded();
-    await el.tap();
+    for (let i = 0; ; i++) {
+      try {
+        const f = await frame();
+        const el = await f.$(sel);
+        if (!el) throw new Error("nothing at " + sel);
+        await el.scrollIntoViewIfNeeded();
+        await el.tap();
+        return;
+      } catch (e) {
+        // (the app may show the chapter again, as after a reload)
+        if (i > 20 || !/detached/.test(String(e))) throw e;
+        await page.waitForTimeout(250);
+      }
+    }
   };
   const sheet = () => inFrame(() => { const f = document.getElementById("fix");
     return f.hidden ? null : { line: (f.querySelector(".thl") || f).innerText.trim(),
@@ -235,7 +252,23 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
     await waitFrame((k) => !READER.corrections.connect[k], itet, 120000);
     await tapIn("#fixclose");
 
-    // ---------------------------------------------------------------- 5.Qc1, made on the board
+    // ---------------------------------------------------------------- 5.Qc1, made on the board: the app reads on
+    // (what the sheet said meanwhile, line by line, and whether the small book showed the work)
+    await inFrame(() => {
+      window.__said = [];
+      const note = () => {
+        const f = document.getElementById("fix");
+        if (f.hidden) return;
+        const t = [...f.querySelectorAll(".thr, .thl")].map((p) => p.innerText.trim()).join(" | ");
+        if (t && window.__said[window.__said.length - 1] !== t) window.__said.push(t);
+      };
+      new MutationObserver(note).observe(document.getElementById("fix"), { childList: true, subtree: true, characterData: true });
+    });
+    await page.evaluate(() => {
+      window.__busy = false;
+      new MutationObserver(() => { if (document.getElementById("busy").classList.contains("on") && /Reading on/.test(workWords)) window.__busy = true; })
+        .observe(document.getElementById("busy"), { attributes: true });
+    });
     await tapIn(await markSel(itet));
     t0 = Date.now();
     await play("d1", "c1");
@@ -243,51 +276,131 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
     check("the move made on the board stores the box's move and its join after 4...Qb6, at once",
           f1.moves[itet] && f1.moves[itet].san === "Qc1" && JSON.stringify(f1.connect[itet]) === JSON.stringify({ after: qb6 }),
           { moves: f1.moves, connect: f1.connect });
-    await shot("04_applying");
-    await waitFrame(() => { const f = document.getElementById("fix"), l = f.querySelector(".thl");
-      return !f.hidden && l && /missing/.test(l.innerText); }, null, 120000);
-    out.timings["Qc1 made until the next step shows (s)"] = (Date.now() - t0) / 1000;
     s = await sheet();
-    check("the line holds 5.Qc1", JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 9)), await gameNow());
-    check("the sheet says Black's 5th move is missing before 6.c4 and offers f5, and 5.Qc1 to undo",
-          s.line === "Black's 5th move is missing before 6.c4." && s.buttons[0] === "Play f5" &&
-          s.buttons.indexOf("Undo 5.Qc1") >= 0 && s.buttons.indexOf("Cancel") >= 0, s);
-    await shot("05_missing_move");
-
-    // ---------------------------------------------------------------- 5...f5, then the moves read on
-    await play("f6", "f5");
-    await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /^Next:/.test(l.innerText); }, null, 120000);
-    s = await sheet();
-    check("after f5 the sheet offers the moves read on from there",
-          /^Next: 6\.c4 Bh6 7\.e3 f4 8\.exf4 Bxf4 …( \(page \d+\))?$/.test(s.line) &&
-          JSON.stringify(s.buttons) === JSON.stringify(["Join", "Skip", "Undo 5.Qc1", "Cancel"]), s);
-    await shot("06_next");
-    t0 = Date.now();
-    await tapOffer("#thjoin");
-    await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /reads to its end/.test(l.innerText); }, null, 120000);
-    out.timings["Join until the line reads to its end (s)"] = (Date.now() - t0) / 1000;
+    const held = await inFrame(() => {
+      const svg = [...document.querySelectorAll("svg.board")].find((x) => x.getBoundingClientRect().width > 0);
+      return { fen: svg ? svg.getAttribute("aria-label").replace("Chess board: ", "") : "" };
+    });
+    check("while the program reads on the sheet says so and the board keeps the position after 5.Qc1",
+          s.line === "Reading on…" && JSON.stringify(s.buttons) === JSON.stringify(["Cancel"]) &&
+          held.fen.split(" ").slice(0, 2).join(" ") === "rnb1kb1r/pp1ppp1p/1q3p2/2pP4/8/8/PPP1PPPP/RNQ1KBNR b", { s, held });
+    await shot("04_reading_on");
+    await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /reads to its end/.test(l.innerText); },
+                    null, 180000);
+    out.timings["Qc1 made until the program has read on (s)"] = (Date.now() - t0) / 1000;
+    const all = await inFrame(() => window.__said), lines = all.slice(all.indexOf("Reading on…"));
+    check("the sheet said, line by line: reading on, then how far it read and that the line reads to its end",
+          lines.length === 2 && lines[0] === "Reading on…" &&
+          lines[1] === "Read on to page 5: 9 moves joined. | The line reads to its end.", lines);
+    check("the small book showed the work", await page.evaluate(() => window.__busy));
+    check("the line holds the whole game, with no further tap", JSON.stringify(await gameNow()) === JSON.stringify(GAME),
+          await gameNow());
     const f2 = await fix();
-    check("Join stores the join of 6.c4 after 5.Qc1 with f5 given before it (after, then before)",
-          JSON.stringify(f2.connect[c4]) === JSON.stringify({ after: itet, before: ["f5"] }), f2.connect);
-    check("the line holds the whole game", JSON.stringify(await gameNow()) === JSON.stringify(GAME), await gameNow());
+    check("the program's join is stored as its own, with the move it supplied before it, and the reader's as it was",
+          f2.connect[c4] && f2.connect[c4].after === itet && JSON.stringify(f2.connect[c4].before) === JSON.stringify(["f5"]) &&
+          f2.connect[c4].auto === true && JSON.stringify(f2.connect[itet]) === JSON.stringify({ after: qb6 }) &&
+          f2.moves[itet].san === "Qc1", f2.connect);
     s = await sheet();
-    check("the sheet says the line reads to its end", s.line === "The line reads to its end." &&
-          JSON.stringify(s.buttons) === JSON.stringify(["Undo", "Close"]), s);
-    await shot("07_done");
-    // Undo takes the join back: the moves are offered again, and Join joins them again
+    check("Undo offers the reader's move, Close ends", JSON.stringify(s.buttons) === JSON.stringify(["Undo 5.Qc1", "Close"]), s);
+    const shown = await inFrame((c4) => {
+      const i = READER.pages[readerState.page].marks.findIndex((m) => m.key === c4);
+      const el = i >= 0 ? document.querySelector("#ov .mark[data-mark='" + i + "']") : null;
+      const f5 = [...document.querySelectorAll("#tree .mv[data-node]")].find((b) => READER.nodes[b.dataset.node].san === "f5");
+      return { page: readerState.page, auto: !!el && el.classList.contains("auto"), fixed: !!el && el.classList.contains("fixed"),
+        outline: el ? getComputedStyle(el).outlineStyle : null, f5dot: !!f5 && !!f5.querySelector(".dot.st-auto"),
+        f5tip: f5 ? f5.title : null,
+        legend: [...document.querySelectorAll(".legend > span")].some((x) => x.textContent === "Joined by the program") };
+    }, c4);
+    check("the page turned forward to the line's end, where the program's join shows as its own, and f5 as supplied",
+          shown.page === 5 && shown.auto && !shown.fixed && shown.outline === "dashed" && shown.f5dot &&
+          /^Supplied by the program/.test(shown.f5tip) && shown.legend, shown);
+    await shot("05_read_on");
+
+    // ---------------------------------------------------------------- Undo takes it all back
     await tapIn("#thundo");
-    await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /^Next:/.test(l.innerText); }, null, 120000);
-    check("Undo takes the join back and offers the moves again",
-          !(await fix()).connect[c4] && JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 9)),
-          { connect: (await fix()).connect, game: await gameNow() });
-    await tapOffer("#thjoin");
-    await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /reads to its end/.test(l.innerText); }, null, 120000);
-    check("Join after Undo joins them again", JSON.stringify(await gameNow()) === JSON.stringify(GAME), await gameNow());
-    await tapIn("#thclose");
+    await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && /play this move/.test(l.innerText); },
+                    null, 120000);
+    const f3 = await fix();
+    s = await sheet();
+    check("Undo takes back the reader's move and the program's join after it, and asks for the move again",
+          !f3.moves[itet] && !f3.connect[itet] && !f3.connect[c4] && JSON.stringify(f3.declined) === "{}" &&
+          JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 8)) && s.line === "After 4…Qb6, play this move.",
+          { fix: f3, game: await gameNow(), s });
+    await shot("06_undone");
+    await tapIn("#thcancel");
+    // made again, with the worker slowed down: while it reads on, a move made on the board is not
+    // taken, and a tap on a box waits for the answer, which then takes it
+    await page.evaluate(() => {
+      const post = worker.postMessage.bind(worker);
+      worker.postMessage = (m, t) => {
+        if (m && m.type === "readOn") { setTimeout(() => post(m, t), 1500); return undefined; }
+        return post(m, t);
+      };
+    });
+    await tapIn(await markSel(itet));
+    await play("d1", "c1");
+    await page.waitForTimeout(200);
+    await play("b6", "b5");
+    const nf6 = await keyOf("Nf6");
+    await tapIn(await markSel(nf6));
+    const waiting = await sheet();
+    await waitFrame(() => { const l = document.querySelector("#fix .thl"); return l && l.innerText === "Play this move."; },
+                    null, 180000);
+    const after = await inFrame((k) => { const el = document.querySelector("#ov .mark.seqcur");
+      return { page: readerState.page, box: el ? READER.pages[readerState.page].marks[+el.dataset.mark].key === k : false }; }, nf6);
+    const fw = await fix();
+    check("while the program reads on, the board takes no move and a tap waits; then the tap is taken",
+          waiting.line === "Reading on…" && after.page === 4 && after.box && JSON.stringify(fw.added) === "{}" &&
+          JSON.stringify(Object.keys(fw.moves)) === JSON.stringify([itet]), { waiting, after, added: fw.added, moves: fw.moves });
+    check("made again, the line holds the whole game", JSON.stringify(await gameNow()) === JSON.stringify(GAME), await gameNow());
+    await tapIn("#thcancel");
     st = await state();
-    check("Close leaves no sheet, no thread and no joining", !st.open && !st.joining &&
+    check("Cancel leaves no sheet, no thread and no joining", !st.open && !st.joining &&
           !(await inFrame(() => !!document.querySelector("#ov .mark.seqcur"))), st);
-    await shot("08_closed");
+
+    // ---------------------------------------------------------------- a reload keeps the program's entries
+    await page.waitForFunction(() => !saving, null, { timeout: 300000 });
+    await page.waitForTimeout(1000);
+    await page.reload();
+    // (the app comes back to the book, or its library lists it)
+    const shelf = () => { const b = document.querySelector("#books li.book .open"); return !!b && !!b.offsetParent; };
+    await page.waitForFunction((shelf) => document.getElementById("view").style.display === "block" || eval(shelf)(),
+                               shelf.toString(), { timeout: 600000 });
+    if (await page.evaluate(() => document.getElementById("view").style.display !== "block"))
+      await page.click("#books li.book .open");
+    await waitFrame(() => window.READER && window.readerState && !!readerState.page, null, 600000);
+    await waitFrame((k) => { const D = READER, id = Object.keys(D.nodes).find((x) => D.nodes[x].key === k);
+      if (!id) return false;
+      let n = 0;
+      for (let cur = D.lines[D.nodes[id].line].root; ;) { const c = D.nodes[cur].children.find((x) => D.nodes[x].main);
+        if (!c) break; n++; cur = c; }
+      return n === 18; }, d4Key, 300000);
+    const f4 = await fix();
+    check("after a reload the program's entries are kept, and the line holds the whole game",
+          f4.connect[c4] && f4.connect[c4].auto === true && JSON.stringify(await gameNow()) === JSON.stringify(GAME) &&
+          (await inFrame((c4) => READER.corrections.connect[c4] && READER.corrections.connect[c4].auto === true, c4)),
+          { connect: f4.connect });
+
+    // ---------------------------------------------------------------- the reader removes the program's join
+    // (the app may show the chapter again meanwhile: the page is asked for until it shows)
+    for (let i = 0; !(await inFrame(() => readerState.page === 5)); i++) {
+      if (i > 60) throw new Error("page 5 does not show");
+      await inFrame(() => { location.hash = "#page=5"; });
+      await page.waitForTimeout(500);
+    }
+    if (!(await state()).pencil) await tapIn("#showread");
+    await tapIn(await markSel(c4));
+    s = await sheet();
+    check("a tap on the program's join opens the usual sheet, which can remove it",
+          s && s.line === "Play this move." && s.buttons.indexOf("Remove join") >= 0, s);
+    await shot("07_programs_join");
+    await tapIn("#thauto");
+    for (let t = Date.now(); (await gameNow() || []).length !== 9 && Date.now() - t < 120000;) await page.waitForTimeout(200);
+    const f5 = await fix();
+    check("removing it stores it as declined, and the line ends at 5.Qc1 again",
+          !f5.connect[c4] && JSON.stringify(f5.declined[c4]) === JSON.stringify({ part: "connect" }) &&
+          JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 9)), { fix: f5, game: await gameNow() });
+    await shot("08_declined");
     out.ok = true;
   } catch (e) {
     out.failure = String(e && e.stack || e);

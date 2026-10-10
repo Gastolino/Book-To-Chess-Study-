@@ -542,6 +542,7 @@ worker.onmessage = (e) => {
     // the correction applied and the line read on by itself: the patch goes to the reader as a
     // correction's does, then what the program joined, the corrections it made and where it stopped
     prepared = {};
+    working(false);
     const r = m.result || {};
     patched({ chapter: m.chapter, result: r });
     const done = Object.assign({ id: m.id, chapter: m.chapter }, r);
@@ -577,6 +578,7 @@ worker.onmessage = (e) => {
     }
     if (m.during === "readOn") {
       // the correction or the reading on failed: the reader says why, and keeps its corrections
+      working(false);
       toView({ readOnFailed: m.text, id: m.id });
       return;
     }
@@ -889,6 +891,9 @@ window.addEventListener("message", (e) => {
     // a correction made while threading a line, to apply and read on from at once, before any
     // other reading ({after, corrections, pages, skip, id}; chapter: the reader's file)
     if (e.data.chapter) openChapter = e.data.chapter;
+    // (the small book turns its pages while the program reads on)
+    workSay("Reading on from your correction.");
+    working(true);
     worker.postMessage(Object.assign({ type: "readOn", chapter: openChapter }, e.data.readOn));
     return;
   }
