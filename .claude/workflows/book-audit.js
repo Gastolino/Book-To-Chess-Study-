@@ -4,7 +4,7 @@ export const meta = {
   whenToUse: 'To check the reader against the printed books after a change, or when the program still fails on a book: finds failures, refutes the false ones, groups them by cause, fixes each cause on its own branch with a test, and reviews every fix against all the books.',
   phases: [
     { title: 'Find', detail: 'one auditor per book and lens (reading, correcting) and per app run' },
-    { title: 'Verify', detail: 'a skeptic per finding, on the page' },
+    { title: 'Verify', detail: 'skeptics, up to six findings each, every one checked on the page' },
     { title: 'Diagnose', detail: 'group the confirmed findings by their cause in the code' },
     { title: 'Fix', detail: 'one branch with a test per cause, in its own worktree' },
     { title: 'Review', detail: 'an adversarial review of each fix against all the books' },
@@ -80,6 +80,14 @@ const VERDICT = {
     reason: { type: 'string' },
   },
   required: ['verdict', 'reproduced', 'what_the_page_shows', 'reason'],
+}
+const VERDICTS = {
+  type: 'object',
+  properties: {
+    verdicts: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, ...VERDICT.properties },
+                                        required: ['id', ...VERDICT.required] } },
+  },
+  required: ['verdicts'],
 }
 const CAUSES = {
   type: 'object',
@@ -194,21 +202,23 @@ the screenshot paths, what should happen, and the cause in the code where you ca
 (chessbook/review_js.py, chessbook/reader.py, web/driver.py, tools/build_web.py). At most 12 patterns.`
 }
 
-function verifyPrompt(f) {
+function verifyPrompt(fs) {
   return `${COMMON}
 
-You are a skeptic. Another auditor reports this failure of the program; try to REFUTE it.
-${JSON.stringify(f, null, 1)}
+You are a skeptic. Another auditor reports these failures of the program; try to REFUTE each of them,
+one at a time, as if it were the only one (they come from one book, and one may be right where its
+neighbour is wrong):
+${JSON.stringify(fs, null, 1)}
 
-Reproduce it yourself from scratch with the commands given (and your own). Look at the page picture and
-say what the book prints there, in your own words, before you read the finding's claim again. Refute it
-when the page shows the program right, when the claim rests on the text layer or a scan entry alone,
-when you cannot reproduce it, or when the "failure" is how the program is meant to work by its own
-documented rules (read the docstring of the function concerned; a documented rule that misleads the
-reader is still a failure). Say "book-error" when the book itself misprints. If it stands, read the
-code and state the cause precisely (module, function, the lines, the mechanism), correct the severity
-if it is wrong, and make your own count of the pattern in the book. When in doubt, answer "uncertain",
-never "confirmed".`
+For each: reproduce it yourself from scratch with the commands given (and your own). Look at the page
+picture and say what the book prints there, in your own words, before you read the finding's claim
+again. Refute it when the page shows the program right, when the claim rests on the text layer or a scan
+entry alone, when you cannot reproduce it, or when the "failure" is how the program is meant to work by
+its own documented rules (read the docstring of the function concerned; a documented rule that misleads
+the reader is still a failure). Say "book-error" when the book itself misprints. If it stands, read the
+code and state the cause precisely (module, function, the lines, the mechanism), correct the severity if
+it is wrong, and make your own count of the pattern in the book. When in doubt, answer "uncertain",
+never "confirmed". Return one verdict for every finding, with its id.`
 }
 
 function diagnosePrompt(confirmed) {
@@ -295,6 +305,7 @@ const idOf = (book, lens, i) => `${book}-${lens}-${i + 1}`
 
 let confirmed = A.findings || []
 let refuted = []
+let unverified = []
 let coverage = []
 
 if (MODE !== 'solve') {
@@ -315,23 +326,27 @@ if (MODE !== 'solve') {
       coverage.push({ book: it.book, lens: it.lens, coverage: found.coverage, healthy: found.healthy || '' })
       const fs = (found.findings || []).map((f, i) => ({ id: idOf(it.book, it.lens, i), book: it.book, lens: it.lens, ...f }))
       log(`${it.book}/${it.lens}: ${fs.length} findings to verify`)
-      return parallel(fs.map((f) => () =>
-        agent(verifyPrompt(f), { label: `verify:${f.id}`, phase: 'Verify', schema: VERDICT })
-          .then((v) => ({ ...f, verdict: v }))))
+      const chunks = []
+      for (let i = 0; i < fs.length; i += 6) chunks.push(fs.slice(i, i + 6))
+      return parallel(chunks.map((ch, k) => () =>
+        agent(verifyPrompt(ch), { label: `verify:${it.book}/${it.lens}#${k + 1}`, phase: 'Verify', schema: VERDICTS })
+          .then((r) => ch.map((f) => ({ ...f, verdict: ((r && r.verdicts) || []).find((v) => v.id === f.id) || null })))))
+        .then((rs) => rs.flat().filter(Boolean))
     },
   )
   const verified = results.filter(Boolean).flat().filter(Boolean)
   for (const f of verified) {
     const v = f.verdict || {}
+    if (!f.verdict) { unverified.push(f); continue }
     if (v.verdict === 'confirmed') confirmed.push({ ...f, severity: v.severity || f.severity, cause: v.cause || f.cause,
                                                    page_shows: v.what_the_page_shows, count: v.count || f.count })
     else refuted.push({ id: f.id, title: f.title, verdict: v.verdict || 'no verdict', reason: v.reason || '' })
   }
-  log(`${confirmed.length} findings confirmed, ${refuted.length} refuted or uncertain`)
-  if (MODE === 'find') return { coverage, confirmed, refuted }
+  log(`${confirmed.length} findings confirmed, ${refuted.length} refuted or uncertain, ${unverified.length} not verified (an agent failed)`)
+  if (MODE === 'find') return { coverage, confirmed, refuted, unverified }
 }
 
-if (!confirmed.length) return { coverage, confirmed, refuted, causes: [], fixes: [] }
+if (!confirmed.length) return { coverage, confirmed, refuted, unverified, causes: [], fixes: [] }
 
 phase('Diagnose')
 const diag = await agent(diagnosePrompt(confirmed), { label: 'diagnose', phase: 'Diagnose', schema: CAUSES })
@@ -357,7 +372,7 @@ const fixes = await pipeline(
 )
 
 phase('Report')
-const all = { coverage, confirmed, refuted, causes, unexplained: (diag && diag.unexplained) || [],
+const all = { coverage, confirmed, refuted, unverified, causes, unexplained: (diag && diag.unexplained) || [],
               fixes: fixes.filter(Boolean), left: causes.slice(todo.length) }
 const report = await agent(reportPrompt(all), { label: 'report', phase: 'Report' })
 return { ...all, report }
