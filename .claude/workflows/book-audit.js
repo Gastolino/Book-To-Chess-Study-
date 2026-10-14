@@ -18,7 +18,9 @@ export const meta = {
 //   lenses     ["reading", "correcting"] by default
 //   app        [{book, device}] runs of the browser app; default [{book: "planning", device: "ipad"}]
 //   base       the code digest of the readings to compare with (tools/audit/books.py code_digest())
-//   findings   confirmed findings from an earlier "find" run (mode "solve")
+//   findings   confirmed findings from earlier "find" runs (mode "solve"; tools/audit/runs.py gathers them)
+//   findingsFile  the JSON file that holds them in full (runs.py's output): the diagnosis gets a short
+//              form of each finding, and the fixers and reviewers read the full one from this file
 //   maxCauses  how many causes to fix, worst first (default 8)
 //   stamp      a name for the report file (output/audit/reports/<stamp>.md)
 //   trailer    the lines that end each commit message (the session's attribution), if any
@@ -226,7 +228,7 @@ function diagnosePrompt(confirmed) {
 
 These failures of the program were found in the books and confirmed by a second auditor on the page:
 ${JSON.stringify(confirmed, null, 1)}
-
+${FULL}
 Group them by their cause in the code: one cause is one mechanism that a single change can remove,
 whatever books it shows in. Read the code of each cause (chessbook/movetext.py, chessbook/assemble.py,
 chessbook/pdftext.py, chessbook/boards.py, chessbook/live.py, chessbook/review_js.py, chessbook/reader.py,
@@ -250,6 +252,7 @@ Create the branch audit/${c.id} in your worktree (git checkout -b audit/${c.id})
 
 You are told to FIX one cause of the program's failures, in your own git worktree.
 ${JSON.stringify(c, null, 1)}
+${FULL}
 ${again}
 1. Write a test with a generated book that shows the failure (the tests named in the cause, and the
    README's "Fixing"); run it and see it fail before you change the code.
@@ -274,6 +277,7 @@ function reviewPrompt(c, fx) {
 Review this fix adversarially, in your own git worktree. It claims to remove a cause of failures:
 CAUSE: ${JSON.stringify(c, null, 1)}
 FIX: ${JSON.stringify(fx, null, 1)}
+${FULL}
 
 Check out the branch's commit (git checkout --detach ${fx.branch}). Check that the new test fails on the base (check out
 the base versions of the files the fix changed under chessbook/, web/ or tools/, run the test, restore
@@ -301,6 +305,12 @@ The audit's results:
 ${JSON.stringify(all, null, 1)}`
 }
 
+const FILE = A.findingsFile || ''
+const cut = (x, n) => (typeof x === 'string' && x.length > n ? x.slice(0, n) + '…' : x)
+const brief = (f) => ({ id: f.id, book: f.book, lens: f.lens, severity: f.severity, title: f.title, pages: (f.pages || []).slice(0, 6),
+                        keys: (f.keys || []).slice(0, 3), printed: cut(f.printed, 300), program: cut(f.program, 400),
+                        expected: cut(f.expected, 300), count: f.count, cause: cut(f.cause, 700) })
+const FULL = FILE ? `\nThe full findings (evidence and the commands that reproduce them) are in ${FILE}, by id.` : ''
 const idOf = (book, lens, i) => `${book}-${lens}-${i + 1}`
 
 let confirmed = A.findings || []
@@ -349,7 +359,7 @@ if (MODE !== 'solve') {
 if (!confirmed.length) return { coverage, confirmed, refuted, unverified, causes: [], fixes: [] }
 
 phase('Diagnose')
-const diag = await agent(diagnosePrompt(confirmed), { label: 'diagnose', phase: 'Diagnose', schema: CAUSES })
+const diag = await agent(diagnosePrompt(confirmed.map(brief)), { label: 'diagnose', phase: 'Diagnose', schema: CAUSES })
 const causes = (diag && diag.causes) || []
 const todo = causes.slice(0, MAX_CAUSES)
 if (causes.length > todo.length) log(`Fixing the ${todo.length} worst causes; left for later: ${causes.slice(todo.length).map((c) => c.id).join(', ')}`)
@@ -372,7 +382,7 @@ const fixes = await pipeline(
 )
 
 phase('Report')
-const all = { coverage, confirmed, refuted, unverified, causes, unexplained: (diag && diag.unexplained) || [],
+const all = { coverage, confirmed: confirmed.map(brief), refuted, unverified: unverified.map(brief), causes, unexplained: (diag && diag.unexplained) || [],
               fixes: fixes.filter(Boolean), left: causes.slice(todo.length) }
 const report = await agent(reportPrompt(all), { label: 'report', phase: 'Report' })
 return { ...all, report }
