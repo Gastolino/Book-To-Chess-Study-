@@ -14,8 +14,9 @@ chessbook/live.py, the code the app's worker runs:
                            every correction (live.read_on, the open chapter,
                            at least 5 pages)
     --move KEY=SAN         a move correction alone (live.apply)
-    --connect KEY=AFTER[:SAN,SAN]   join the run at KEY after the move AFTER,
-                           with the moves the text lacks between them
+    --connect "KEY->AFTER[|SAN,SAN]"   join the run at KEY after the move AFTER
+                           (a key or a node id), with the moves the text lacks
+                           between them
     --gap KEY=SAN[,SAN]    moves missing after the move KEY
     --disconnect KEY[=here|remove|DIAGRAM]
     --attach KEY=TO|dismiss   tie an unattached sequence to a main-line move
@@ -23,7 +24,11 @@ chessbook/live.py, the code the app's worker runs:
     --glyph JUNK=P         a garbled piece symbol and its piece (K Q R B N P)
     --read-on KEY          read on from KEY after the corrections
     --skip KEY             a correction of the program's that the reader removed
-    --suggest KEY          what the program offers to follow KEY (live.suggest)
+    --suggest KEY          what the program offers to follow KEY (live.suggest),
+                           once the corrections given are applied
+
+Keys hold colons, commas and sometimes "=" (a printed promotion), so every
+option also takes "KEY->VALUE": "--board '7:30,88:e8=Q->e8=Q'".
 
 The report gives the time, the lines that changed with their statuses
 before and after, what read_on joined and filled and where it stopped, the
@@ -33,6 +38,7 @@ ask the reader about next (the first doubtful or unread move after it).
 """
 import argparse
 import json
+import re
 import sys
 import time
 from collections import Counter
@@ -82,6 +88,15 @@ def fmt(b, nid):
     return s + "]"
 
 
+def pair(item):
+    """KEY and VALUE of "KEY->VALUE", or of "KEY=VALUE" (split at the last "=")."""
+    if "->" in item:
+        k, v = item.split("->", 1)
+    else:
+        k, v = item.rsplit("=", 1)
+    return k.strip(), v.strip()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("book")
@@ -102,34 +117,39 @@ def main():
     fix = fixes.normalise(json.loads(a.start.read_text()) if a.start else {})
     read_from = a.read_on
     for item in a.board:
-        k, san = item.rsplit("=", 1)
+        k, san = pair(item)
         fix["moves"][k] = {"san": san}
         read_from = k
     for item in a.move:
-        k, san = item.rsplit("=", 1)
+        k, san = pair(item)
         fix["moves"][k] = {"san": san}
     for item in a.connect:
-        k, rest = item.split("=", 1)
-        after, _, before = rest.partition(":")
-        e = {"after": after}
+        if "->" not in item:
+            raise SystemExit('--connect takes "KEY->AFTER" or "KEY->AFTER|SAN,SAN" (keys hold colons).')
+        k, rest = pair(item)
+        after, _, before = rest.partition("|")
+        e = {"after": after.strip()}
         if before:
             e["before"] = [s for s in before.split(",") if s]
         fix["connect"][k] = e
     for item in a.gap:
-        k, sans = item.rsplit("=", 1)
+        k, sans = pair(item)
         fix["gaps"][k] = {"san": [s for s in sans.split(",") if s]}
     for item in a.disconnect:
-        k, _, how = item.partition("=")
-        how = how or "here"
+        if "->" in item:
+            k, how = pair(item)
+        else:
+            m = re.match(r"(.*)=(here|remove|p\d+-\d+)$", item)
+            k, how = (m.group(1), m.group(2)) if m else (item, "here")
         fix["disconnect"][k] = {"remove": True} if how == "remove" else {"start": how}
     for item in a.attach:
-        k, to = item.rsplit("=", 1)
+        k, to = pair(item)
         fix["unattached"][k] = {"attach_to": to}
     for item in a.diagram:
-        k, fen = item.split("=", 1)
-        fix["diagrams"][k] = {"fen": fen}
+        k, fen = item.split("->", 1) if "->" in item else item.split("=", 1)
+        fix["diagrams"][k.strip()] = {"fen": fen.strip()}
     for item in a.glyph:
-        k, p = item.rsplit("=", 1)
+        k, p = pair(item)
         fix["glyphs"][k] = p
     fix = fixes.normalise(fix)
 
@@ -138,6 +158,8 @@ def main():
     t = time.perf_counter()
     try:
         if a.suggest:
+            if any(fix[k] for k in fix if isinstance(fix[k], dict)):
+                live.apply(state, book, fix)
             res = live.suggest(state, a.suggest)
             print(json.dumps(res, indent=1, default=str)[:6000])
             result["suggest"] = res

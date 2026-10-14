@@ -62,9 +62,13 @@ the app's worker runs: `--board KEY=SAN` is the reader making the move on
 the board for the printed move KEY, after which the program reads on (the
 open chapter, at least 5 pages), as in the app. It prints what changed,
 what was joined and filled, the line from the corrected move on, and the
-move the app asks about next. Other corrections: `--connect`, `--gap`,
+move the app asks about next. Other corrections: `--connect
+"KEY->AFTER|SAN,SAN"` (keys hold colons, so a join is written with `->`,
+and the moves the text lacks before the run follow `|`), `--gap`,
 `--disconnect`, `--attach`, `--diagram`, `--glyph`, `--skip`, and
-`--suggest KEY` (what the program offers after a move).
+`--suggest KEY` (what the program offers after a move, with the
+corrections given applied first). Every option takes `KEY->VALUE` as well
+as `KEY=VALUE`.
 
 `app_lib.js` opens a book in the browser app in Chromium (Pyodide, the
 reader, the board, the sheet) and drives it as a reader does; its head
