@@ -21,6 +21,8 @@ export const meta = {
 //   findings   confirmed findings from earlier "find" runs (mode "solve"; tools/audit/runs.py gathers them)
 //   findingsFile  the JSON file that holds them in full (runs.py's output): the diagnosis gets a short
 //              form of each finding, and the fixers and reviewers read the full one from this file
+//   briefFile  a JSON file with the short forms (runs.py --brief): with it, "solve" needs no findings in
+//              its args, and the diagnosis and the report read the findings from the files
 //   maxCauses  how many causes to fix, worst first (default 8)
 //   stamp      a name for the report file (output/audit/reports/<stamp>.md)
 //   trailer    the lines that end each commit message (the session's attribution), if any
@@ -227,7 +229,7 @@ function diagnosePrompt(confirmed) {
   return `${COMMON}
 
 These failures of the program were found in the books and confirmed by a second auditor on the page:
-${JSON.stringify(confirmed, null, 1)}
+${confirmed ? JSON.stringify(confirmed, null, 1) : `they are the "confirmed" list of ${BRIEF} (read all of it)`}
 ${FULL}
 Group them by their cause in the code: one cause is one mechanism that a single change can remove,
 whatever books it shows in. Read the code of each cause (chessbook/movetext.py, chessbook/assemble.py,
@@ -302,7 +304,8 @@ which books, what it risks, and the reviewer's decision; what still fails and ha
 counts that the auditors counted and no others.
 
 The audit's results:
-${JSON.stringify(all, null, 1)}`
+${JSON.stringify(all, null, 1)}
+${BRIEF ? `The confirmed and refuted findings themselves are in ${BRIEF}${FILE ? ` (in full in ${FILE})` : ''}.` : ''}`
 }
 
 const FILE = A.findingsFile || ''
@@ -356,10 +359,11 @@ if (MODE !== 'solve') {
   if (MODE === 'find') return { coverage, confirmed, refuted, unverified }
 }
 
-if (!confirmed.length) return { coverage, confirmed, refuted, unverified, causes: [], fixes: [] }
+const BRIEF = A.briefFile || ''
+if (!confirmed.length && !BRIEF) return { coverage, confirmed, refuted, unverified, causes: [], fixes: [] }
 
 phase('Diagnose')
-const diag = await agent(diagnosePrompt(confirmed.map(brief)), { label: 'diagnose', phase: 'Diagnose', schema: CAUSES })
+const diag = await agent(diagnosePrompt(confirmed.length ? confirmed.map(brief) : null), { label: 'diagnose', phase: 'Diagnose', schema: CAUSES })
 const causes = (diag && diag.causes) || []
 const todo = causes.slice(0, MAX_CAUSES)
 if (causes.length > todo.length) log(`Fixing the ${todo.length} worst causes; left for later: ${causes.slice(todo.length).map((c) => c.id).join(', ')}`)
