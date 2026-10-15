@@ -295,12 +295,22 @@ class GlyphModel:
     a character the text lacks. A book whose OCR loses the f-file letter
     ("Nf5" printed "N5") or prints "f3" as "6" then reads those cheaply.
     learn_run() feeds both from one decoded run.
+
+    exact marks a book whose text layer holds the letters it was set in
+    (pdftext.exact_text), not what OCR made of them: a square character is
+    then the file or rank it names and nothing else, a piece letter of the
+    notation is that piece, a move printed without one a pawn's, and no
+    letter stands in the junk OCR makes of a figurine ("Nx", "h" for "Bx").
+    The OCR's confusions (FILE_READ, RANK_READ, C_WRONG_LETTER, C_VANISH) are
+    no readings of such a text, so a move that only they would explain fails.
     """
     PIECES = "KQRBNP"
     DEFAULT = {"K": 0.196, "Q": 0.196, "R": 0.196, "B": 0.196, "N": 0.196, "P": 0.02}
+    exact = False
 
-    def __init__(self, seed: bool = False, kappa: float = 2.0):
+    def __init__(self, seed: bool = False, kappa: float = 2.0, exact: bool = False):
         self.kappa = kappa
+        self.exact = exact
         self.counts: dict[str, Counter] = defaultdict(Counter)
         self.char_counts: dict[str, Counter] = defaultdict(Counter)
         self.piece_totals: Counter = Counter()
@@ -465,6 +475,8 @@ class GlyphModel:
         """Cost of reading file character fch (None: no file printed) as each file."""
         key = ("f", fch, rank_missing)
         hit = self._square_cache.get(key)
+        if hit is None and self.exact and fch is not None:
+            hit = self._square_cache[key] = _exact(FILE_READ.get(fch, {}))
         if hit is None:
             default = FILE_READ.get(fch, {}) if fch is not None else \
                 {f: C_MISSING_FILE for f in range(8)}
@@ -476,6 +488,8 @@ class GlyphModel:
         """Cost of reading rank character rch (None: no rank printed) as each rank."""
         key = ("r", rch, file_missing)
         hit = self._square_cache.get(key)
+        if hit is None and self.exact and rch is not None:
+            hit = self._square_cache[key] = _exact(RANK_READ.get(rch, {}))
         if hit is None:
             default = RANK_READ.get(rch, {}) if rch is not None else \
                 {r: C_MISSING_RANK for r in range(8)}
@@ -520,6 +534,11 @@ def _strip_spaces(text: Optional[str]) -> str:
     characters \\x1c-\\x1f and \\t, which OCR makes of figurines (the rook's
     "\\x1d"), and so turn a piece move into a pawn move."""
     return (text or "").strip(_REAL_SPACES)
+
+
+def _exact(reads: dict) -> dict:
+    """The readings of a character that are no misreading of it."""
+    return {k: c for k, c in reads.items() if c == 0.0}
 
 
 def _blend(default: dict, counts: Optional[Counter], missing: bool) -> dict:
@@ -797,11 +816,20 @@ class _Scorer:
         hit = self._piece_cache.get(prefix)
         if hit is not None:
             return hit
+        # in an exact text (GlyphModel.exact) no glyph is lost or misread
+        lost = math.inf if self.glyphs.exact else C_VANISH
+        wrong = math.inf if self.glyphs.exact else C_WRONG_LETTER
         if prefix == "":
-            out = {pt: (0.0 if pt == PAWN else C_VANISH) for pt in PIECE_LETTER}
+            out = {pt: (0.0 if pt == PAWN else lost) for pt in PIECE_LETTER}
         elif prefix in self.letters:
             want = self.letters[prefix]
-            out = {pt: (0.0 if pt == want else C_WRONG_LETTER) for pt in PIECE_LETTER}
+            out = {pt: (0.0 if pt == want else wrong) for pt in PIECE_LETTER}
+        elif self.glyphs.exact and (prefix[:1] in _FILE_LETTERS or prefix[:1] in self.letters):
+            # a letter of the notation or a file letter with something after it
+            # ("Nx", "bx": the capture mark taken into the glyph), or a file
+            # letter alone ("h" for "Bx"), is OCR's junk for a figurine, which
+            # a text set in type does not hold
+            out = {pt: math.inf for pt in PIECE_LETTER}
         else:
             pri = self.glyphs.prior(prefix)
             out = {pt: min(-math.log(max(pri[PIECE_LETTER[pt]], 1e-6)), 6.0)
@@ -821,7 +849,8 @@ class _Scorer:
     def plain(self) -> "_Scorer":
         """The same scorer with no glyph knowledge (the unlearnt prior)."""
         if self._plain is None:
-            self._plain = _Scorer(self._letters_arg, None) if len(self.glyphs) else self
+            self._plain = _Scorer(self._letters_arg, GlyphModel(exact=self.glyphs.exact)) \
+                if len(self.glyphs) else self
         return self._plain
 
     def weak_glyph(self, prefix: Optional[str]) -> bool:
@@ -908,9 +937,10 @@ class _Scorer:
         ff, fr = chess.square_file(m.from_square), chess.square_rank(m.from_square)
         need_file = need or (pt == PAWN and is_cap)
         need_rank = same_file
+        exact = self.glyphs.exact
         if p.dfile is not None:
             fc = p.dfile.get(ff)
-            if fc is None:
+            if fc is None or (fc and exact):
                 # long notation names the square the piece leaves: another square
                 # is no reading of it ("Bf1-d4" is not d2-d4)
                 c += C_LONG_FROM if long_form else C_DISAMB_WRONG
@@ -920,7 +950,7 @@ class _Scorer:
             c += C_DISAMB_MISSING
         if p.drank is not None:
             rc = p.drank.get(fr)
-            if rc is None:
+            if rc is None or (rc and exact):
                 c += C_LONG_FROM if long_form else C_DISAMB_WRONG
             else:
                 c += rc + (0.0 if need_rank or long_form or (need and p.dfile is None)
@@ -1473,7 +1503,8 @@ def _scan_continuation(text, pieces, i):
     return Token("number", text[s:e], s, e, None, True, True), j, rest
 
 
-def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[Token]:
+def tokenize(text: str, lenient: bool = False, dotless: bool = False,
+             exact: bool = False) -> list[Token]:
     """Split book text into number, move, result and other tokens.
 
     Offsets index into text and raw == text[start:end]. A word becomes a move
@@ -1494,6 +1525,11 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
     the word after it must look clearly like a move ("13 Bh6", not "2 pawns"),
     and no word such as "Diagram" or "page" may stand before it. Whether the
     move is legal is for decode() to tell.
+
+    exact is for a text layer that holds the letters the book was set in
+    (GlyphModel.exact): there a word after a move is a move only when it
+    prints a square or castling as such (_shape() 'strong'); a word that
+    only OCR's misreadings make a move of ("White's", "Hi", "as") is prose.
     """
     pieces = _pieces(text)
     toks: list[Token] = []
@@ -1803,6 +1839,10 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             shp = _shape(w)
             if w.endswith(":") and _prose_word(w):
                 shp = None                       # "Answer:" after a move is no move
+            if exact and shp != "strong":
+                other(s, e)                      # (no OCR there to have misread a move)
+                i += 1
+                continue
             if shp == "strong" or (shp == "weak" and (
                     next_is_boundary(i + 1) or next_is_strong(i + 1) or _move_like(w)
                     or (i + 1 < len(pieces) and text[pieces[i + 1][0]] == "(")
@@ -1892,15 +1932,16 @@ def _relabel(tokens: list, number: Optional[int], black: bool) -> tuple:
     return n, b
 
 
-def find_sequences(text: str, lenient: bool = False, dotless: bool = False) -> list[Sequence]:
+def find_sequences(text: str, lenient: bool = False, dotless: bool = False,
+                   exact: bool = False) -> list[Sequence]:
     """Maximal runs of moves that begin at a move number or a "..." continuation.
 
     Parenthesised sub-lines come out as runs of their own with depth > 0.
     Within a run, the side of each move follows the run's numbering, which
-    also settles numbers whose dots could be read either way. lenient and
-    dotless are passed to tokenize().
+    also settles numbers whose dots could be read either way. lenient,
+    dotless and exact are passed to tokenize().
     """
-    toks = tokenize(text, lenient, dotless)
+    toks = tokenize(text, lenient, dotless, exact)
     seqs: list[Sequence] = []
     opens: list[int] = []        # offsets of open parentheses
     cur: Optional[dict] = None

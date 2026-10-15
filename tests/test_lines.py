@@ -241,7 +241,7 @@ def test_reader_opens_a_page_at_the_governing_line(tmp_path):
 
 @pytest.fixture()
 def garbled(tmp_path):
-    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE)
+    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True)
     state = {}
     book = build_book(pdf, output_dir=tmp_path / "out", books_dir=tmp_path / "books", state=state)
     return tmp_path, pdf, book, state

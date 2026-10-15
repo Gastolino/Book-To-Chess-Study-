@@ -369,6 +369,44 @@ def test_ambiguous_and_guessed_statuses():
     assert decs[2].status == "guessed" and "c3" in decs[2].alternatives
 
 
+def test_exact_text_reads_each_letter_as_printed():
+    # OCR reads an e for a c, a 6 for a 5, a lost glyph for a pawn: in an
+    # OCR'd book "3.Be4", where only a bishop to c4 can go, is Bc4. A book
+    # whose text layer holds the letters it was set in (GlyphModel(exact=
+    # True)) prints what it means: no legal move is "Be4" there.
+    toks = find_sequences("1.e4 e5 2.Nf3 Nc6 3.Be4 Nf6")[0].tokens
+    lenient = decode(chess.Board(), toks)
+    assert (lenient[4].san, lenient[4].status) == ("Bc4", "ok")
+    exact = decode(chess.Board(), toks, glyphs=GlyphModel(exact=True))
+    assert exact[4].status == "failed" and exact[4].san is None
+    assert [d.san for d in exact[:4]] == ["e4", "e5", "Nf3", "Nc6"] and exact[5].san == "Nf6"
+    # a piece letter is that piece, and a move without one a pawn's
+    assert decode(chess.Board(), tokenize("1.Bf3"))[0].san in ("Nf3", None)
+    assert decode(chess.Board(), tokenize("1.Bf3"), glyphs=GlyphModel(exact=True))[0].status \
+        == "failed"
+    board = chess.Board("4k3/8/8/8/8/8/8/1N2K3 w - - 0 1")
+    assert decode(board, tokenize("1.c3"))[0].san == "Nc3"
+    assert decode(board, tokenize("1.c3"), glyphs=GlyphModel(exact=True))[0].status == "failed"
+    # nor is "Nx" the junk of a figurine (no knight takes on e3 here)
+    board = chess.Board("r2qr1k1/ppp2ppp/1nnp1b2/8/2PP2b1/PPNBB3/4NPPP/R2Q1RK1 b - - 0 12")
+    assert decode(board, tokenize("12...Nxe3"))[0].san in ("Nc8", "Rxe3")
+    assert decode(board, tokenize("12...Nxe3"), glyphs=GlyphModel(exact=True))[0].status \
+        == "failed"
+    board = chess.Board("5rn1/1p2qp1k/4pbpp/p2pP3/P1r2BNP/P5P1/3Q1PB1/1R2R1K1 w - - 0 28")
+    learnt = GlyphModel(exact=True)
+    learnt.learn([("bx", "Q")] * 3)          # (as junk read in a run would teach it)
+    assert decode(board, tokenize("28.bxa5"), glyphs=learnt)[0].status == "failed"
+    # the printed letters still read as they are
+    text = "1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 d6 8.c3 O-O 9.h3 Nb8"
+    decs = decode(chess.Board(), find_sequences(text)[0].tokens, glyphs=GlyphModel(exact=True))
+    assert all(d.status == "ok" for d in decs) and decs[-1].san == "Nb8"
+    # a word that only OCR's misreadings make a move of ends the run
+    text = "14.Qxc8+ Rxc8 15.b3 Rd8 White's d4 point is weak. 8.c3 Nd5 Hi, I'm back"
+    assert [[m.raw for m in s.moves] for s in find_sequences(text, exact=True)] == [
+        ["Qxc8+", "Rxc8", "b3", "Rd8"], ["c3", "Nd5"]]
+    assert "White's" in [m.raw for m in find_sequences(text)[0].moves]
+
+
 def test_decoded_offsets_and_numbers():
     text = "Or 16 ... Wfxe5 17.Wfxe5 dxe5"
     seq = find_sequences(text)[0]

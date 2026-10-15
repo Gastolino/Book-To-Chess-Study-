@@ -407,7 +407,7 @@ def test_pencil_in_chromium(tmp_path):
     (tests/pencil_e2e.js), on the generated book with a garbled game."""
     from chessbook import live
     from test_corrections import GARBLED, NOTE, game_nodes, key_of
-    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE)
+    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True)
     state = {}
     book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
                       state=state)

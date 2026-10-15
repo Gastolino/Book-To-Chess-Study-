@@ -263,7 +263,7 @@ def test_the_driver_reads_a_section_of_a_page(tmp_path, monkeypatch):
     driver = _driver(tmp_path, monkeypatch)
     from test_assemble import make_book
     from test_corrections import GARBLED, NOTE
-    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE)
+    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True)
     driver.process(str(pdf), lambda *_: None)
     with pymupdf.open(pdf) as doc:
         box = {w[4]: [round(v, 1) for v in w[:4]] for w in doc[3].get_text("words")}

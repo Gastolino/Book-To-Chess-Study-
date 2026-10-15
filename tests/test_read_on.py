@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from chessbook import corrections as fixes  # noqa: E402
 from chessbook import live  # noqa: E402
 from chessbook.assemble import build_book  # noqa: E402
-from test_assemble import H, _Writer, main_line  # noqa: E402
+from test_assemble import OCR_PRODUCER, H, _Writer, main_line  # noqa: E402
 
 GAME = ("d4 Nf6 Bg5 c5 Bxf6 gxf6 d5 Qb6 Qc1 f5 c4 Bh6 e3 f4 exf4 Bxf4 Qxf4 Qxb2 Ne2 Qxa1 "
         "Nc3 Qb2 d6 Qc2 Qe3").split()
@@ -125,6 +125,8 @@ def make_long(path, diagram=True, variation=False, note=False, misread=False, ot
         w.prose(until=H - 60)
         w.col(1)
         w.prose(until=H - 60)
+    # made, as The Art of Planning was, by OCR: its text is read as OCR's
+    w.doc.set_metadata({"producer": OCR_PRODUCER})
     w.save(path)
     return path
 

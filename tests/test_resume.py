@@ -91,7 +91,7 @@ def test_resume_end_to_end(tmp_path):
     if not book:
         from test_assemble import make_book
         from test_corrections import GARBLED, NOTE
-        book = str(make_book(tmp_path / "garbled_games.pdf", game=GARBLED, note7=NOTE, second=True))
+        book = str(make_book(tmp_path / "garbled_games.pdf", game=GARBLED, note7=NOTE, ocr=True, second=True))
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), functools.partial(_Handler, directory=str(site)))
     threading.Thread(target=server.serve_forever, daemon=True).start()

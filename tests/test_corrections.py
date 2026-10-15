@@ -34,7 +34,7 @@ NOTE = "Or 12.Qh5+ g6 is also strong."
 @pytest.fixture(scope="module")
 def garbled(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("garbled")
-    pdf = make_book(tmp / "garbled.pdf", game=GARBLED, note7=NOTE)
+    pdf = make_book(tmp / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True)
     book = build_book(pdf, output_dir=tmp / "output", books_dir=tmp / "books")
     return tmp, pdf, book
 

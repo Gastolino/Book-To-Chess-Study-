@@ -88,7 +88,7 @@ def test_progressive_equals_build_book(name, tmp_path, monkeypatch):
     if name == "little":
         from test_assemble import make_book
         from test_corrections import GARBLED, NOTE
-        pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, second=True)
+        pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True, second=True)
     else:
         pdf = BOOKS[name]
         if not pdf.exists():
@@ -113,7 +113,7 @@ def test_final_patch_keeps_the_move(tmp_path, monkeypatch):
     every move of the first reading to the move printed at the same place."""
     from test_assemble import make_book
     from test_corrections import GARBLED, NOTE
-    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, second=True)
+    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True, second=True)
     _, _, job, events = _progressive(pdf, tmp_path, monkeypatch, correct=False)
     patches = [e for e in events if e["type"] == "patch"]
     last = patches[-1]["chapter"]          # the chapter open at the end

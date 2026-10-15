@@ -74,7 +74,7 @@ def test_app_in_chromium(tmp_path):
     if not book:
         from test_assemble import make_book
         from test_corrections import GARBLED, NOTE
-        book = str(make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, second=True))
+        book = str(make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True, second=True))
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), functools.partial(_Handler, directory=str(site)))
     threading.Thread(target=server.serve_forever, daemon=True).start()

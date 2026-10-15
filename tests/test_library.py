@@ -46,7 +46,7 @@ def _same(a, b):
 def garbled(tmp_path):
     from test_assemble import make_book
     from test_corrections import GARBLED, NOTE
-    return make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, second=True)
+    return make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True, second=True)
 
 
 def _drain(driver):
@@ -591,7 +591,7 @@ def test_library_end_to_end(tmp_path):
         import pymupdf
         from test_assemble import make_book
         from test_corrections import GARBLED, NOTE
-        first = make_book(tmp_path / "garbled_games.pdf", game=GARBLED, note7=NOTE, second=True)
+        first = make_book(tmp_path / "garbled_games.pdf", game=GARBLED, note7=NOTE, ocr=True, second=True)
         plain = make_book(tmp_path / "plain.pdf", second=True)
         doc = pymupdf.open(plain)
         doc.set_metadata({"title": "Endgame Lessons for Club Players"})

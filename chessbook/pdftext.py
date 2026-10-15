@@ -844,6 +844,43 @@ def book_fonts(doc):
     return copy.deepcopy(_fonts_internal(_as_doc(doc)))
 
 
+# Fonts that OCR sets its text in: ClearScan traces fonts from the scan
+# ("Fd123456"), Tesseract draws invisible text in GlyphLessFont.
+_OCR_FONT_RE = re.compile(r"^(?:[A-Z]{6}\+)?(?:Fd\d+|GlyphLessFont)(?:-|$)")
+# Programs that make a PDF's text by OCR, as its producer or creator names them.
+_OCR_PRODUCER_RE = re.compile(r"(?i)paper capture|clearscan|finereader|abbyy|tesseract|"
+                              r"omnipage|readiris|\bocr\b")
+OCR_SHARE = 0.01          # more of a book's characters from OCR than this: no exact text
+
+
+def exact_text(doc):
+    """True when the book's text layer holds the letters it was set in, so that
+    a move reads as printed: "Be4" is a bishop to e4 and nothing else. False
+    when the PDF names an OCR program as its producer or creator, or when more
+    than OCR_SHARE of its characters are not the type's: text drawn invisibly
+    over the picture of a page (an OCR layer), set in a font that OCR traced
+    from the scan (ClearScan), or in a Type3 font, whose letters are pictures
+    the text layer only names. A book with no text at all is no exact text.
+    movetext.GlyphModel(exact=...) reads the moves accordingly."""
+    doc = _as_doc(doc)
+    c = _cache(doc)
+    meta = doc.metadata or {}
+    if _OCR_PRODUCER_RE.search(f"{meta.get('producer') or ''} {meta.get('creator') or ''}"):
+        return False
+    if "exact" not in c:
+        chars = ocr = 0
+        for page in doc:
+            type3 = {f[3].split("+")[-1] for f in page.get_fonts() if f[2] == "Type3"}
+            for s in page.get_texttrace():
+                n = len(s["chars"])
+                chars += n
+                if s["type"] in (3, 7) or _OCR_FONT_RE.match(s["font"]) or \
+                        s["font"] in type3 or s["font"].startswith("Unnamed-T3"):
+                    ocr += n
+        c["exact"] = chars > 0 and ocr <= OCR_SHARE * chars
+    return c["exact"]
+
+
 class _Ctx:
     """Fast lookups built once from a fonts dict."""
 

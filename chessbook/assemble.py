@@ -1540,7 +1540,7 @@ class _Builder:
                 # the main-font text holds moves only, so junk standing where
                 # the numbering expects a move is kept as an unreadable move
                 for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font,
-                                        dotless=self.dotless):
+                                        dotless=self.dotless, exact=self.dec.glyphs.exact):
                     toks = [replace(t, start=t.start + a, end=t.end + a) for t in s.tokens]
                     parts = _split_at_diagrams(toks, diagrams)
                     if kind == "main" and self.moves_font:
@@ -2937,6 +2937,13 @@ class _Builder:
                 accept = m >= 5 and _fit(self.dec.run(chess.STARTING_FEN, more))[0] == 0
         elif rank == 1:
             accept = n >= 10 and failed <= 0.1 * n
+            if not accept and n >= 10 and self.dec.glyphs.exact:
+                # in a text set in type, no misreading bends the moves after
+                # a move the text lacks: they fail until the side to move
+                # agrees again. Such a run reads when that one move is supplied.
+                ins = decode(chess.Board(), run.tokens, glyphs=self.dec.glyphs,
+                             letters=self.dec.decode_letters)
+                accept = _fit(ins)[0] == 0 and sum(bool(d.missing_before) for d in ins) == 1
         else:
             accept = False
         return accept, decs, did
@@ -6597,10 +6604,12 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
     structure = pt.book_structure(doc)
     chapters = book_chapters(structure, doc.page_count)
     numbering = book_numbering(doc)
+    # a text set in type is read as printed, without OCR's misreadings
+    exact = pt.exact_text(doc)
     ctx.update(pdf=pdf_path, books_dir=books_dir, letters=letters, doc=doc, fonts=fonts,
                structure=structure, chapters=chapters, numbering=numbering,
-               glyphs=GlyphModel(), readings=dict(readings or {}), pass_no=0, builder=None,
-               stage1_found={}, diagrams=None)
+               glyphs=GlyphModel(exact=exact), readings=dict(readings or {}), pass_no=0,
+               builder=None, stage1_found={}, diagrams=None)
     yield "structure", None
     # a picture of stacked boards counts as one diagram per board
     raw = yield from load_stage1_steps(
@@ -6623,7 +6632,7 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
     say(f"layout and structure read in {time.perf_counter() - t0:.1f} s; move numbers "
         f"{'without' if numbering['dotless'] else 'with'} dots")
     yield "diagrams", None
-    glyphs = GlyphModel()
+    glyphs = GlyphModel(exact=exact)
     timings = []
     readings = dict(readings or {})
     if read_now and passes <= 1:
@@ -6664,7 +6673,7 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
             f"{dec.calls} decodes in {timings[-1]} s")
         yield "pass", len(timings)
         if k + 1 < passes or fig_cands:
-            learned = GlyphModel()
+            learned = GlyphModel(exact=exact)
             for decs in dec.accepted:
                 learned.learn_run(decs)
             if k + 1 < passes:
@@ -6686,7 +6695,7 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
                 chapters = book_chapters(structure, doc.page_count)
                 selection = sel.load_selection(pdf_path, structure, diagrams, books_dir)
                 say(f"read {len(figmap)} figurine codes as piece letters; reading again")
-                glyphs = GlyphModel()
+                glyphs = GlyphModel(exact=exact)
                 shapes_read, shapes, use_shapes = None, {}, shapes_on
                 ctx.update(fonts=fonts, structure=structure, chapters=chapters,
                            selection=selection, figmap=figmap)

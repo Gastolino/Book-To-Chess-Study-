@@ -18,6 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from chessbook import pdftext as pt  # noqa: E402
 from chessbook import pgnout  # noqa: E402
 from chessbook.assemble import WAIT_REASON, build_book, display_title, parse_game_header  # noqa: E402
 
@@ -39,6 +40,7 @@ GAME_DE = ["1.e4 e5 2.Sf3 Sc6 3.Lc4 Sf6", "4.Sg5 d5 5.exd5 Sxd5", "6.Sxf7 Kxf7 7
 MAIN_SAN = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "Ng5", "d5", "exd5", "Nxd5", "Nxf7", "Kxf7",
             "Qf3+", "Ke6", "Nc3"]
 ENDING_FEN = "6k1/5pp1/7p/8/8/8/5PPP/3R2K1 w - - 0 1"
+OCR_PRODUCER = "Adobe Acrobat 9.0 Paper Capture Plug-in with ClearScan"
 
 
 class _Writer:
@@ -113,9 +115,12 @@ class _Writer:
         self.doc.save(path)
 
 
-def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False):
+def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False,
+              ocr=False):
     """The little test book: one chapter, or with second a second chapter
-    after it (pages 10 and 11) that holds another game."""
+    after it (pages 10 and 11) that holds another game. Set in type, its text
+    is exact (pdftext.exact_text); with ocr, its producer is an OCR program,
+    for a game printed as OCR's junk (test_corrections.GARBLED)."""
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
@@ -204,6 +209,8 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
         w.prose(until=H - 60)
         w.col(1)
         w.prose(until=H - 60)
+    if ocr:
+        w.doc.set_metadata({"producer": OCR_PRODUCER})
     w.save(path)
     return path
 
@@ -355,6 +362,37 @@ def test_decoded_once_the_diagram_is_read(tmp_path):
     assert nodes[alt]["san"] == "Rd3" and nodes[nodes[alt]["children"][0]]["san"] == "Kg6"
     assert book["pages"][4]["diagrams"][0]["status"] == "read"
     assert not any(x["line"] == w["id"] for x in book["waiting"])
+
+
+def test_type_set_book_keeps_its_printed_squares(tmp_path):
+    # A misprint, or a line gone wrong before it: "3.Be4" where only a bishop
+    # to c4 can go. The generated book is set in type, its text layer holds
+    # the letters as printed: the move fails, and is not read as Bc4 (OCR's
+    # e for a c) and shown as certain.
+    pdf = make_book(tmp_path / "little.pdf", game=["1.e4 e5 2.Nf3 Nc6 3.Be4 Nf6", *GAME_EN[1:]])
+    assert pt.exact_text(pdf)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    marks = [m for p in book["pages"] for m in p["marks"] if m["raw"] == "Be4"]
+    assert marks and all(m["status"] == "failed" for m in marks)
+    assert not any(n.get("raw") == "Be4" and n.get("status") in ("ok", "guessed")
+                   for n in book["nodes"].values())
+
+
+def test_text_drawn_by_ocr_is_not_exact(tmp_path):
+    # an OCR layer: the text is drawn invisibly over the picture of the page
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((40, 60), "1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 " * 3, fontname="tiro", fontsize=10,
+                     render_mode=3)
+    w.save(tmp_path / "scan.pdf")
+    assert not pt.exact_text(tmp_path / "scan.pdf")
+    # a PDF whose producer is an OCR program
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((40, 60), "1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", fontname="tiro", fontsize=10)
+    w.doc.set_metadata({"producer": OCR_PRODUCER})
+    w.save(tmp_path / "clearscan.pdf")
+    assert not pt.exact_text(tmp_path / "clearscan.pdf")
 
 
 def test_german_letters(tmp_path):

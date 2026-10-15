@@ -137,7 +137,7 @@ def test_book_flow_end_to_end(tmp_path):
         from chessbook.assemble import build_book
         from test_assemble import make_book
         from test_corrections import GARBLED, NOTE
-        book = str(make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, second=True))
+        book = str(make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True, second=True))
         # the same book's reader written to disk, whose bar keeps the book's name
         out = tmp_path / "output" / "garbled" / "reader"
         reader.build_reader(build_book(Path(book), output_dir=tmp_path / "output", books_dir=tmp_path / "books"),
