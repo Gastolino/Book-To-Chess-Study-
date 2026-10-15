@@ -351,6 +351,41 @@ def test_move_missing_from_the_text_is_bridged():
     assert decs[3].missing_before is not None and decs[2].missing_before is None
 
 
+def _out_of_step(decs):
+    """The moves read at another ply than their printed number names."""
+    return [(d.raw, d.san) for d in decs if d.san and d.number is not None
+            and chess.Board(d.fen).ply() - 1 != (d.number - 1) * 2 + d.black]
+
+
+def test_printed_numbers_anchor_the_moves():
+    # Black's sixth move is missing ("6.Nb3 7.Qe2"), or White's sixth with
+    # its number printed ("6. Ba7"): the moves after it stand at their
+    # printed numbers, with the missing move supplied, or are not read; they
+    # are never read one move early ("7.Qe2" as White's sixth).
+    for text, missing in (("1.e4 c5 2.Nf3 e6 3.d4 cxd4 4.Nxd4 a6 5.Bd3 Bc5 6.Nb3 7.Qe2 d6 "
+                           "8.Be3 Nf6 9.Bxa7 Rxa7", "Qe2"),
+                          ("1.e4 c5 2.Nf3 e6 3.d4 cxd4 4.Nxd4 a6 5.Bd3 Bc5 6. Ba7 7.Qe2 d6 "
+                           "8.Be3 Nf6 9.Bxa7 Rxa7", None)):
+        toks = find_sequences(text)[0].tokens
+        for insert in (False, True):
+            decs = decode(chess.Board(), toks, insert=insert)
+            assert _out_of_step(decs) == [], (text, insert)
+        assert [d.san for d in decode(chess.Board(), toks, insert=False)[:10]] == [
+            "e4", "c5", "Nf3", "e6", "d4", "cxd4", "Nxd4", "a6", "Bd3", "Bc5"]
+        if missing:
+            # with insert the missing move is supplied, and the rest reads
+            d = next(d for d in decs if d.raw == missing)
+            assert d.missing_before is not None and d.san == "Qe2"
+    # a White move printed as such is not played as Black's ("3.Bd6" for 2...Bd5)
+    board = chess.Board("7k/1b6/5N1P/8/8/6p1/8/B5K1 w - - 0 1")
+    decs = decode(board, find_sequences("1.Be5 Bh1 2.Bxg3 3.Bd6")[0].tokens, insert=False)
+    assert [d.san for d in decs[:3]] == ["Be5", "Bh1", "Bxg3"] and _out_of_step(decs) == []
+    # a position that repeats stands at its own move number, not at the first's
+    decs = decode(chess.Board(), find_sequences(
+        "1.Nf3 Nf6 2.Ng1 Ng8 3.Nf3 Nf6 4.Ng1 Ng8 5.e4 e5")[0].tokens, insert=False)
+    assert [d.status for d in decs] == ["ok"] * 10 and _out_of_step(decs) == []
+
+
 def test_prose_word_after_a_move_ends_the_run():
     seqs = find_sequences("1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 and 4.Ba4 Nf6")
     assert [(s.first_number, len(s.moves)) for s in seqs] == [(1, 6), (4, 2)]

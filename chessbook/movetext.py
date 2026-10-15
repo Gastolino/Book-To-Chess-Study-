@@ -2000,15 +2000,19 @@ KAPPA_RUN = 2.0       # weight of the book prior against the junk's earlier uses
 
 
 class _Hyp:
-    __slots__ = ("cost", "board", "node", "offset", "fails", "gmap")
+    __slots__ = ("cost", "board", "node", "offset", "fails", "gmap", "ply", "skips")
 
-    def __init__(self, cost, board, node, offset, fails, gmap):
+    def __init__(self, cost, board, node, offset, fails, gmap, ply=0, skips=0):
         self.cost = cost
         self.board = board
         self.node = node
         self.offset = offset        # 1 when the run's numbering is one ply out
         self.fails = fails          # consecutive failed tokens
         self.gmap = gmap            # glyph -> {piece type: uses so far in this run}
+        # the ply of board, counted here: the candidates' boards are shared
+        # between positions that repeat, whatever their move numbers
+        self.ply = ply
+        self.skips = skips          # tokens taken for no move since the last printed number
 
 
 def _forced_candidates(board: chess.Board, san: str):
@@ -2162,24 +2166,82 @@ WILD_HYPS = 3         # only the best few hypotheses expand a failed token
 # kind is "move", "wild" (a failed token, any move played) or "skip" (no ply).
 
 
+def _places(board: chess.Board, tokens: list) -> list:
+    """Where the printed move numbers put each move token of a run, for
+    _search: (plies, drifts, numbered), or None where the run prints no
+    number to go by.
+
+    plies are the board's plies at which the token stands when the numbering
+    holds: counted from the run's first move, which stands at board's ply,
+    and as the board numbers its moves (a line's position carries the book's
+    numbering; a run that starts out of step with it, after a correction
+    before it, keeps to the printed numbers). drifts are the differences from
+    them that the printed number allows: the other readings of its digits
+    ("S" is 5 or 8) and, for a number that names no side ("12 Nf3" in a book
+    that prints no dots), either side's move of that number. numbered is
+    True when the number stands right before the token; a move printed
+    without one has the drifts of the number before it, less one for each
+    token since that number that took no ply."""
+    out, first, drifts, num, prev = [], None, None, None, None
+    for t in tokens:
+        if t.kind == "number":
+            num, prev = t, "number"
+            continue
+        if t.kind != "move":
+            continue
+        numbered, prev = prev == "number", "move"
+        lp = None if t.number is None else (t.number - 1) * 2 + int(bool(t.black))
+        if not out:
+            first = lp
+        if numbered:
+            drifts = None
+            if num.number is not None and lp is not None:
+                sides = (int(bool(t.black)),) if num.side_known else (0, 1)
+                drifts = frozenset(2 * (v - t.number) + s - int(bool(t.black))
+                                   for v in _number_values(num) for s in sides)
+        if first is None or lp is None or drifts is None:
+            out.append(None)
+        else:
+            out.append(({board.ply() + lp - first, lp}, drifts, numbered))
+    return out
+
+
+def _placed(place, ply: int, skips: int) -> bool:
+    """True when a token played at ply stands where its printed number puts it
+    (place from _places; skips counts the tokens since that number that took
+    no ply)."""
+    if place is None:
+        return True
+    plies, drifts, numbered = place
+    return any(ply - at + (0 if numbered else skips) in drifts for at in plies)
+
+
 def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
             beam: int, allow_wild: bool, offset0: int, gmap0=None, old_keep: int = None,
-            insert: bool = True, anchored: Optional[list] = None):
+            insert: bool = True, anchored: Optional[list] = None,
+            places: Optional[list] = None, skips0: int = 0):
     """Beam search over move tokens. Returns (best hypothesis, index where all died).
 
     insert allows a move missing from the text to be supplied. anchored[k] is
     True when a printed move number stands right before token k: such a token
     is a move of the side its number names, so treating it as junk that takes
-    no ply does not shift the numbering of the moves after it."""
-    hyps = [_Hyp(0.0, board0.copy(stack=False), None, offset0, 0, gmap0 or {})]
+    no ply does not shift the numbering of the moves after it. places (see
+    _places) holds where the printed numbers put each token: a token is read
+    as a move only there, never a move or more early or late (a move lost
+    from the text does not shift the moves after it); a token the reader
+    gave a move (Token.forced) is played where it stands."""
+    hyps = [_Hyp(0.0, board0.copy(stack=False), None, offset0, 0, gmap0 or {}, board0.ply(),
+                 skips0)]
     died_at = None
     for k, tok in enumerate(mtoks):
         parsed = _parse_raw(tok.raw)
         children: dict = {}
         failing = []
         best_total = math.inf
+        place = None if (places is None or getattr(tok, "forced", None)) else places[k]
+        numbered = bool(place and place[2])
 
-        def expand(h, b, off, extra, ins):
+        def expand(h, b, off, extra, ins, skips, ply):
             nonlocal best_total
             best_local = math.inf
             for m, c, glyph, pc, b2, prs in _token_candidates(scorer, b, tok, parsed, h.gmap):
@@ -2191,30 +2253,36 @@ def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
                 if old is None or total < old.cost:
                     gm = _with_glyph(h.gmap, glyph, b.piece_type_at(m.from_square), scorer)
                     children[key] = _Hyp(total, b2, (h.node, (k, "move", m, ins, c, glyph, prs)),
-                                         off, 0, gm)
+                                         off, 0, gm, ply + 1, skips)
             return best_local
 
         for rank, h in enumerate(hyps):
             want = chess.BLACK if labels[k] ^ bool(h.offset) else chess.WHITE
+            skips = 0 if numbered else h.skips
+            here = _placed(place, h.ply, skips)
             if h.board.turn == want:
-                best_local = expand(h, h.board, h.offset, 0.0, None)
+                best_local = (expand(h, h.board, h.offset, 0.0, None, skips, h.ply) if here
+                              else math.inf)
             else:
-                best_local = expand(h, h.board, h.offset ^ 1, C_PARITY, None)
+                best_local = (expand(h, h.board, h.offset ^ 1, C_PARITY, None, skips, h.ply)
+                              if here else math.inf)
                 if (insert and allow_wild and h.fails == 0 and rank < WILD_HYPS
-                        and best_local > 1.0 + C_PARITY):
+                        and best_local > 1.0 + C_PARITY and _placed(place, h.ply + 1, skips)):
                     for w in h.board.legal_moves:        # a move missing from the text
                         b2 = h.board.copy(stack=False)
                         b2.push(w)
-                        best_local = min(best_local, expand(h, b2, h.offset, C_INSERT, w))
+                        best_local = min(best_local, expand(h, b2, h.offset, C_INSERT, w, skips,
+                                                            h.ply + 1))
             if best_local > FAIL_TRIGGER:
                 failing.append(h)
         protected = []
         skip_flip = 0 if (anchored and anchored[k]) else 1
         for rank, h in enumerate(failing):
+            skips = 0 if numbered else h.skips
             if not allow_wild:
                 protected.append(_Hyp(h.cost + C_FAIL, h.board,
                                       (h.node, (k, "skip", None, None, C_FAIL, None, None)),
-                                      h.offset ^ skip_flip, h.fails + 1, h.gmap))
+                                      h.offset ^ skip_flip, h.fails + 1, h.gmap, h.ply, skips + 1))
                 continue
             if rank >= WILD_HYPS or h.fails >= MAX_FAILS or h.cost + C_FAIL > best_total + WILD_MARGIN:
                 continue
@@ -2222,13 +2290,13 @@ def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
             # move, the more alike the text the better)
             protected.append(_Hyp(h.cost + C_SKIP, h.board,
                                   (h.node, (k, "skip", None, None, C_SKIP, None, None)),
-                                  h.offset ^ skip_flip, h.fails + 1, h.gmap))
+                                  h.offset ^ skip_flip, h.fails + 1, h.gmap, h.ply, skips + 1))
             for w, rc, prs in scorer.relaxed(h.board, parsed):
                 b2 = h.board.copy(stack=False)
                 b2.push(w)
                 c = C_FAIL + WILD_WEIGHT * rc
                 protected.append(_Hyp(h.cost + c, b2, (h.node, (k, "wild", w, None, c, None, prs)),
-                                      h.offset, h.fails + 1, h.gmap))
+                                      h.offset, h.fails + 1, h.gmap, h.ply + 1, skips))
         kids = _prune(sorted(children.values(), key=lambda h: h.cost), beam,
                       OLD_KEEP if old_keep is None else old_keep)
         if protected:
@@ -2320,10 +2388,12 @@ def _path(node) -> list:
     return out
 
 
-def _future_cost(board, mtoks, labels, scorer, offset, gmap, beam=4) -> float:
+def _future_cost(board, mtoks, labels, scorer, offset, gmap, beam=4, places=None,
+                 skips=0) -> float:
     if not mtoks:
         return 0.0
-    best, died = _search(board, mtoks, labels, scorer, beam, False, offset, gmap)
+    best, died = _search(board, mtoks, labels, scorer, beam, False, offset, gmap,
+                         places=places, skips0=skips)
     return best.cost + (C_FAIL * (len(mtoks) - died) if died is not None else 0.0)
 
 
@@ -2338,9 +2408,13 @@ def decode(board: chess.Board, tokens: list, lookahead: int = 3, letters=None,
     or extra. letters picks a LETTER_SETS entry (or a dict letter -> K Q R B N);
     glyphs is a GlyphModel holding the book's learnt glyph junk. lookahead is
     the number of following moves used to choose between readings that fit a
-    token equally well. With insert=False the search never supplies a move
-    that the numbering shows to be missing from the text; such a run then
-    reads with the numbering one ply out, or fails.
+    token equally well. The printed move numbers anchor the moves: a token
+    is read as a move only at the ply its number names (counted from the
+    run's first move, or as board numbers its moves), so a move lost from
+    the text never shifts the moves after it by a ply or a move. With insert=False the search never supplies a move
+    that the numbering shows to be missing from the text; the tokens after
+    such a gap then fail. A move read for the side its number does not name
+    (where the numbering allows either) is 'guessed', never 'ok'.
     """
     return _decode(board, tokens, _Scorer(letters, glyphs), lookahead, beam, insert)
 
@@ -2368,20 +2442,22 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
         return []
     labels = [bool(t.black) for t in mtoks]
     anchored = _anchors(tokens)
+    places = _places(board, tokens)
     offset0 = int((board.turn == chess.BLACK) != labels[0])
     best, died_at = _search(board, mtoks, labels, scorer, beam, True, offset0, insert=insert,
-                            anchored=anchored)
+                            anchored=anchored, places=places)
     if died_at is not None or _has_failure(best.node):
         # A reading that only later moves confirm may have been pruned: try
         # again with a much wider beam that keeps every surviving alternative.
         wide, wide_died = _search(board, mtoks, labels, scorer, beam * RETRY_FACTOR, True, offset0,
-                                  old_keep=beam * RETRY_FACTOR, insert=insert, anchored=anchored)
+                                  old_keep=beam * RETRY_FACTOR, insert=insert, anchored=anchored,
+                                  places=places)
         if _better(wide, wide_died, best, died_at):
             best, died_at = wide, wide_died
     entries = _path(best.node)
     out: list[Decoded] = []
     b = board.copy(stack=False)
-    offset, gmap = offset0, {}
+    offset, gmap, skips = offset0, {}, 0
 
     def failed(tok, parsed, alts=(), cost=C_FAIL, prs=None):
         sq = (prs.fch, prs.rch) if prs is not None else (None, None)
@@ -2394,15 +2470,19 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
             out.append(failed(tok, parsed))
             continue
         _, kind, m, ins, c, glyph, prs = entries[idx]
-        missing = None
+        missing, flipped = None, False
+        if places[idx] is not None and places[idx][2]:
+            skips = 0
         if ins is not None:
             missing = b.san(ins)
             b.push(ins)
         elif kind == "move" and (labels[idx] ^ bool(offset)) != (b.turn == chess.BLACK):
             offset ^= 1
+            flipped = True      # played for the side the numbering does not name
         if kind == "skip":
             if not anchored[idx]:
                 offset ^= 1
+            skips += 1
             out.append(failed(tok, parsed, (), c))
             continue
         if kind == "wild":
@@ -2444,7 +2524,8 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
                 b2.push(mv)
                 gm = _with_glyph(gmap, gg, b.piece_type_at(mv.from_square), scorer)
                 return cc + _future_cost(b2, toks_, labels[idx + 1: idx + 1 + n_ahead],
-                                         scorer, offset, gm)
+                                         scorer, offset, gm,
+                                         places=places[idx + 1: idx + 1 + n_ahead], skips=skips)
 
             mine = score(m, score_c, glyph, lookahead)
             scored = sorted(((score(mm, cc, gg, lookahead), mm, cc, gg) for mm, cc, gg in others),
@@ -2459,6 +2540,8 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
                 if ties:
                     status = "ambiguous"
             alts = [b.san(t[1]) for t in scored]
+        if flipped and status == "ok":
+            status = "guessed"
         pt = b.piece_type_at(m.from_square)
         gmap = _with_glyph(gmap, glyph, pt, scorer)
         is_cap = b.is_capture(m)

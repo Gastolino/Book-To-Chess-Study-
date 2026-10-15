@@ -19,7 +19,9 @@ from chessbook import corrections as fixes  # noqa: E402
 from chessbook import reader  # noqa: E402
 from chessbook.assemble import build_book  # noqa: E402
 from chessbook.movetext import junk_prefix  # noqa: E402
-from test_assemble import ENDING_FEN, line_titled, main_line, make_book  # noqa: E402
+from test_assemble import (  # noqa: E402
+    ENDING_FEN, LOST_REPLY, line_titled, main_line, make_book, out_of_step,
+)
 
 PDF = ROOT / "primer.pdf"
 # the game of the generated book, with the knight printed as OCR junk ("tLl") and
@@ -317,6 +319,64 @@ def test_a_fill_that_is_not_legal_is_ignored_with_the_reason(gapped):
         hole = gap_of(fixed)
         assert hole["fill"] == [] and hole["missing"] == 2 and words in hole["reason"], hole["reason"]
         assert fixed["stats"]["corrected"]["gap_moves"] == 0
+
+
+def test_a_move_given_for_a_box_keeps_the_numbers_after_it(tmp_path):
+    """Black's sixth move is missing from the text ("6.Nb3 7.Qe2"). The reader
+    who gives it (6...Ba7) for the box of the printed 7.Qe2 does not make
+    the moves printed after it read a move early (8.Be3 as White's seventh,
+    9.Bxa7 as his eighth); given for the gap before 7.Qe2, it lets the rest
+    of the game read at its printed numbers."""
+    pdf = make_book(tmp_path / "lost.pdf", game=LOST_REPLY)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    _, nodes = game_nodes(book)
+    fixed = rebuild(tmp_path, pdf, {"moves": {key_of(nodes, "Qe2"): {"san": "Ba7"}}})
+    assert out_of_step(fixed) == []
+    hole = next(n for n in nodes if n.get("gap") and not n["san"])
+    assert (hole["number"], hole["black"], hole["missing"]) == (6, True, 1)
+    fixed = rebuild(tmp_path, pdf, {"gaps": {hole["gap"]: {"san": ["Ba7"]}}})
+    _, nodes = game_nodes(fixed)
+    assert [n["san"] for n in nodes][10:] == ["Nb3", "Ba7", "Qe2", "d6", "Be3", "Nf6", "Bxa7",
+                                              "Rxa7"]
+    assert all(n["status"] == "ok" for n in nodes) and out_of_step(fixed) == []
+
+
+@pytest.mark.parametrize("game", [
+    ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5 6.Nxf7", "7.Qf3+ Ke6", "8.Nc3"],
+    # the same moves in two runs of the text ("6.Nxf7, 7.Qf3+")
+    ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5", "6.Nxf7, 7.Qf3+ Ke6", "8.Nc3"]])
+def test_a_filled_gap_leads_to_the_next_gap(tmp_path, game):
+    """The text lacks Black's fifth and sixth moves ("5.exd5 6.Nxf7 7.Qf3+").
+    Once the reader gives the fifth, the line reads to 6.Nxf7 and stops at a
+    gap before 7.Qf3+, which is not read as Black's sixth move."""
+    pdf = make_book(tmp_path / "two.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    fixed = rebuild(tmp_path, pdf, {"gaps": {gap_of(book)["gap"]: {"san": ["Nxd5"]}}})
+    _, nodes = game_nodes(fixed)
+    assert [n["san"] for n in nodes][:11] == SANS[:11]
+    hole = nodes[11]
+    assert hole["gap"] and not hole["san"] and (hole["number"], hole["black"]) == (6, True)
+    assert "lacks Black's move 6" in hole["reason"]
+    assert all(n["status"] == "failed" and not n["san"] for n in nodes[12:])
+    assert [n["raw"] for n in nodes[12:]] == ["Qf3+", "Ke6", "Nc3"]
+
+
+def test_a_move_given_for_junk_keeps_the_printed_numbers(tmp_path):
+    """A word the text gives as a move ("Zz9") that the program read as no
+    move: when the reader makes it a move (5.Bd3), the run printed after it
+    ("5.Bd3 Bc5 6.Nb3 ...") still reads at its printed numbers, the printed
+    5.Bd3 having no place."""
+    game = ["1.e4 c5 2.Nf3 e6 3.d4 cxd4", "4.Nxd4 a6 Zz9", "5.Bd3 Bc5 6.Nb3 Ba7 7.Qe2 d6",
+            "8.Be3 Nf6"]
+    pdf = make_book(tmp_path / "junk.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    _, nodes = game_nodes(book)
+    fixed = rebuild(tmp_path, pdf, {"moves": {key_of(nodes, "Zz9"): {"san": "Bd3"}}})
+    _, nodes = game_nodes(fixed)
+    read = [(n["number"], n["black"], n["san"]) for n in nodes if n["raw"] != "Bd3"]
+    assert read[8:] == [(5, False, "Bd3"), (5, True, "Bc5"), (6, False, "Nb3"), (6, True, "Ba7"),
+                        (7, False, "Qe2"), (7, True, "d6"), (8, False, "Be3"), (8, True, "Nf6")]
+    assert next(n for n in nodes if n["raw"] == "Bd3")["status"] == "failed"
 
 
 def test_gap_corrections_round_trip(tmp_path):

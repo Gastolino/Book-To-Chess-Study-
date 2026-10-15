@@ -869,15 +869,31 @@ def test_bare_move_after_a_colon_ends_a_variation_in_a_bracket(tmp_path):
     assert bd3["number"] == 8
 
 
+def test_the_moves_after_a_move_the_notes_lack_stand_apart(tmp_path):
+    """The notes lack Black's ninth move ("9.Bd3 10.O-O"): the moves before
+    it read on from the bare move, and the moves after it stand in no line,
+    never read a move early ("10.O-O" as Black's ninth), with the reason."""
+    book = _build(tmp_path, _bare_book([
+        "A good alternative is 7.Nf3 Every swap helps Black, so White",
+        "retreats. Nbd7 8.Qc2 Re8 9.Bd3 10.O-O Nf8 and so on."]))
+    nodes = book["nodes"]
+    bd3 = nodes[_var(book, *QGD, "Nf3", "Nbd7", "Qc2", "Re8", "Bd3")]
+    assert not bd3["children"]
+    (u,) = [u for u in book["unattached"] if u["text"].startswith("10.O-O")]
+    assert "lacks Black's move 9" in u["reason"]
+    assert not [n for n in nodes.values() if n["raw"] in ("O-O", "Nf8") and n["number"] == 9]
+
+
 def test_bare_move_the_moves_do_not_confirm_is_an_item_to_join(tmp_path):
     """When the numbered run after the bare move does not read cleanly from
-    it (here the text lacks Black's ninth move), the bare move stands in no
-    line, with the move the text prints it after, and the reader can join it
-    there: the moves after it then go on from it."""
+    it (here Black's ninth move is printed as nothing a reader can parse),
+    the bare move stands in no line, with the move the text prints it
+    after, and the reader can join it there: the moves after it then go on
+    from it."""
     tmp = tmp_path
     b = _bare_book([
         "A good alternative is 7.Nf3 Every swap helps Black, so White",
-        "retreats. Nbd7 8.Qc2 Re8 9.Bd3 10.O-O Nf8 and so on."])
+        "retreats. Nbd7 8.Qc2 Re8 9.Bd3 Zq9 10.O-O Nf8 and so on."])
     pdf = b.save(tmp / "bare.pdf")
     state = {}
     book = build_book(pdf, output_dir=tmp / "out", books_dir=tmp / "books", state=state)
@@ -897,6 +913,6 @@ def test_bare_move_the_moves_do_not_confirm_is_an_item_to_join(tmp_path):
     assert nbd7["corrected"] == "connected" and nbd7["number"] == 7 and nbd7["black"]
     bd3 = nodes[_var(book, *QGD, "Nf3", "Nbd7", "Qc2", "Re8", "Bd3")]
     (gap,) = bd3["children"]
-    assert nodes[gap]["status"] == "failed" and nodes[gap]["raw"] == "O-O"
+    assert nodes[gap]["status"] == "failed" and nodes[gap]["raw"] == "Zq9"
     assert not [u for u in book["unattached"] if u["text"] == "Nbd7"]
     assert _comparable(book) == _comparable(_fresh(tmp, pdf, fix))

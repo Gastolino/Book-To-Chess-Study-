@@ -365,6 +365,34 @@ def test_german_letters(tmp_path):
     assert sans(book, main_line(book, g)) == MAIN_SAN and g["status"] == "ok"
 
 
+# a game with Black's sixth move missing from the text ("6.Nb3 7.Qe2"), and the
+# number printed with each move after it
+LOST_REPLY = ["1.e4 c5 2.Nf3 e6 3.d4 cxd4", "4.Nxd4 a6 5.Bd3 Bc5", "6.Nb3 7.Qe2 d6 8.Be3 Nf6",
+              "9.Bxa7 Rxa7"]
+LOST_PRINTED = {"Qe2": (7, False), "d6": (7, True), "Be3": (8, False), "Nf6": (8, True),
+                "Bxa7": (9, False), "Rxa7": (9, True)}
+
+
+def out_of_step(book):
+    """The moves of the game read at another number than the book prints."""
+    nodes = [book["nodes"][i] for i in main_line(book, line_titled(book, "Smith - Jones"))]
+    return [(n["number"], n["black"], n["san"], n["raw"]) for n in nodes
+            if n["raw"] in LOST_PRINTED and n["status"] != "failed"
+            and (n["number"], n["black"]) != LOST_PRINTED[n["raw"]]]
+
+
+def test_printed_numbers_anchor_the_line(tmp_path):
+    """A move lost from the text does not shift the moves after it: 7.Qe2 is
+    never read as White's sixth move, nor 8.Be3 as his seventh."""
+    pdf = make_book(tmp_path / "lost.pdf", game=LOST_REPLY)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids[:11]) == ["e4", "c5", "Nf3", "e6", "d4", "cxd4", "Nxd4", "a6", "Bd3",
+                                    "Bc5", "Nb3"]
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids[:11])
+    assert out_of_step(book) == []
+
+
 def test_excluded_page_has_no_lines(tmp_path):
     pdf = make_book(tmp_path / "little.pdf")
     sel = tmp_path / "books" / "little" / "selection.json"

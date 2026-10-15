@@ -2631,11 +2631,14 @@ class _Builder:
             self.adopt_pre_notes(self.start_from_initial(run, "main"))
             return
         # a line whose own moves stopped reading (the position after them is
-        # a guess) takes up its numbering again after a diagram: the diagram
-        # gives the position, and a new fragment starts from it
+        # a guess, or the moves after a diagram read from the diagram's
+        # position and not from the line's) takes up its numbering again
+        # after a diagram: the diagram gives the position, and a new
+        # fragment starts from it
         resync = (L is not None and P is not None and P == L.next_ply and not L.waiting
-                  and self.lost(L)
-                  and any(L.last_token_end <= off <= run.start for off, _ in self.diagram_events))
+                  and any(L.last_token_end <= off <= run.start for off, _ in self.diagram_events)
+                  and (self.lost(L) or self.parted(L, run)))
+        resync_from = self.shown_by(L, run) if resync and not self.lost(L) else None
         if L is not None and P == L.next_ply and not resync:
             if self.pending_header and L.header is None:
                 L.header, L.kind, L.title = self.pending_header, "game", self.pending_header["text"]
@@ -2705,7 +2708,8 @@ class _Builder:
                 return
             self.pending_header = self.pending_header or header
             self.release_pre_notes(self.usable_diagram(run.start))
-            L2 = self.from_diagram(run, "main", kind="fragment" if header else None, title=title)
+            L2 = self.from_diagram(run, "main", kind="fragment" if header else None, title=title,
+                                   did=resync_from)
         else:
             if P is None:
                 self.unplaced(run, "its first move carries no move number")
@@ -2734,6 +2738,26 @@ class _Builder:
         nid = L.ply_node.get(P - 1)
         fen = self.nodes[nid]["fen"] if nid is not None else None
         return bool(fen) and _fit(self.dec.run(fen, run.tokens))[0] == 0
+
+    def parted(self, L, run):
+        """True when the first moves of the run do not read cleanly from the
+        last position of L but do from a diagram printed between them
+        (shown_by): the diagram shows the game's position, which the line
+        has lost (a move misread before it)."""
+        if L.broken or not L.last_fen:
+            return False
+        head = _first_moves(run.tokens, 4)
+        return _fit(self.dec.run(L.last_fen, head))[0] != 0 and self.shown_by(L, run) is not None
+
+    def shown_by(self, L, run):
+        """The diagram printed between the last move of L and the run whose
+        position the first moves of the run read cleanly from, or None."""
+        head = _first_moves(run.tokens, 4)
+        for off, did in self.diagram_events:
+            fen = self.diagram_fen(did, run) if L.last_token_end <= off <= run.start else None
+            if fen and _fit(self.dec.run(fen, head))[0] == 0:
+                return did
+        return None
 
     def lost(self, L):
         """True when the line's main line no longer reads: a gap in the text,
@@ -2912,7 +2936,11 @@ class _Builder:
         text introduces opening moves), and no move may contradict a piece
         glyph or a capture mark printed in the text ("1.Rg3" printed with a
         rook glyph is not 1.g3). A run whose sentence names a diagram or sets
-        up a position ("White: ...") never does."""
+        up a position ("White: ...") never does. Only the moves before a
+        move that the text lacks count (see gap_cut)."""
+        skip = self.gap_cut(run)
+        if skip is not None:
+            run = skip[0]
         decs = self.dec.run(chess.STARTING_FEN, run.tokens)
         rank = _fit(decs)[0]
         n = len(run.moves)
@@ -2979,6 +3007,24 @@ class _Builder:
             self.extend(L, head, dh)
             self.extend(L, ext, de)
             return
+        skip = self.gap_cut(run) if cut is None and not (L.waiting or L.broken) else None
+        if skip is not None:
+            # the numbering skips a move that the text lacks ("6.Nb3 7.Qe2"):
+            # the moves after it follow a gap (the program never supplies
+            # the move), never read a move early
+            head, tail = skip
+            self.extend(L, head, decs[:len(head.moves)] if decs is not None else None)
+            self.gap(L, tail, tail.ply)
+            if self.replaying:
+                self.extend(L, tail)    # (gap goes on with it only in the first reading)
+            return
+        if (self.replaying and not (L.waiting or L.broken) and run.ply is not None
+                and run.ply > L.next_ply):
+            # a run the first reading took after a gap in the text, now that
+            # the moves given for the gap let the line read up to it: the
+            # numbering still skips moves before it (a move missing again),
+            # so it follows a gap, never read a move early
+            self.gap(L, run, run.ply)
         if not self.replaying:
             L.ops.append(("main", run))
         else:
@@ -3144,7 +3190,16 @@ class _Builder:
         blocks = [s for s, _, _ in L.main_tok]
         L.ops.append(("notes",))
         state = {"vars": defaultdict(list), "last": None}
-        for run, as_main in L.notes:
+        for run, as_main, lacking in self.gap_notes(L.notes):
+            if lacking:
+                # the moves after a move that the text lacks: never read a
+                # move early, they wait for the reader to give it
+                op = ("unplaced", run, f"the book's text lacks {_ply_words(run.ply - 1)} "
+                                       "before it")
+                self.tidy(L, run)
+                L.ops.append(op)
+                self.do_note(L, op, state, base=True)
+                continue
             if self.is_long(run):
                 op = ("long", run, self.long_cue(run))
                 L.ops.append(op)
@@ -4340,6 +4395,33 @@ class _Builder:
                 if best is None or rank < best[0]:
                     best = (rank, i, j)
         return best and best[1:]
+
+    def gap_notes(self, notes):
+        """The note runs [(run, as_main)] as (run, as_main, lacking): a run
+        whose numbering skips a move that the text lacks (gap_cut) comes as
+        its moves before the gap, then the rest with lacking True."""
+        out = []
+        for run, as_main in notes:
+            skip = None if self.is_long(run) else self.gap_cut(run)
+            if skip is None:
+                out.append((run, as_main, False))
+            else:
+                out += [(skip[0], as_main, False), (skip[1], as_main, True)]
+        return out
+
+    def gap_cut(self, run):
+        """(head, tail): run cut before the first move whose printed number
+        skips a move after the move before it ("6.Nb3 7.Qe2", Black's sixth
+        missing from the text), when moves stand on both sides; else None."""
+        prev = None
+        for j, t in enumerate(run.tokens):
+            if t.kind != "move" or _ply(t) is None:
+                continue
+            if prev is not None and _ply(t) > prev + 1 and run.tokens[j - 1].kind == "number":
+                head, tail = self.cut_run(run, j)
+                return (head, tail) if head is not None and tail is not None else None
+            prev = _ply(t)
+        return None
 
     @staticmethod
     def cut_run(run, j):
