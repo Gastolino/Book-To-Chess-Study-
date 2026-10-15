@@ -108,13 +108,14 @@ class _Writer:
         self.line(caption, x=cx - pymupdf.get_text_length(caption, "tiro", 10) / 2)
         self.y += 6
 
-    def numbered(self, number, move, dots=False):
-        """A game move set as a table, the number apart from its move
-        ("11      Nc3", "11   ...   Qb2?"), both in the move font."""
+    def numbered(self, number, move, black=False):
+        """A game move set as a table, the number at a tab and its move at the
+        next ("11   Nc3"), Black's a tab further on ("11   ...   Qb2?"), all
+        in the move font."""
         self.pg.insert_text((self.x0 + 30, self.y), number, fontname="tibo", fontsize=10)
-        if dots:
-            self.pg.insert_text((self.x0 + 55, self.y), "...", fontname="tibo", fontsize=10)
-        self.pg.insert_text((self.x0 + (85 if dots else 55), self.y), move, fontname="tibo",
+        if black:
+            self.pg.insert_text((self.x0 + 65, self.y), "...", fontname="tibo", fontsize=10)
+        self.pg.insert_text((self.x0 + (100 if black else 65), self.y), move, fontname="tibo",
                             fontsize=10)
         self.y += 13
 
@@ -137,11 +138,13 @@ class _Writer:
 
 
 def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False,
-              beside=False):
+              beside=False, across=False):
     """The little test book: one chapter, or with second a second chapter
     after it (pages 10 and 11) that holds another game. With beside, page 10
     holds a game whose moves are set as a table, a number apart from its
-    move, with a board printed between two of them and no diagram number."""
+    move, with a board printed between two of them and no diagram number;
+    with across, page 10 holds a game and then moves printed on both sides of
+    a board that do not read where their numbering puts them."""
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
@@ -217,10 +220,23 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
         w.line("The two knights defence.", indent=8)
         w.numbered("4", "Ng5")
         w.unlabelled_board()
-        w.numbered("4", "d5", dots=True)
+        w.numbered("4", "d5", black=True)
         w.line("Black gives a pawn for quick play.", indent=8)
         w.numbered("5", "exd5")
         w.line("White takes it at once.", indent=8)
+        w.prose(until=H - 60)
+        w.col(1)
+        w.prose(until=H - 60)
+    if across:
+        w.page()
+        w.mixed([("Smith - Brown, ", True), ("London 1903", False)])
+        w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", bold=True)
+        w.line("The two knights defence.", indent=8)
+        w.line("5.Ng5 d5 5.exd5 Na5", bold=True)
+        w.line("Black gives a pawn for quick play.", indent=8)
+        w.unlabelled_board()
+        w.line("6.Bb5+ c6 7.dxc6 bxc6", bold=True)
+        w.line("White keeps the extra pawn.", indent=8)
         w.prose(until=H - 60)
         w.col(1)
         w.prose(until=H - 60)
@@ -690,6 +706,26 @@ def test_stage1_split_move_number_is_not_a_label():
     assert s1.LABEL_RE.match("b") is None and s1.LABEL_RE.match("14a")
 
 
+def test_stage1_number_with_its_move_beside_is_no_label():
+    """A diagram label stands alone on its line. Over a board, a number with
+    its move printed a tab or two away on its row ("11   ♘ec3", The Art of
+    Planning p13) is a move number; text on its row in the other column
+    leaves a label alone, and so does a rank digit."""
+    import stage1_inspect as s1
+    pic, mid = pymupdf.Rect(40, 335, 170, 455), 196
+    num = pymupdf.Rect(68, 253, 76, 265)
+    assert s1.label_for(pic, [("11", num)], set()) == 0
+    move = [("11", num), ("tL'lec3", pymupdf.Rect(103, 252, 128, 265))]
+    assert s1.label_for(pic, [("11", num)], set(), move, mid) is None
+    far = [("11", num), ("'ifb2?", pymupdf.Rect(138, 253, 165, 265))]   # under it on p13
+    assert s1.label_for(pic, [("11", num)], set(), far, mid) is None
+    other = [("11", num), ("The black queen is a real", pymupdf.Rect(200, 253, 358, 265)),
+             ("8", pymupdf.Rect(30, 253, 34, 265))]
+    assert s1.label_for(pic, [("11", num)], set(), other, mid) == 0
+    assert s1.rank_digit("5", pymupdf.Rect(29, 94, 34, 109), pymupdf.Rect(29, 51, 157, 170))
+    assert not s1.rank_digit("4", pymupdf.Rect(67, 480, 72, 492), pymupdf.Rect(40, 337, 169, 490))
+
+
 def test_move_number_beside_a_board_is_no_label(tmp_path):
     """A game set as a table ("4      Ng5", the board, "4   ...   d5") in a
     book that prints no diagram numbers: the 4 above the board is the move's
@@ -707,6 +743,29 @@ def test_move_number_beside_a_board_is_no_label(tmp_path):
     d = book["pages"][9]["diagrams"][0]
     assert d["label"] is None
     assert d["after_node"] == ids[6]                     # after 4.Ng5, Black to move
+
+
+def test_moves_across_a_board_that_do_not_read_start_from_it(tmp_path):
+    """A misprinted number ("5.Ng5 d5 5.exd5 Na5" for 4 and 5, Tangborn p34)
+    loses the line, and the next run is printed on both sides of a board
+    ("5.exd5 Na5", a note, the board, "6.Bb5+ c6 7.dxc6 bxc6"): it does not
+    read where its numbering puts it, while the moves after the board read
+    from the position the board shows. Those are taken up at the board."""
+    fen = "r1bqkb1r/ppp2ppp/5n2/n2Pp1N1/2B5/8/PPPP1PPP/RNBQK2R w KQkq - 1 6"   # after 5...Na5
+    pdf = make_book(tmp_path / "little.pdf", across=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
+                      diagram_fens={"p10-1": fen})
+    lines = [x for x in book["lines"] if x.get("diagram") == "p10-1"]
+    assert len(lines) == 1 and lines[0]["title"].startswith("Smith - Brown")
+    ids = main_line(book, lines[0])
+    assert sans(book, ids) == ["Bb5+", "c6", "dxc6", "bxc6"]
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+    # a board misread (no bishop on c4), from which those moves do not read:
+    # the run stays whole, and nothing starts from the board
+    misread = fen.replace("2B5", "8")
+    book = build_book(pdf, output_dir=tmp_path / "output2", books_dir=tmp_path / "books",
+                      diagram_fens={"p10-1": misread})
+    assert not any(x.get("diagram") == "p10-1" for x in book["lines"])
 
 
 def test_stacked_boards_get_their_own_ids():

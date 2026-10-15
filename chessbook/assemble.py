@@ -2691,11 +2691,12 @@ class _Builder:
             if P < L.next_ply:
                 cut = (self.diagram_cut(run) if not (self.replaying or self.deferred is not None)
                        else None)
-                if cut is not None and not self.reads_at(L, run, P):
+                if (cut is not None and not self.reads_at(L, run, P)
+                        and self.reads_from_diagram(cut[2], cut[1])):
                     # moves printed on both sides of a diagram that do not read
-                    # where their numbering puts them: those after the diagram
-                    # are taken up there, from the position it shows (see the
-                    # chapter loop)
+                    # where their numbering puts them, while those after it
+                    # read from the position it shows: they are taken up at
+                    # the diagram (see the chapter loop)
                     run, tail, off = cut
                     self.deferred = (off, tail)
                 L.notes.append((run, True))      # a main-font variation
@@ -2742,6 +2743,13 @@ class _Builder:
         before ply P."""
         nid = L.ply_node.get(P - 1)
         fen = self.nodes[nid]["fen"] if nid is not None else None
+        return bool(fen) and _fit(self.dec.run(fen, run.tokens))[0] == 0
+
+    def reads_from_diagram(self, off, run):
+        """True when the run reads cleanly from the position that the diagram
+        printed at offset off shows (as read from its picture)."""
+        did = next((d for o, _, kind, d in self.st.events if kind == "diagram" and o == off), None)
+        fen = self.diagram_fen(did, run) if did is not None else None
         return bool(fen) and _fit(self.dec.run(fen, run.tokens))[0] == 0
 
     def lost(self, L):

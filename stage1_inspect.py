@@ -148,27 +148,34 @@ def between_boards(r, pic):
 
 
 MOVE_DOTS = ".•…·"
-ALONE = 6          # line heights to the right of a label that hold nothing on its row
 
 
 def continues_as_move(r, others):
-    """True when a bare number at r has text printed beside it on its row, so
-    that it is a move number and not a diagram label, which stands alone on
-    its line. Books that set their moves as a table put the move a tab away
-    ("11" and "♘ec3", "11" "..." "♛b2?"), and OCR splits a number's dot and
-    move into a text line of their own ("17" and "• .ixf6t ..."). A single
-    character beside the number (a board's coordinate) and another number (the
-    label of the next board) do not count."""
-    return move_beside(r, others) is not None
+    """True when a bare number at r is a move number whose dot and move OCR
+    split off into a text line of their own on the same row ("17" and
+    "• .ixf6t ..."): such a number is not a diagram label."""
+    h = r.y1 - r.y0
+    for t, o in others:
+        if o is r or not t or t.lstrip(" ")[:1] not in MOVE_DOTS:
+            continue
+        overlap = min(r.y1, o.y1) - max(r.y0, o.y0)
+        if (o.x0 > (r.x0 + r.x1) / 2 and o.x0 - r.x1 <= 15
+                and overlap >= 0.5 * min(h, o.y1 - o.y0)):
+            return True
+    return False
 
 
-def move_beside(r, others):
-    """The entry (text, rect) of others printed beside the number at r that
-    makes it a move number (see continues_as_move), or None."""
+def move_beside(r, others, mid):
+    """The entry (text, rect) of others printed beside the number at r, on its
+    row and in its half of the page (mid is the page's middle), or None. Such
+    text makes the number a move number: books that set their moves as a
+    table print the move a tab or two away ("11" and "♘ec3", "11" "..."
+    "♛b2?"), and a diagram label stands alone on its line. A single character
+    (a board's coordinate) and another number do not count."""
     # (OCR gives some lines a box far taller than their type: the type of a
-    # number is no taller than three times its width, nor than the line
-    # beside it)
+    # number is no taller than three times its width)
     h = min(r.y1 - r.y0, 3 * (r.x1 - r.x0))
+    end = mid if r.x1 <= mid else float("inf")
     for t, o in others:
         s = (t or "").strip()
         if (o is r or not s or (len(s) < 2 and s not in MOVE_DOTS)
@@ -176,9 +183,18 @@ def move_beside(r, others):
             continue
         low = min(h, o.y1 - o.y0)
         overlap = min(r.y1, o.y1) - max(r.y0, o.y0)
-        if o.x0 > (r.x0 + r.x1) / 2 and o.x0 - r.x1 <= ALONE * low and overlap >= 0.5 * low:
+        if (r.x0 + r.x1) / 2 < o.x0 < end and overlap >= 0.5 * low:
             return t, o
     return None
+
+
+def rank_digit(t, r, pic):
+    """True for a rank digit t at r, printed at the left or right edge of the
+    board picture pic, beside it or just within it."""
+    cy = (r.y0 + r.y1) / 2
+    return (len(t) == 1 and t in "12345678" and pic.y0 - 2 <= cy <= pic.y1 + 2
+            and (pic.x0 - 16 <= r.x1 and r.x0 <= pic.x0 + 4
+                 or r.x0 <= pic.x1 + 16 and pic.x1 - 4 <= r.x1))
 
 
 def board_coords(pic, lines):
@@ -199,14 +215,17 @@ def board_coords(pic, lines):
     return len(files), len(ranks)
 
 
-def label_for(pic, labels, used):
-    """The nearest unused label above the picture, or failing that just below it."""
+def label_for(pic, labels, used, lines=(), mid=0):
+    """The nearest unused label above the picture, or failing that just below
+    it. A number with text beside it on its row (see move_beside), of the
+    (text, rect) lines given on a page whose middle is mid, is a move number
+    and no label."""
     best = None
     for k, (_, r) in enumerate(labels):
         if k in used:
             continue
         cx = (r.x0 + r.x1) / 2
-        if not pic.x0 - 25 <= cx <= pic.x1 + 25:
+        if not pic.x0 - 25 <= cx <= pic.x1 + 25 or move_beside(r, lines, mid) is not None:
             continue
         above, below = pic.y0 - r.y1, r.y0 - pic.y1
         # Books that caption below the board put the label close under it, so a
@@ -350,14 +369,13 @@ def inspect_page(doc, i):
         xpics.sort(key=lambda t: ((t[0].x0 + t[0].x1) / 2 > mid, t[0].y0))
     pics = [(r, w, h) for r, w, h, _ in xpics]
     invisible = any(t.get("type") == 3 for t in page.get_texttrace())
-    H = page.rect.height
-    head = H * 0.06  # running head or foot with the page number
+    head = page.rect.height * 0.06  # running head with the page number
     # OCR sometimes splits a number with a space ("1 15" for 115). Lines that
     # touch a picture are its rank and file letters, so they are left out.
     labels = []
     for t, r in lines:
         m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
-        if (m and m.group(1) not in RESULTS and head < (r.y0 + r.y1) / 2 < H - head
+        if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head
                 and not any(r.intersects(p + (-12, -4, 12, 4)) and not between_boards(r, p)
                             for p, _, _ in pics)
                 and not continues_as_move(r, lines)):
@@ -368,7 +386,7 @@ def inspect_page(doc, i):
                         "rect": [round(v, 1) for v in r]})
     used = set()
     for pic, w, h, xref in xpics:
-        k = label_for(pic, labels, used)
+        k = label_for(pic, labels, used, lines, page.rect.width / 2)
         raw = labels[k][0] if k is not None else None
         if k is not None:
             used.add(k)
@@ -388,7 +406,7 @@ def inspect_page(doc, i):
             if j == 0:
                 lab = raw
             else:
-                kk = label_for(br, labels, used)
+                kk = label_for(br, labels, used, lines, page.rect.width / 2)
                 lab = labels[kk][0] if kk is not None else None
                 if kk is not None:
                     used.add(kk)
