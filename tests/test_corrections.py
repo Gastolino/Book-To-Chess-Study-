@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from chessbook import corrections as fixes  # noqa: E402
-from chessbook import reader  # noqa: E402
+from chessbook import live, reader  # noqa: E402
 from chessbook.assemble import build_book  # noqa: E402
 from chessbook.movetext import junk_prefix  # noqa: E402
 from test_assemble import (  # noqa: E402
@@ -328,10 +328,17 @@ def test_a_move_given_for_a_box_keeps_the_numbers_after_it(tmp_path):
     9.Bxa7 as his eighth); given for the gap before 7.Qe2, it lets the rest
     of the game read at its printed numbers."""
     pdf = make_book(tmp_path / "lost.pdf", game=LOST_REPLY)
-    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    state = {}
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
+                      state=state)
     _, nodes = game_nodes(book)
     fixed = rebuild(tmp_path, pdf, {"moves": {key_of(nodes, "Qe2"): {"san": "Ba7"}}})
     assert out_of_step(fixed) == []
+    # made on the board, the move does not stand there (the position before
+    # the box is unknown): reading on asks for the move the text lacks
+    fix = {"moves": {key_of(nodes, "Qe2"): {"san": "Ba7"}}}
+    stop = live.read_on(state, book, fix, key_of(nodes, "Qe2"))["stop"]
+    assert stop["kind"] == "gap" and stop["missing"] == {"from_ply": 11, "count": 1}
     hole = next(n for n in nodes if n.get("gap") and not n["san"])
     assert (hole["number"], hole["black"], hole["missing"]) == (6, True, 1)
     fixed = rebuild(tmp_path, pdf, {"gaps": {hole["gap"]: {"san": ["Ba7"]}}})
@@ -377,6 +384,27 @@ def test_a_move_given_for_junk_keeps_the_printed_numbers(tmp_path):
     assert read[8:] == [(5, False, "Bd3"), (5, True, "Bc5"), (6, False, "Nb3"), (6, True, "Ba7"),
                         (7, False, "Qe2"), (7, True, "d6"), (8, False, "Be3"), (8, True, "Nf6")]
     assert next(n for n in nodes if n["raw"] == "Bd3")["status"] == "failed"
+
+
+def test_a_move_given_for_a_stray_box_keeps_the_printed_numbers(tmp_path):
+    """A word of the text read as Black's fifth move ("Zz9", a square named
+    in a note) stands before the move the book prints with its own number
+    ("5...Nc6"). When the reader gives the box Black's move, the printed
+    5...Nc6 is not read on as White's sixth move (6.Nxc6), nor the moves
+    after it a move early: they keep their printed numbers."""
+    game = ["1.e4 c5 2.Nf3 e6 3.d4 cxd4", "4.Nxd4 a6 5.Bd3 Zz9", "5...Nc6 6.Nxc6 bxc6",
+            "7.O-O d5"]
+    pdf = make_book(tmp_path / "stray.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    _, nodes = game_nodes(book)
+    fixed = rebuild(tmp_path, pdf, {"moves": {key_of(nodes, "Zz9"): {"san": "Nc6"}}})
+    _, nodes = game_nodes(fixed)
+    read = [(n["number"], n["black"], n["san"], n["raw"]) for n in nodes if n["san"]]
+    assert read[8:10] == [(5, False, "Bd3", "Bd3"), (5, True, "Nc6", "Zz9")]
+    assert [r for r in read if r[3] in ("Nxc6", "bxc6", "O-O", "d5")] == [
+        (6, False, "Nxc6", "Nxc6"), (6, True, "bxc6", "bxc6"), (7, False, "O-O", "O-O"),
+        (7, True, "d5", "d5")]
+    assert not [r for r in read if r[3] == "Nc6"]
 
 
 def test_gap_corrections_round_trip(tmp_path):

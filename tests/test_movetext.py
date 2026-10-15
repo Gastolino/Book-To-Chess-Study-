@@ -4,6 +4,7 @@ The OCR forms come from the Soviet Chess Primer (a ClearScan PDF), the first
 book the project is tested on; the code itself knows no particular book.
 """
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import chess
@@ -384,6 +385,37 @@ def test_printed_numbers_anchor_the_moves():
     decs = decode(chess.Board(), find_sequences(
         "1.Nf3 Nf6 2.Ng1 Ng8 3.Nf3 Nf6 4.Ng1 Ng8 5.e4 e5")[0].tokens, insert=False)
     assert [d.status for d in decs] == ["ok"] * 10 and _out_of_step(decs) == []
+
+
+def test_the_position_numbers_the_run_whatever_its_first_move():
+    """The printed numbers anchor the moves as the position numbers its
+    moves, also when the run's first move carries no number (a bare move,
+    a box the reader gave a move) or its number names another ply than the
+    position's: 8.Be3 after a lost 6...Ba7 is never White's seventh move,
+    nor the printed 28...Re8 White's 29th when Black's 28th is already
+    played."""
+    toks = find_sequences("1.e4 c5 2.Nf3 e6 3.d4 cxd4 4.Nxd4 a6 5.Bd3 Bc5 6.Nb3 7.Qe2 d6 "
+                          "8.Be3 Nf6 9.Bxa7 Rxa7")[0].tokens
+    first = next(i for i, t in enumerate(toks) if t.kind == "move")
+    for change in ({"number": None}, {"forced": "e4"}):
+        bare = list(toks)
+        bare[first] = replace(bare[first], **change)
+        decs = decode(chess.Board(), bare, insert=False)
+        assert [d.san for d in decs[:11]] == ["e4", "c5", "Nf3", "e6", "d4", "cxd4", "Nxd4", "a6",
+                                              "Bd3", "Bc5", "Nb3"], change
+        assert _out_of_step(decs) == [] and all(d.status == "failed" for d in decs[11:]), change
+    # Black's 28th move is played (a box the reader gave it): the printed
+    # "28...Re8 29.Re6" does not read on as 29.Re3 29...Re6
+    board = chess.Board("4rk2/2pq1n2/p2p1Q2/1p1P1ppP/3P4/P7/1P3PP1/4R1K1 w - - 0 29")
+    decs = decode(board, find_sequences("28...Re8 29.Re6 Qd8")[0].tokens, insert=False)
+    assert decs[0].status == "failed" and [d.san for d in decs[1:]] == ["Re6", "Qd8"]
+    assert _out_of_step(decs) == []
+    # a number printed without dots, with a word the text leaves out before
+    # the move ("2 ttJO e6", the knight's move unread): e6 is Black's move,
+    # never White's second (2.e5)
+    toks = find_sequences("1 e4 c5 2      e6 3 d4 cxd4", dotless=True)[0].tokens
+    decs = decode(chess.Board(), toks, insert=False)
+    assert [d.san for d in decs[:2]] == ["e4", "c5"] and decs[2].status == "failed"
 
 
 def test_prose_word_after_a_move_ends_the_run():

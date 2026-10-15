@@ -251,7 +251,7 @@ from .movetext import DOTLESS_MIN, DOTLESS_SHARE
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
 from .movetext import CAPTURE_CHARS, _ocr_digit_slip, junk_prefix, letter_symbol, symbol_span
 from .movetext import _resolve_letters, SHAPE_KNOWN, _RESULT_RE, _CASTLE_RE
-from .movetext import FILE_READ, RANK_READ
+from .movetext import FILE_READ, RANK_READ, left_out
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -265,6 +265,7 @@ WAIT_REASON = "needs the diagram position (Stage 3)"
 CORRECTED_COUNTS = {"move": "moves", "symbol": "symbol_moves", "connected": "connections",
                     "split": "splits", "filled": "gap_moves", "added": "added_moves"}
 COMMENT_MAX = 2000              # characters of note text kept as one comment
+SHOWN_BACK = 6                  # the line's last moves a failure among which may part it
 GAP_MAX = 8                     # plies a main run may skip and still continue its line
 SUGGEST_GAP = 4                 # plies a run's number may lie ahead of the line it follows (suggest)
 SUGGEST_PAGES = 2               # pages past the line's last printed move that suggest looks at
@@ -391,6 +392,13 @@ def _ply(tok):
     return (tok.number - 1) * 2 + int(bool(tok.black))
 
 
+def _number_plies(num):
+    """The plies of the move after a printed number token, as its digits and
+    its dots (or their absence) allow."""
+    sides = (int(bool(num.black)),) if num.side_known else (0, 1)
+    return {(v - 1) * 2 + s for v in _number_values(num) for s in sides}
+
+
 def _renumbered(run, ply):
     """The run read with the first move number and side that ply implies, when
     the number as printed can be read that way (OCR's "s" stands for 5 as well
@@ -403,8 +411,19 @@ def _renumbered(run, ply):
         return None
     if first.side_known and bool(first.black) != black:
         return None
+    return _relabelled(run, ply)
+
+
+def _relabelled(run, ply, segment=False):
+    """The run numbered from ply, whatever it prints (the decoder reads its
+    moves where their numbers put them); with segment, only its moves up to
+    the next number it prints."""
     toks = list(run.tokens)
-    _relabel(toks, n, black)
+    k = next((i for i, t in enumerate(toks) if i and t.kind == "number" and any(
+        u.kind == "move" for u in toks[:i])), len(toks)) if segment else len(toks)
+    head = toks[:k]
+    _relabel(head, ply // 2 + 1, bool(ply % 2))
+    toks[:k] = head
     moves = [t for t in toks if t.kind == "move"]
     return replace(run, tokens=toks, moves=moves, ply=_ply(moves[0]))
 
@@ -2631,13 +2650,13 @@ class _Builder:
             self.adopt_pre_notes(self.start_from_initial(run, "main"))
             return
         # a line whose own moves stopped reading (the position after them is
-        # a guess, or the moves after a diagram read from the diagram's
-        # position and not from the line's) takes up its numbering again
-        # after a diagram: the diagram gives the position, and a new
-        # fragment starts from it
+        # a guess, or a diagram between shows another position, from which
+        # the moves after it read and not from the line's) takes up its
+        # numbering again after a diagram: the diagram gives the position, and
+        # a new fragment starts from it
         resync = (L is not None and P is not None and P == L.next_ply and not L.waiting
                   and any(L.last_token_end <= off <= run.start for off, _ in self.diagram_events)
-                  and (self.lost(L) or self.parted(L, run)))
+                  and (self.lost(L) or self.shown_by(L, run) is not None))
         resync_from = self.shown_by(L, run) if resync and not self.lost(L) else None
         if L is not None and P == L.next_ply and not resync:
             if self.pending_header and L.header is None:
@@ -2686,10 +2705,13 @@ class _Builder:
                     return
             elif not self.reads_at(L, run, P):
                 # (a run that reads as legal play where its numbering puts it
-                # is a variation there, however it may read at the line's end)
-                decs = self.dec.run(L.last_fen, run.tokens)
+                # is a variation there, however it may read at the line's end;
+                # one that reads at the end goes on with its number misread,
+                # "J 6" for 16, and is numbered as the line goes on)
+                ext = _relabelled(run, L.next_ply)
+                decs = self.dec.run(L.last_fen, ext.tokens)
                 if _fit(decs)[0] == 0:
-                    self.extend(L, run, decs)
+                    self.extend(L, ext, decs)
                     return
             if P < L.next_ply:
                 L.notes.append((run, True))      # a main-font variation
@@ -2739,23 +2761,27 @@ class _Builder:
         fen = self.nodes[nid]["fen"] if nid is not None else None
         return bool(fen) and _fit(self.dec.run(fen, run.tokens))[0] == 0
 
-    def parted(self, L, run):
-        """True when the first moves of the run do not read cleanly from the
-        last position of L but do from a diagram printed between them
-        (shown_by): the diagram shows the game's position, which the line
-        has lost (a move misread before it)."""
-        if L.broken or not L.last_fen:
-            return False
-        head = _first_moves(run.tokens, 4)
-        return _fit(self.dec.run(L.last_fen, head))[0] != 0 and self.shown_by(L, run) is not None
-
     def shown_by(self, L, run):
-        """The diagram printed between the last move of L and the run whose
-        position the first moves of the run read cleanly from, or None."""
+        """The diagram printed between the last move of L and the run that
+        shows another position than the line's, one the first moves of the
+        run read from beyond doubt where they do not read from the line's,
+        when a move of the line failed shortly before: the line has lost the
+        game's position (a move misread there), which the diagram gives again.
+        None when there is none (or L's position is a guess, see lost)."""
+        if L.broken or not L.last_fen or not any(
+                self.nodes[n]["status"] == "failed" for n in L.main_nodes[1:][-SHOWN_BACK:]):
+            return None
+        # (trial readings, kept out of the memo: see _Decoder.run)
         head = _first_moves(run.tokens, 4)
+        if _fit(self.dec.run(L.last_fen, head, keep=False))[0] == 0:
+            return None
+        placed = L.last_fen.split()[0]
         for off, did in self.diagram_events:
-            fen = self.diagram_fen(did, run) if L.last_token_end <= off <= run.start else None
-            if fen and _fit(self.dec.run(fen, head))[0] == 0:
+            if not L.last_token_end <= off <= run.start or not self.diagram_selected(did) \
+                    or (self.readings.get(did) or {}).get("doubtful"):
+                continue
+            fen = self.diagram_fen(did, run)
+            if fen and fen.split()[0] != placed and _fit(self.dec.run(fen, head, keep=False))[0] == 0:
                 return did
         return None
 
@@ -4412,12 +4438,24 @@ class _Builder:
     def gap_cut(self, run):
         """(head, tail): run cut before the first move whose printed number
         skips a move after the move before it ("6.Nb3 7.Qe2", Black's sixth
-        missing from the text), when moves stand on both sides; else None."""
+        missing from the text), when moves stand on both sides; else None.
+        A number that another reading of its digits ("S" is 5 or 8), or of
+        its side where it prints no dots, puts right after the move before
+        it skips nothing (as the decoder reads it, movetext._places)."""
         prev = None
         for j, t in enumerate(run.tokens):
             if t.kind != "move" or _ply(t) is None:
                 continue
-            if prev is not None and _ply(t) > prev + 1 and run.tokens[j - 1].kind == "number":
+            num = run.tokens[j - 1] if j else None
+            if prev is not None and num.kind == "number" and left_out(num, t) \
+                    and prev + 1 < _ply(t) | 1:
+                # White's move of the number unread before Black's ("2 ttJO e6")
+                head, tail = self.cut_run(run, j)
+                if head is None or tail is None:
+                    return None
+                return head, _relabelled(tail, _ply(t) | 1, segment=True)
+            if prev is not None and _ply(t) > prev + 1 and num.kind == "number" \
+                    and prev + 1 not in _number_plies(num):
                 head, tail = self.cut_run(run, j)
                 return (head, tail) if head is not None and tail is not None else None
             prev = _ply(t)
@@ -4790,16 +4828,18 @@ class _Builder:
             for parent in (node["parent"], nid):
                 if parent is None or not self.nodes[parent]["fen"]:
                     continue
-                decs = self.dec.run(self.nodes[parent]["fen"], run.tokens)
+                # (the reader's choice numbers the moves, whatever the text prints)
+                there = _relabelled(run, _board_ply(self.nodes[parent]["fen"]))
+                decs = self.dec.run(self.nodes[parent]["fen"], there.tokens)
                 f = _fit(decs)
                 if f[0] <= 1 and (best is None or f < best[0]):
-                    best = (f, parent, decs)
+                    best = (f, parent, decs, there)
         if best is None:
             why = ("you tied it to a move that the program no longer finds" if nid is None else
                    "its moves are not legal at the move you tied it to")
             self.unplaced(run, why, src=L)
             return
-        _, parent, decs = best
+        _, parent, decs, run = best
         nodes = self.insert_decoded(L, parent, run, decs)
         L.variations += 1
         if nodes:
@@ -4890,7 +4930,8 @@ class _Builder:
         if missing:
             refuse(why, missing)
             return
-        decs = self.dec.run(start, run0.tokens)
+        # (the reader's join numbers the moves, whatever the text prints)
+        decs = self.dec.run(start, _relabelled(run0, _board_ply(start)).tokens)
         if not decs or decs[0].status == "failed" or (_fit(decs)[0] == 2 and not why):
             shown = self.shown_move(run0.moves[0].raw)
             side = "Black" if board.turn == chess.BLACK else "White"
@@ -4911,8 +4952,8 @@ class _Builder:
             return
         # a variation from the move chosen: the runs read as one sequence
         toks = [t for r in mains for t in self.forced(r).tokens if r.ci == run0.ci]
-        whole = replace(run0, tokens=toks, moves=[t for t in toks if t.kind == "move"],
-                        end=toks[-1].end)
+        whole = _relabelled(replace(run0, tokens=toks, moves=[t for t in toks if t.kind == "move"],
+                                    end=toks[-1].end), _board_ply(start))
         decs = self.dec.run(start, whole.tokens)
         nodes = self.insert_decoded(L, parent, whole, decs)
         L.variations += 1
@@ -4954,7 +4995,7 @@ class _Builder:
                     break
             want += 1
         if cut is None:
-            return sub
+            return sub[:k] + [("main", _relabelled(run, ply))] + sub[k + 1:]
         head, tail = self.cut_run(run, cut)
         tail = self.forced(tail)
         first = tail.moves[0]
@@ -4971,7 +5012,7 @@ class _Builder:
             if o[0] in ("main", "note", "unplaced"):
                 self.unplaced(o[1], why if o[0] == "main" else
                               "the moves before it stand in no line", src=L)
-        return sub[:k] + ([("main", head)] if head is not None else [])
+        return sub[:k] + ([("main", _relabelled(head, ply))] if head is not None else [])
 
     def reading_cut(self, L, sub, fen, checked=True):
         """The ops sub that continue the main line of L from the position fen
@@ -5544,6 +5585,16 @@ class _Builder:
         if L is None:
             raise ValueError("The program no longer finds the line of that move.")
         skip = set(skip or ())
+        if not self.nodes[nid]["fen"] and not before:
+            # a move after a gap in the text (the reader made one there, which
+            # does not stand): the moves the text lacks are asked for first
+            hole = nid
+            while hole is not None and not (self.nodes[hole].get("gap")
+                                             and not self.nodes[hole]["raw"]):
+                hole = self.nodes[hole]["parent"]
+            up = self.nodes[hole]["parent"] if hole is not None else None
+            if up is not None and self.nodes[up]["fen"]:
+                return self.suggestion_inside(L, up, hole, between)
         # the end of the branch: the line's own moves after the move given
         cur, printed = nid, (nid if self.nodes[nid].get("key") else None)
         while True:

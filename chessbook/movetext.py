@@ -2161,28 +2161,29 @@ OLD_KEEP = 4          # old hypotheses kept in the beam
 RETRY_FACTOR = 4      # beam multiplier for the second search of a run with failures
 WILD_MARGIN = 2.5     # a failed-token expansion must come this close to the best reading
 WILD_HYPS = 3         # only the best few hypotheses expand a failed token
+WORD_GAP = 3          # characters between a number and its move that hold something
 
 # A path entry: (token index, kind, move, inserted move, cost, glyph, parse);
 # kind is "move", "wild" (a failed token, any move played) or "skip" (no ply).
 
 
-def _places(board: chess.Board, tokens: list) -> list:
+def _places(tokens: list) -> list:
     """Where the printed move numbers put each move token of a run, for
-    _search: (plies, drifts, numbered), or None where the run prints no
+    _search: (ply, drifts, numbered), or None for a token that carries no
     number to go by.
 
-    plies are the board's plies at which the token stands when the numbering
-    holds: counted from the run's first move, which stands at board's ply,
-    and as the board numbers its moves (a line's position carries the book's
-    numbering; a run that starts out of step with it, after a correction
-    before it, keeps to the printed numbers). drifts are the differences from
-    them that the printed number allows: the other readings of its digits
-    ("S" is 5 or 8) and, for a number that names no side ("12 Nf3" in a book
-    that prints no dots), either side's move of that number. numbered is
-    True when the number stands right before the token; a move printed
-    without one has the drifts of the number before it, less one for each
-    token since that number that took no ply."""
-    out, first, drifts, num, prev = [], None, None, None, None
+    ply is the ply the token's number names, as the position the run is read
+    from numbers its moves (a line's position carries the book's numbering,
+    whichever token of the run prints the first number). drifts are the
+    differences from it that the printed number allows: the other readings
+    of its digits ("S" is 5 or 8) and, for a number that names no side ("12
+    Nf3" in a book that prints no dots), either side's move of that number.
+    The side of the run's first move is the position's, as it always was
+    (its dots may be a figurine's junk, "18 ..txc5" for 18.Bxc5): only its
+    number binds. numbered is True when the number stands right before the
+    token; a move printed without one has the drifts of the number before
+    it, less one for each token since that number that took no ply."""
+    out, drifts, num, prev = [], None, None, None
     for t in tokens:
         if t.kind == "number":
             num, prev = t, "number"
@@ -2191,19 +2192,37 @@ def _places(board: chess.Board, tokens: list) -> list:
             continue
         numbered, prev = prev == "number", "move"
         lp = None if t.number is None else (t.number - 1) * 2 + int(bool(t.black))
-        if not out:
-            first = lp
         if numbered:
             drifts = None
             if num.number is not None and lp is not None:
-                sides = (int(bool(t.black)),) if num.side_known else (0, 1)
+                sides = (int(bool(t.black)),) if out and _names_side(num, t) else (0, 1)
+                if left_out(num, t):
+                    sides = (1,)
                 drifts = frozenset(2 * (v - t.number) + s - int(bool(t.black))
                                    for v in _number_values(num) for s in sides)
-        if first is None or lp is None or drifts is None:
-            out.append(None)
-        else:
-            out.append(({board.ply() + lp - first, lp}, drifts, numbered))
+        out.append(None if lp is None or drifts is None else (lp, drifts, numbered))
     return out
+
+
+def left_out(num: Token, tok: Token) -> bool:
+    """True when the text leaves something out between the number num,
+    printed without dots, and the move tok after it: dots ("25 ... Rxd1+")
+    or White's move, unread ("2 ttJO e6" for 2 Nf3 e6). Either way tok is
+    Black's move of that number."""
+    return tok.start - num.end > WORD_GAP and not any(ch in DOT_CHARS for ch in num.raw)
+
+
+def _names_side(num: Token, tok: Token) -> bool:
+    """True when the dots of the number num name the side of the move tok
+    after it surely: not two dots on the move ("18 ..txc5", "6..id3") or
+    dots before a glyph that starts with one ("5 ... .ixf3"), which may be
+    the figurine's junk (as _side reads them, before the run's numbering
+    settles them)."""
+    if not num.side_known:
+        return False
+    dots = sum(ch in DOT_CHARS for ch in num.raw)
+    on_move = num.end == tok.start
+    return not ((dots == 2 and on_move) or (dots >= 2 and tok.raw[:1] in DOT_CHARS))
 
 
 def _placed(place, ply: int, skips: int) -> bool:
@@ -2212,8 +2231,8 @@ def _placed(place, ply: int, skips: int) -> bool:
     no ply)."""
     if place is None:
         return True
-    plies, drifts, numbered = place
-    return any(ply - at + (0 if numbered else skips) in drifts for at in plies)
+    at, drifts, numbered = place
+    return ply - at + (0 if numbered else skips) in drifts
 
 
 def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
@@ -2409,12 +2428,13 @@ def decode(board: chess.Board, tokens: list, lookahead: int = 3, letters=None,
     glyphs is a GlyphModel holding the book's learnt glyph junk. lookahead is
     the number of following moves used to choose between readings that fit a
     token equally well. The printed move numbers anchor the moves: a token
-    is read as a move only at the ply its number names (counted from the
-    run's first move, or as board numbers its moves), so a move lost from
-    the text never shifts the moves after it by a ply or a move. With insert=False the search never supplies a move
-    that the numbering shows to be missing from the text; the tokens after
-    such a gap then fail. A move read for the side its number does not name
-    (where the numbering allows either) is 'guessed', never 'ok'.
+    is read as a move only at the ply its number names, as board numbers its
+    moves (see _places), so a move lost from the text never shifts the moves
+    after it by a ply or a move. With insert=False the search never supplies
+    a move that the numbering shows to be missing from the text; the tokens
+    after such a gap then fail. A move played where its number does not put
+    it (a move the reader gave, a run that prints no number) is 'guessed',
+    never 'ok'.
     """
     return _decode(board, tokens, _Scorer(letters, glyphs), lookahead, beam, insert)
 
@@ -2442,7 +2462,7 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
         return []
     labels = [bool(t.black) for t in mtoks]
     anchored = _anchors(tokens)
-    places = _places(board, tokens)
+    places = _places(tokens)
     offset0 = int((board.turn == chess.BLACK) != labels[0])
     best, died_at = _search(board, mtoks, labels, scorer, beam, True, offset0, insert=insert,
                             anchored=anchored, places=places)
@@ -2478,7 +2498,10 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
             b.push(ins)
         elif kind == "move" and (labels[idx] ^ bool(offset)) != (b.turn == chess.BLACK):
             offset ^= 1
-            flipped = True      # played for the side the numbering does not name
+            flipped = True
+        # a move played where its printed number does not put it (or, with no
+        # number to go by, for the side the run's numbering does not name)
+        astray = not _placed(places[idx], b.ply(), skips) if places[idx] else flipped
         if kind == "skip":
             if not anchored[idx]:
                 offset ^= 1
@@ -2540,7 +2563,7 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
                 if ties:
                     status = "ambiguous"
             alts = [b.san(t[1]) for t in scored]
-        if flipped and status == "ok":
+        if astray and status == "ok":
             status = "guessed"
         pt = b.piece_type_at(m.from_square)
         gmap = _with_glyph(gmap, glyph, pt, scorer)
