@@ -458,10 +458,11 @@ def test_german_letters(tmp_path):
 def test_capital_c_of_a_pawn_move_is_the_c_file(tmp_path):
     """OCR (and some text layers) set the c of a pawn move as a capital:
     "2.C4" is 2.c4, read without doubt, not a piece move to the fourth rank,
-    and the line goes on from the right board."""
+    and the line goes on from the right board. The capital is OCR's, so the
+    book is one an OCR program made (a typeset book is read as printed)."""
     game = ["1.d4 d5 2.C4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 C6",
             "8.Bd3"]
-    pdf = make_book(tmp_path / "little.pdf", game=game)
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
     book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
     g = line_titled(book, "Smith - Jones")
     ids = main_line(book, g)
