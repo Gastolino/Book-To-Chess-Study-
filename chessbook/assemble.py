@@ -892,7 +892,8 @@ class _Run:
     result: Optional[str]
     home: Optional[str] = None  # the diagram a held note would start from
     context: Optional[tuple] = None  # the solution context it was held in
-    ci: int = -1                # the chapter whose text holds the run
+    owner: Optional["_Line"] = None  # the line that ended just before a held note (on_note)
+    ci: int = -1               # the chapter whose text holds the run
     text: str = ""              # the run's text, for messages
     bracket: Optional[int] = None   # offset of the bracket the run stands in (depth > 0)
 
@@ -1019,6 +1020,9 @@ class _Line:
     broken: bool = False        # a gap in the text ended the decoded part of the line
     hold: Optional[int] = None  # a diagram that may end the line (see _Builder.hold)
     hold_inside: bool = False   # that diagram stands among the moves of the line's last run
+    ended_at_hold: bool = False  # the line ended at that diagram (see _Builder.close)
+    tail_end: int = 0           # end of its main runs left unread after it ended (from_diagram)
+    note_state: Optional[dict] = None   # where its notes went (see _Builder.attach_notes)
     start_note: str = ""        # how the starting position was chosen, in plain words
     spec: dict = field(default_factory=dict)          # where the line starts (see _Builder.replay_line)
     ops: list = field(default_factory=list)           # how the line was built, for replaying it
@@ -1658,6 +1662,7 @@ class _Builder:
         self.section_raw = ""
         self.prev_heading = None
         self.last_closed = None
+        self.main_end = 0               # end of the last run read as a main line's
         self.suspended = None           # (line, offset): a line a heading interrupted
         self.deferred = None            # (offset, run): the rest of a run cut at a diagram
         self.held_header = None         # the pending header, while a note starts a line
@@ -1827,6 +1832,9 @@ class _Builder:
         them), and the notes after the first become its variations."""
         notes, self.pre_notes = self.pre_notes, []
         for run in notes:
+            if run.owner is not None:
+                self.attach_note(run.owner, run, False, run.owner.note_state)
+                continue
             L = self.active
             if L is not None:
                 L.notes.append((run, False))
@@ -1845,17 +1853,25 @@ class _Builder:
                 self.extend(L, run)
 
     def adopt_pre_notes(self, L):
-        """Notes held back before a main line began belong to it."""
+        """Notes held back before a main line began belong to it, but for
+        those printed after another line ended (on_note): they are that
+        line's, unless it is the one that goes on."""
         if L is not None and self.pre_notes:
-            L.notes.extend((r, False) for r in self.pre_notes)
+            for r in self.pre_notes:
+                if r.owner is not None and r.owner is not L:
+                    self.attach_note(r.owner, r, False, r.owner.note_state)
+                else:
+                    L.notes.append((r, False))
             self.pre_notes = []
 
     def release_pre_notes(self, home):
         """Before a main line that starts from home (a diagram id, or None for
         the initial position) begins, held notes that would start from another
         diagram become lines of their own."""
-        keep = [r for r in self.pre_notes if r.home is None or r.home == home]
-        other = [r for r in self.pre_notes if not (r.home is None or r.home == home)]
+        def mine(r):
+            return r.owner is not None or r.home is None or r.home == home
+        keep = [r for r in self.pre_notes if mine(r)]
+        other = [r for r in self.pre_notes if not mine(r)]
         if other:
             self.pre_notes = other
             self.flush_pre_notes()
@@ -2026,16 +2042,27 @@ class _Builder:
         head = ("its moves do not read as play from the initial position"
                 if initial else f"it starts at {_ply_words(run.ply)}")
         last = self.last_diagram(run.start)
-        prev = self.last_closed
-        if (not initial and prev is not None and prev.chapter == self.ci and not prev.waiting
-                and run.ply is not None and prev.next_ply < run.ply
-                and (last is None or self.diagram_offset(last) < prev.first_offset)):
+        prev = None if initial else self.stopped_line(run)
+        if prev is not None:
             return (f"{head}, and the line \"{prev.title}\" before it stops at "
                     f"{_ply_words(prev.next_ply - 1)}, with the moves between missing from the text")
         if last is not None:
             return (f"{head}, and a heading or other moves stand between it and the last "
                     f"diagram before it, {self.diagram_name(last)}")
         return f"{head}, and no diagram comes before it in this chapter"
+
+    def stopped_line(self, run):
+        """The line closed last in the chapter when the run, which found no
+        starting position, would go on with it but starts later than its next
+        move, with no diagram printed since the line began: the moves between
+        are missing from the text. None otherwise."""
+        last = self.last_diagram(run.start)
+        prev = self.last_closed
+        if (prev is not None and prev.chapter == self.ci and not prev.waiting
+                and run.ply is not None and prev.next_ply < run.ply
+                and (last is None or self.diagram_offset(last) < prev.first_offset)):
+            return prev
+        return None
 
     def diagram_offset(self, did):
         for doff, d in self.diagram_events:
@@ -2133,6 +2160,11 @@ class _Builder:
         if pick is not None:
             did = pick["did"]
         if did is None:
+            prev = self.stopped_line(run)
+            if prev is not None and born == "main" and self.pending_header is None:
+                # the line's own moves, after moves the text lacks: the notes
+                # printed after them are still the line's (see on_note)
+                prev.tail_end = max(prev.tail_end, run.end)
             self.unplaced(run, self.no_start_reason(run))
             return None
         if not self.diagram_selected(did):
@@ -2613,6 +2645,7 @@ class _Builder:
                 and self.inline_run(run):
             self.on_note(run)                   # moves mentioned in a sentence
             return
+        self.main_end = run.end
         if P == 0:
             if L is not None:
                 self.close(run.start)
@@ -3128,11 +3161,25 @@ class _Builder:
             return
         # A note with no line open either tells how the position arose
         # ("after the opening moves 1.e4 e5 ...": a line from the initial
-        # position) or discusses the position before its main line begins
-        # ("A clear draw results from 1.a7?"): it waits for that main line.
+        # position), or goes on about the line that has just ended ("21 exd5
+        # 1-0 ... while after 21...Kh8 22 dxc6"), or discusses the position
+        # before its main line begins ("A clear draw results from 1.a7?"):
+        # it waits for that main line (see adopt_pre_notes).
         if run.ply == 0 and self.initial_accept(run)[0]:
             self.start_from_initial(run, "note")
             return
+        L = self.last_closed
+        end = max(L.last_token_end, L.tail_end) if L is not None else 0
+        if (L is not None and L.chapter == self.ci and L.note_state is not None
+                and not L.ended_at_hold and self.structural < end and self.main_end <= end
+                and not self.diagram_between(L, run)
+                and (run.ply is None or run.ply >= (L.spec.get("ply") or 0))):
+            # no heading, game header or other main line since the line's
+            # last move (or since its moves printed after a gap that ended
+            # it), no diagram since its last move read, and no number before
+            # its start: the note is that line's, placed where it reads or
+            # left in no line with the reason, unless the line goes on
+            run.owner = L
         run.home = self.usable_diagram(run.start)
         run.context = self.exercise
         self.pre_notes.append(run)
@@ -3141,49 +3188,54 @@ class _Builder:
         """Place the line's note runs, recording each decision as an op of the
         line (see replay_line): the text decides what may be placed, the
         moves decide where."""
-        blocks = [s for s, _, _ in L.main_tok]
         L.ops.append(("notes",))
-        state = {"vars": defaultdict(list), "last": None}
+        state = L.note_state = {"vars": defaultdict(list), "last": None}
         for run, as_main in L.notes:
-            if self.is_long(run):
-                op = ("long", run, self.long_cue(run))
-                L.ops.append(op)
-                self.do_long(L, op, state)
-                continue
-            if self.is_threat(run):
-                op = ("unplaced", run, "the text gives these moves as a threat or a plan, not as "
-                                       "moves played")
-                self.tidy(L, run)
-            elif (lambda ref: ref and ref[1] and ref[1] != L.diagram)(self.referenced_diagram(run)):
-                ref = self.referenced_diagram(run)
-                self.detached_line(run, ref[1], ref[0])
-                continue
-            elif run.ply is None and not _ALT_CUE_RE.search(self.lead_text(run.start, 60)):
-                op = ("unplaced", run, "its first move carries no move number, and no word such as "
-                                       "\"instead\" or \"better\" ties it to a move of the line")
-                self.tidy(L, run)
-            else:
-                # the reply printed without its number after a comment
-                # ("10.Nd3 Every swap helps Black. b5 11.Bb3") goes with the run
-                ext = self.bare_lead(L, run, state, blocks)
-                run = ext or run
-                cue = bool(_FOLLOW_RE.search(self.lead_text(run.start, 40)))
-                op = ["note", run, as_main, bisect.bisect_left(blocks, run.start), cue, False]
-                if run.ply == 0 and not as_main and (L.waiting or 0 not in L.ply_node):
-                    op[5] = None            # may be a sequence of its own (see note_op)
-                if ext is not None:
-                    op.append(True)         # begins with a bare move (see do_note)
-                op = tuple(op)
+            self.attach_note(L, run, as_main, state)
+
+    def attach_note(self, L, run, as_main, state):
+        """Place one note run of the line (see attach_notes), or of the line
+        that has just ended (see on_note)."""
+        blocks = [s for s, _, _ in L.main_tok]
+        if self.is_long(run):
+            op = ("long", run, self.long_cue(run))
             L.ops.append(op)
-            placed = self.do_note(L, op, state, base=True)
-            if placed and op[0] == "note":
-                tail = self.bare_tail(L, run, state, op[3])
-                if tail is not None:
-                    # a move without its number that ends the variation
-                    # ("... familiar with: Qxd4!"): it may only go on with it
-                    op = ("note", tail, as_main, op[3], True, False)
-                    L.ops.append(op)
-                    self.do_note(L, op, state, base=True)
+            self.do_long(L, op, state)
+            return
+        if self.is_threat(run):
+            op = ("unplaced", run, "the text gives these moves as a threat or a plan, not as "
+                                   "moves played")
+            self.tidy(L, run)
+        elif (lambda ref: ref and ref[1] and ref[1] != L.diagram)(self.referenced_diagram(run)):
+            ref = self.referenced_diagram(run)
+            self.detached_line(run, ref[1], ref[0])
+            return
+        elif run.ply is None and not _ALT_CUE_RE.search(self.lead_text(run.start, 60)):
+            op = ("unplaced", run, "its first move carries no move number, and no word such as "
+                                   "\"instead\" or \"better\" ties it to a move of the line")
+            self.tidy(L, run)
+        else:
+            # the reply printed without its number after a comment
+            # ("10.Nd3 Every swap helps Black. b5 11.Bb3") goes with the run
+            ext = self.bare_lead(L, run, state, blocks)
+            run = ext or run
+            cue = bool(_FOLLOW_RE.search(self.lead_text(run.start, 40)))
+            op = ["note", run, as_main, bisect.bisect_left(blocks, run.start), cue, False]
+            if run.ply == 0 and not as_main and (L.waiting or 0 not in L.ply_node):
+                op[5] = None            # may be a sequence of its own (see note_op)
+            if ext is not None:
+                op.append(True)         # begins with a bare move (see do_note)
+            op = tuple(op)
+        L.ops.append(op)
+        placed = self.do_note(L, op, state, base=True)
+        if placed and op[0] == "note":
+            tail = self.bare_tail(L, run, state, op[3])
+            if tail is not None:
+                # a move without its number that ends the variation
+                # ("... familiar with: Qxd4!"): it may only go on with it
+                op = ("note", tail, as_main, op[3], True, False)
+                L.ops.append(op)
+                self.do_note(L, op, state, base=True)
 
     @staticmethod
     def is_long(run):
@@ -4037,7 +4089,8 @@ class _Builder:
         if L is None:
             return
         late = []
-        if L.hold is not None and off > L.hold:
+        L.ended_at_hold = L.hold is not None and off > L.hold
+        if L.ended_at_hold:
             # the line ends at the diagram that held it: notes after the
             # diagram belong to what follows it
             late = [n for n in L.notes if n[0].start > L.hold]

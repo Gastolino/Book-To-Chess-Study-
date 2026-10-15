@@ -113,9 +113,11 @@ class _Writer:
         self.doc.save(path)
 
 
-def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False):
+def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False,
+              tail=()):
     """The little test book: one chapter, or with second a second chapter
-    after it (pages 10 and 11) that holds another game."""
+    after it (pages 10 and 11) that holds another game. tail: lines (text,
+    bold) printed right after the result of the first game."""
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
@@ -150,6 +152,8 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
     w.line(game[3], bold=True)
     w.line("White has a strong attack.", indent=8)
     w.line("1-0", bold=True)
+    for text, bold in tail:
+        w.line(text, bold=bold, indent=0 if bold else 8)
     w.prose(until=H - 60)
     # page 5: a position from a diagram
     w.page()
@@ -339,6 +343,55 @@ def test_solutions_find_their_exercise_diagrams(little):
     assert by_diagram["p6-2"]["title"] == "Solutions 2"
     nodes = book["nodes"]
     assert nodes[nodes[by_diagram["p6-2"]["root"]]["children"][0]]["raw"] == "Nf6+"
+
+
+def test_note_after_the_result_stays_with_its_game(tmp_path):
+    """A note printed after a game's result, before the next game begins
+    (here with no header the program finds), discusses the game that ended:
+    its moves are a variation of that game, never of the next one."""
+    pdf = make_book(tmp_path / "little.pdf", tail=[
+        ("White's attack is too strong: after 8...h6", False),
+        ("9.d3 Black cannot hold the centre.", False),
+        ("1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6", True),
+        ("5.O-O Be7 6.Re1 b5 7.Bb3 d6 8.c3 O-O", True),
+        ("9.h3 Na5 1/2-1/2", True)])
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    nodes = book["nodes"]
+    assert sans(book, [i for i in main_line(book, g) if nodes[i]["main"]]) == MAIN_SAN
+    second = next(x for x in book["lines"] if x["page"] == 4 and x["id"] != g["id"])
+    assert sans(book, main_line(book, second))[:4] == ["e4", "e5", "Nf3", "Nc6"]
+    h6 = [n for n in nodes.values() if n["raw"] == "h6" and n["page"] == 4]
+    assert len(h6) == 1 and h6[0]["line"] == g["id"] and not h6[0]["main"]
+    assert nodes[h6[0]["parent"]]["san"] == "Nc3" and nodes[h6[0]["parent"]]["main"]
+    assert [nodes[c]["san"] for c in h6[0]["children"]] == ["d3"]
+    assert not any(n["line"] == second["id"] and not n["main"] for n in nodes.values()
+                   if n["parent"] is not None)
+
+
+def test_note_after_moves_left_out_comes_with_the_join(tmp_path):
+    """After the result, the game goes on with "9.d4 c6 10.Bg5": Black's
+    eighth move is missing, so the run stands in no line, and so does the
+    note after it ("Instead 10.Bd2"), which is still the game's. When the
+    reader joins the run to the game, the note comes with it as a variation
+    of 10.Bg5."""
+    from chessbook import live
+    pdf = make_book(tmp_path / "little.pdf", tail=[
+        ("9.d4 c6 10.Bg5", True),
+        ("Instead 10.Bd2 is quieter.", False)])
+    state = {}
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
+                      state=state)
+    g = line_titled(book, "Smith - Jones")
+    marks = {m["raw"]: m for m in book["pages"][3]["marks"]}
+    assert marks["d4"]["node"] is None and marks["Bd2"]["node"] is None
+    nc3 = next(n for n in book["nodes"].values() if n["line"] == g["id"] and n["san"] == "Nc3")
+    live.apply(state, book, {"connect": {marks["d4"]["key"]: {"after": nc3["key"],
+                                                              "before": ["Nce7"]}}})
+    nodes = book["nodes"]
+    bd2 = next(n for n in nodes.values() if n.get("key") == marks["Bd2"]["key"])
+    assert bd2["line"] == g["id"] and bd2["san"] == "Bd2" and not bd2["main"]
+    assert [nodes[c]["san"] for c in nodes[bd2["parent"]]["children"]] == ["Bg5", "Bd2"]
 
 
 def test_decoded_once_the_diagram_is_read(tmp_path):
