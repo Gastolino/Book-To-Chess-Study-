@@ -258,6 +258,38 @@ def test_diagram_a_move_later_decides_no_square(tmp_path):
     assert second["san"] == "b6" and second["status"] == "ok"
 
 
+def test_reading_stored_before_misread_squares_takes_a_correction(tmp_path):
+    """A reading stored by earlier code (the app's saved reading pickles the
+    builder) holds no misread squares: a move corrected on the board is
+    replayed as in a fresh reading."""
+    import pickle
+    from chessbook import live
+    start = "6k1/5pp1/7p/8/8/8/1P3PPP/3R2K1 w - - 0 1"
+    b = _Book()
+    _front(b)
+    b.page()
+    b.prose(3)
+    b.pictures("Diagram 7")
+    b.line("1.h3 Kh7 2.Rd7 Kg8", bold=True)
+    b.prose(3)
+    pdf = b.save(tmp_path / "endings.pdf")
+    state = {}
+    book = build_book(pdf, output_dir=tmp_path / "out", books_dir=tmp_path / "books",
+                      diagram_fens={"p3-1": start}, state=state)
+    # (as web/driver.py save_reading stores it: without the PDF)
+    doc, state["builder"].doc = state["builder"].doc, None
+    old = pickle.loads(pickle.dumps(state["builder"]))
+    old.__dict__.pop("misread")
+    old.doc = doc
+    state = {**state, "builder": old}
+    line = _line_with(book, "Rd7")
+    key = book["nodes"][_main_line(book, line)[3]]["key"]
+    live.apply(state, book, {"moves": {key: {"san": "Kg6"}}})
+    line = _line_with(book, "Rd7")
+    assert _sans(book, line) == ["h3", "Kh7", "Rd7", "Kg6"]
+    assert book["nodes"][_main_line(book, line)[3]]["corrected"] == "move"
+
+
 def test_doubtful_square_is_corrected(tmp_path):
     """The reading lost the rook on d1 and marked d1 as doubtful: only a white
     rook there makes the moves legal, so the line starts with it."""

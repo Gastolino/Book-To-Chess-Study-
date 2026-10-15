@@ -216,11 +216,12 @@ position a diagram printed around it shows, after_node is that move and
 OCR reads some characters of a square for others (b and h, c and e: the
 twins of movetext's FILE_READ and RANK_READ), and where both readings are
 legal the text's own wins. A diagram tied to a move that the line does not
-reach (nor a move before or after it) decides such a move when one other reading of the square printed in
-one of the line's moves shortly before it (MISREAD_PLIES) makes the line
-reach the diagram, but for squares its reading doubts (misread_squares):
-the line is read again with that move (forced), shown as a guess with the
-text's reading as its alternative, and the diagram is a checkpoint.
+reach (nor a move before or after it) decides such a move when one other
+reading of the square printed in one of the line's moves shortly before it
+(MISREAD_PLIES) makes the line reach the diagram, but for squares its
+reading doubts (misread_squares): the line is read again with that move
+(forced), shown as a guess with the text's reading as its alternative, and
+the diagram is a checkpoint.
 
 Move numbers: the book's habit is learnt from its text (book_numbering).
 In a book that prints numbers without a dot ("1 e4 c5 2 Nc3"), the
@@ -1268,7 +1269,9 @@ class _Builder:
         """The run with the moves the reader corrected carrying the move they
         gave (corrections.py "moves"), and the moves whose square a diagram
         after them reads otherwise carrying that move (misread_squares)."""
-        if not self.fix_moves and not self.misread:
+        # (a reading stored by earlier code has no misread squares)
+        misread = getattr(self, "misread", {})
+        if not self.fix_moves and not misread:
             return run
         pages = self.fix_moves.pages() if self.fix_moves else ()
         toks, changed = [], False
@@ -1279,8 +1282,8 @@ class _Builder:
                 if page in pages and box is not None:
                     _, v = self.fix_moves.find(page, box, t.raw)
                 san = v["san"] if v else None
-                if san is None and box is not None and self.misread:
-                    san = self.misread.get(fixes.token_key(page, box, t.raw), (None,))[0]
+                if san is None and box is not None and misread:
+                    san = misread.get(fixes.token_key(page, box, t.raw), (None,))[0]
                 if san and san != t.forced:
                     t, changed = replace(t, forced=san), True
             toks.append(t)
@@ -4295,7 +4298,7 @@ class _Builder:
                 key, san, said = hits.pop()
                 found[key].add((san, said))
                 boards[did] = (shown, doubt)
-        self.misread = {**self.misread,
+        self.misread = {**getattr(self, "misread", {}),
                         **{key: v.pop() for key, v in found.items() if len(v) == 1}}
         return boards
 
@@ -4306,7 +4309,7 @@ class _Builder:
         page, box = self.place_of(tok)
         if box is None:
             return None
-        hit = self.misread.get(fixes.token_key(page, box, tok.raw))
+        hit = getattr(self, "misread", {}).get(fixes.token_key(page, box, tok.raw))
         if hit is None or hit[0] != tok.forced or (
                 self.fix_moves and self.fix_moves.find(page, box, tok.raw)[1]):
             return None
