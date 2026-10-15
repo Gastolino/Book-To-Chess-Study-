@@ -365,6 +365,20 @@ def test_german_letters(tmp_path):
     assert sans(book, main_line(book, g)) == MAIN_SAN and g["status"] == "ok"
 
 
+def test_a_move_read_by_changing_the_printed_piece_is_not_green(tmp_path):
+    # The game prints "Bxf7" where only the king can take on f7: the move is
+    # Kxf7, but a guess, never shown as certain.
+    game = GAME_EN[:2] + ["6.Nxf7 Bxf7 7.Qf3+ Ke6"] + GAME_EN[3:]
+    pdf = make_book(tmp_path / "little.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    nodes = book["nodes"]
+    assert nodes[ids[11]]["raw"] == "Bxf7" and nodes[ids[11]]["status"] == "guessed"
+    assert all(nodes[i]["status"] == "ok" for i in ids if i != ids[11])
+
+
 def test_excluded_page_has_no_lines(tmp_path):
     pdf = make_book(tmp_path / "little.pdf")
     sel = tmp_path / "books" / "little" / "selection.json"

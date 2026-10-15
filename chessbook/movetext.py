@@ -158,6 +158,7 @@ C_PARITY = 1.0          # the numbering disagrees with whose move it is
 C_INSERT = 3.5          # a move missing from the text
 MAX_FAILS = 2           # consecutive failed tokens the search can bridge
 FIT_MARGIN = 0.45       # readings this close to the best one also "fit"
+OK_MAX = 1.2            # a reading that misreads its token by more than this fits it no longer
 TIE = 0.2               # score differences below this are ties
 BEAM = 16
 MAX_WILD = 1500
@@ -240,7 +241,9 @@ class Decoded:
     """The decoding of one move token.
 
     status: 'ok' (one reading fits the raw token), 'guessed' (several readings
-    were legal and the moves that follow chose one), 'ambiguous' (several
+    were legal and the moves that follow chose one, or the only reading
+    changes what the token prints: its piece, its capture mark, its check
+    sign, or its square by more than OK_MAX), 'ambiguous' (several
     readings remain equally good; the best is still filled in) or 'failed'
     (no legal reading; san, uci and fen are None, and alternatives holds the
     move the search assumed in order to carry on, if any).
@@ -2039,23 +2042,61 @@ def _shape_candidates(scorer, board, tok, parsed):
     shape = getattr(tok, "shape", None)
     if not shape:
         return scorer.candidates(board, parsed)
-    want, conf = LETTER_PIECE[shape[0]], shape[1]
     out = []
     for m, c, glyph, pc, b2, prs in scorer.candidates(board, parsed, MAX_COST + 6.0):
         if glyph and glyph not in scorer.letters:
-            pt = board.piece_type_at(m.from_square)
-            if pt == want:
-                new = (1 - conf) * pc
-            elif pt != PAWN:
-                new = conf * C_SHAPE_OTHER + (1 - conf) * pc
-                if scorer.glyph_agrees(glyph, shape[0]):
-                    new = max(new, pc)      # two readings of the symbol agree
-            else:
-                new = pc
+            new = _shape_cost(scorer, shape, glyph, board.piece_type_at(m.from_square), pc)
             c, pc = c - pc + new, new
         if c <= MAX_COST:
             out.append((m, c, glyph, pc, b2, prs))
     out.sort(key=lambda t: t[1])
+    return out
+
+
+def _shape_cost(scorer, shape, glyph, pt, pc):
+    """The cost pc of reading the junk glyph as piece type pt, with the
+    piece that its figurine's shape shows (see _shape_candidates)."""
+    want, conf = LETTER_PIECE[shape[0]], shape[1]
+    if pt == want:
+        return (1 - conf) * pc
+    if pt == PAWN:
+        return pc
+    new = conf * C_SHAPE_OTHER + (1 - conf) * pc
+    if scorer.glyph_agrees(glyph, shape[0]):
+        new = max(new, pc)      # two readings of the symbol agree
+    return new
+
+
+def _print_floor(scorer, tok, glyph, prs, m) -> float:
+    """What the reading of the token through the parse prs as the move m pays
+    for what the text does not print plainly: for a junk piece symbol, the
+    price of the piece the book's glyph model (and the figurine's shape)
+    likes best (nothing for a pawn move, a piece letter or a figurine); for
+    the file and the rank, the cheapest value the character can stand for,
+    or the value taken when the text lacks the character or the book prints
+    it so (a reading its print has made cheaper than the default tables,
+    GlyphModel); and the text after the square of a move that promotes
+    nothing (calibre's "Nf6+y"). The rest of the reading's cost is what it
+    changes of the print."""
+    out = 0.0
+    if glyph and glyph not in scorer.letters:
+        costs = scorer.piece_costs(glyph)
+        shape = getattr(tok, "shape", None)
+        if shape:
+            costs = {pt: _shape_cost(scorer, shape, glyph, pt, pc) for pt, pc in costs.items()}
+        out += min(costs.values())
+    if prs is not None:
+        g = scorer.glyphs
+        if prs.promo is not None and not m.promotion:
+            out += C_PROMO_EXTRA
+        to = m.to_square
+        for costs, ch, table, v in (
+                (g.file_costs(prs.fch, prs.rch is None), prs.fch, FILE_READ, chess.square_file(to)),
+                (g.rank_costs(prs.rch, prs.fch is None), prs.rch, RANK_READ, chess.square_rank(to))):
+            if v in costs and (ch is None or costs[v] < table.get(ch, {}).get(v, math.inf)):
+                out += costs[v]
+            elif costs:
+                out += min(costs.values())
     return out
 
 
@@ -2470,10 +2511,18 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
                     and not (prs.dfile is not None and prs.drank is not None))
             elif prs.prefix in scorer.letters:
                 lost = scorer.letters[prs.prefix] != pt
+        cap_mark = (prs.cap is True) if prs is not None else None
+        if status == "ok" and (lost or mine_c - _print_floor(scorer, tok, glyph, prs, m) > OK_MAX
+                               or (cap_mark and not is_cap)
+                               or (parsed.check and not b.gives_check(m))):
+            # The only reading, but one that changes what the token prints
+            # (its piece, its square, its capture mark or its check sign)
+            # beyond a slip of print: a guess, not a fit.
+            status = "guessed"
+            alts = [b.san(mm) for mm, *_ in cands if mm != m]
         san = b.san(m)
         b.push(m)
         sq = (prs.fch, prs.rch) if prs is not None else (None, None)
-        cap_mark = (prs.cap is True) if prs is not None else None
         out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, san, m.uci(),
                            b.fen(), status, alts, round(mine_c, 3), glyph, parsed.annotation, sq,
                            missing, cap_mark, lost))

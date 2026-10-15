@@ -369,6 +369,30 @@ def test_ambiguous_and_guessed_statuses():
     assert decs[2].status == "guessed" and "c3" in decs[2].alternatives
 
 
+def test_a_lone_reading_that_changes_the_print_is_no_fit():
+    # Only the rook reaches c4: "Bc4" reads as Rc4, the one legal reading,
+    # but it changes the printed piece and so is a guess, not a fit.
+    board = chess.Board("4k3/8/8/8/8/8/8/2R1K3 w - - 0 1")
+    (d,) = decode(board, tokenize("1.Bc4"))
+    assert d.san == "Rc4" and d.status == "guessed" and d.glyph_lost
+    # A pawn token played by a piece ("cxd6", only the knight reaches d5).
+    board = chess.Board("4k3/8/8/8/8/2N5/8/4K3 w - - 0 1")
+    (d,) = decode(board, tokenize("1.cxd6"))
+    assert d.san == "Nd5" and d.status == "guessed"
+    # A printed check sign on a move that gives no check, a printed capture
+    # mark on a quiet move.
+    board = chess.Board("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")
+    (d,) = decode(board, tokenize("1.Rb1+"))
+    assert d.san == "Rb1" and d.status == "guessed"
+    (d,) = decode(board, tokenize("1.Rxa7"))
+    assert d.san == "Ra7" and d.status == "guessed"
+    # Exact prints, a single OCR slip ("l" for 7) and junk after the square
+    # (calibre's "+y") still fit.
+    assert decode(board, tokenize("1.Ra8+"))[0].status == "ok"
+    assert [(d.san, d.status) for d in decode(board, tokenize("1.Ral"))] == [("Ra7", "ok")]
+    assert [(d.san, d.status) for d in decode(board, tokenize("1.Ra8+y"))] == [("Ra8+", "ok")]
+
+
 def test_decoded_offsets_and_numbers():
     text = "Or 16 ... Wfxe5 17.Wfxe5 dxe5"
     seq = find_sequences(text)[0]

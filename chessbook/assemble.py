@@ -3429,7 +3429,7 @@ class _Builder:
             head, run = self.cut_run(run, 1)
             if hit is not None:
                 parent, decs = hit
-                if decs and decs[0].status == "ok" and decs[0].san:
+                if decs and decs[0].san:
                     self.unplaced(head, f"it carries no move number, and the moves after it do not "
                                         f"read on from it after {self.move_words(parent)}", src=L,
                                   after=self.nodes[parent].get("key"))
@@ -3772,8 +3772,8 @@ class _Builder:
         """(the run with the bare move before it, its decoding, clean) when a
         bare move stands last before the run (bare_move_before), the run's
         numbering is one move ahead of the position fen and the bare move is
-        legal there; clean says whether the run reads cleanly after it. None
-        otherwise."""
+        legal there; clean says whether the bare move reads as printed and
+        the run cleanly after it. None otherwise."""
         if run.ply is None or not fen or _board_ply(fen) != run.ply - 1:
             return None
         tok = self.bare_move_before(lo, run.start, main=main)
@@ -3781,10 +3781,10 @@ class _Builder:
             return None
         ext = self.bare_extended(run, tok, run.ply - 1)
         decs = self.dec.run(fen, ext.tokens)
-        if not decs or decs[0].status != "ok" or not decs[0].san:
+        if not decs or not decs[0].san:
             return None
-        clean = _fit(decs)[0] == 0 and not any(d.capture_mark and d.san and "x" not in d.san
-                                               for d in decs)
+        clean = decs[0].status == "ok" and _fit(decs)[0] == 0 and not any(
+            d.capture_mark and d.san and "x" not in d.san for d in decs)
         return ext, decs, clean
 
     def bare_unplaced(self, ext, nid):
