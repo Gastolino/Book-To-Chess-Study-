@@ -403,6 +403,21 @@ def test_german_letters(tmp_path):
     assert sans(book, main_line(book, g)) == MAIN_SAN and g["status"] == "ok"
 
 
+def test_capital_c_of_a_pawn_move_is_the_c_file(tmp_path):
+    """OCR (and some text layers) set the c of a pawn move as a capital:
+    "2.C4" is 2.c4, read without doubt, not a piece move to the fourth rank,
+    and the line goes on from the right board."""
+    game = ["1.d4 d5 2.C4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 C6",
+            "8.Bd3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O",
+                               "Nf3", "Nbd7", "Rc1", "c6", "Bd3"]
+    assert book["nodes"][ids[2]]["status"] == "ok" and book["nodes"][ids[13]]["status"] == "ok"
+
+
 def test_excluded_page_has_no_lines(tmp_path):
     pdf = make_book(tmp_path / "little.pdf")
     sel = tmp_path / "books" / "little" / "selection.json"

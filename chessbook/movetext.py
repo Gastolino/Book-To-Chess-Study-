@@ -105,12 +105,14 @@ COMMON_GLYPH_JUNK: dict[str, list[str]] = {
 # What an OCR'd character in the file slot of a square can stand for, with the
 # cost of that reading. Exact readings cost nothing. A "k" is a c joined to the
 # last stroke of the glyph before it (":k7", "Jk1" for Rc7, Rc1), and only
-# when no c fits, an h (".!k8" for Kh8).
+# when no c fits, an h (".!k8" for Kh8). OCR sets the c as a capital ("C4"
+# for c4), which no English piece letter is; in a notation whose piece letter
+# it is (the French and Spanish knight) it stays the piece (_Scorer._index).
 FILE_READ: dict[str, dict[int, float]] = {
     "a": {0: 0.0}, "b": {1: 0.0, 7: 0.6}, "c": {2: 0.0, 4: 0.5}, "d": {3: 0.0},
     "e": {4: 0.0, 2: 0.5}, "f": {5: 0.0}, "g": {6: 0.0}, "h": {7: 0.0, 1: 0.6},
     "o": {0: 0.6}, "t": {5: 0.5}, "£": {5: 0.15}, "q": {6: 0.5}, "r": {5: 0.9},
-    "9": {6: 0.9}, "€": {4: 0.6}, "ƒ": {5: 0.3}, "k": {2: 0.6, 7: 1.6},
+    "9": {6: 0.9}, "€": {4: 0.6}, "ƒ": {5: 0.3}, "k": {2: 0.6, 7: 1.6}, "C": {2: 0.3},
 }
 # The same for the rank slot. 'l', 'I', 'i' and '!' read as 1 (and as the
 # 7 whose hook was lost), 'B', 'S' and 's' as 8 and 5, 'b' and 'G' as 6.
@@ -721,15 +723,16 @@ def _enumerate_parses(core: str) -> list:
         rank_opts = []
         if head[-1] in RANK_READ:
             rank_opts.append((RANK_READ[head[-1]], head[-1], head[:-1]))
-        elif head[-1] in FILE_READ:
+        elif head[-1] in FILE_READ and not head[-1].isupper():
             rank_opts.append((None, None, head))          # rank missing
         for rread, rch, before in rank_opts:
             b = before.rstrip(NOISE_CHARS) if rread is not None else before
             file_opts = []
-            if b and b[-1] in FILE_READ:
-                file_opts.append((FILE_READ[b[-1]], b[-1], b[:-1]))
-            elif rread is not None:
-                file_opts.append((None, None, b))         # file missing
+            last = b[-1] if b and b[-1] in FILE_READ else None
+            if last is not None:
+                file_opts.append((FILE_READ[last], last, b[:-1]))
+            if rread is not None and (last is None or last.isupper()):
+                file_opts.append((None, None, b))         # file missing (a "C" may be a piece letter)
             for fread, fch, rest in file_opts:
                 if fread is None and rread is None:
                     continue
@@ -902,6 +905,8 @@ class _Scorer:
         mask = 0
         g = self.glyphs
         for p in parsed.parses:
+            if p.fch in self.letters:
+                continue        # the book's piece letter ("C3" in French) is no file
             fc = g.file_costs(p.fch, p.rch is None)
             rc = g.rank_costs(p.rch, p.fch is None)
             for f, a in fc.items():
@@ -1034,6 +1039,8 @@ class _Scorer:
             if parsed.castle and board.is_castling(m):
                 best = 0.5
             for p in parsed.parses:
+                if p.fch in self.letters:
+                    continue
                 c = (g.file_costs(p.fch, p.rch is None).get(f, C_UNREAD)
                      + g.rank_costs(p.rch, p.fch is None).get(r, C_UNREAD)
                      + min(self.piece_costs(p.prefix)[pt], 4.0))
