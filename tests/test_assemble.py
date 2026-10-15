@@ -108,14 +108,40 @@ class _Writer:
         self.line(caption, x=cx - pymupdf.get_text_length(caption, "tiro", 10) / 2)
         self.y += 6
 
+    def numbered(self, number, move, dots=False):
+        """A game move set as a table, the number apart from its move
+        ("11      Nc3", "11   ...   Qb2?"), both in the move font."""
+        self.pg.insert_text((self.x0 + 30, self.y), number, fontname="tibo", fontsize=10)
+        if dots:
+            self.pg.insert_text((self.x0 + 55, self.y), "...", fontname="tibo", fontsize=10)
+        self.pg.insert_text((self.x0 + (85 if dots else 55), self.y), move, fontname="tibo",
+                            fontsize=10)
+        self.y += 13
+
+    def unlabelled_board(self):
+        """A board picture with its coordinates and no number or caption."""
+        self.y += 4
+        cx = self.x0 + COL_W / 2
+        rect = pymupdf.Rect(cx - 60, self.y, cx + 60, self.y + 120)
+        self.pg.insert_image(rect, pixmap=self.board)
+        for k, f in enumerate("abcdefgh"):
+            self.pg.insert_text((rect.x0 + 6 + 15 * k, rect.y1 + 9), f, fontname="helv", fontsize=7)
+        for k in range(8):
+            self.pg.insert_text((rect.x0 - 7, rect.y0 + 10 + 15 * k), str(8 - k), fontname="helv",
+                                fontsize=7)
+        self.y = rect.y1 + 24
+
     def save(self, path):
         self.foot()
         self.doc.save(path)
 
 
-def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False):
+def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False,
+              beside=False):
     """The little test book: one chapter, or with second a second chapter
-    after it (pages 10 and 11) that holds another game."""
+    after it (pages 10 and 11) that holds another game. With beside, page 10
+    holds a game whose moves are set as a table, a number apart from its
+    move, with a board printed between two of them and no diagram number."""
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
@@ -181,6 +207,20 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
         w.page()
         w.prose(n=10)
         w.line("1.d4 d5 2.c4 e6 3.Nc3 Nf6", bold=True)
+        w.prose(until=H - 60)
+        w.col(1)
+        w.prose(until=H - 60)
+    if beside:
+        w.page()
+        w.mixed([("Smith - Brown, ", True), ("London 1903", False)])
+        w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", bold=True)
+        w.line("The two knights defence.", indent=8)
+        w.numbered("4", "Ng5")
+        w.unlabelled_board()
+        w.numbered("4", "d5", dots=True)
+        w.line("Black gives a pawn for quick play.", indent=8)
+        w.numbered("5", "exd5")
+        w.line("White takes it at once.", indent=8)
         w.prose(until=H - 60)
         w.col(1)
         w.prose(until=H - 60)
@@ -648,6 +688,25 @@ def test_stage1_split_move_number_is_not_a_label():
     assert s1.continues_as_move(r, [("17", r), ("• .ixf6t \x1bxf6", pymupdf.Rect(45, 315, 223, 328))])
     assert not s1.continues_as_move(r, [("17", r)])
     assert s1.LABEL_RE.match("b") is None and s1.LABEL_RE.match("14a")
+
+
+def test_move_number_beside_a_board_is_no_label(tmp_path):
+    """A game set as a table ("4      Ng5", the board, "4   ...   d5") in a
+    book that prints no diagram numbers: the 4 above the board is the move's
+    number, not the board's label, and the 4 under it no coordinate. The board
+    stands after the move printed above it."""
+    from chessbook import pdftext
+    pdf = make_book(tmp_path / "little.pdf", beside=True)
+    lines = pdftext.page_lines(str(pdf), 9)
+    fours = [ln for ln in lines if ln["text"] == "4" and ln["bbox"][0] > 60]
+    assert len(fours) == 2 and all(ln["role"] not in ("label", "coord") for ln in fours)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    game = line_titled(book, "Smith - Brown")
+    ids = main_line(book, game)
+    assert sans(book, ids) == ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "Ng5", "d5", "exd5"]
+    d = book["pages"][9]["diagrams"][0]
+    assert d["label"] is None
+    assert d["after_node"] == ids[6]                     # after 4.Ng5, Black to move
 
 
 def test_stacked_boards_get_their_own_ids():

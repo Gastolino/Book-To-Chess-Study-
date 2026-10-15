@@ -2689,6 +2689,15 @@ class _Builder:
                     self.extend(L, run, decs)
                     return
             if P < L.next_ply:
+                cut = (self.diagram_cut(run) if not (self.replaying or self.deferred is not None)
+                       else None)
+                if cut is not None and not self.reads_at(L, run, P):
+                    # moves printed on both sides of a diagram that do not read
+                    # where their numbering puts them: those after the diagram
+                    # are taken up there, from the position it shows (see the
+                    # chapter loop)
+                    run, tail, off = cut
+                    self.deferred = (off, tail)
                 L.notes.append((run, True))      # a main-font variation
                 return
         if L is not None:

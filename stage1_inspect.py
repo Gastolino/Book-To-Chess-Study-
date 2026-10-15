@@ -148,21 +148,37 @@ def between_boards(r, pic):
 
 
 MOVE_DOTS = ".•…·"
+ALONE = 6          # line heights to the right of a label that hold nothing on its row
 
 
 def continues_as_move(r, others):
-    """True when a bare number at r is a move number whose dot and move OCR
-    split off into a text line of their own on the same row ("17" and
-    "• .ixf6t ..."): such a number is not a diagram label."""
-    h = r.y1 - r.y0
+    """True when a bare number at r has text printed beside it on its row, so
+    that it is a move number and not a diagram label, which stands alone on
+    its line. Books that set their moves as a table put the move a tab away
+    ("11" and "♘ec3", "11" "..." "♛b2?"), and OCR splits a number's dot and
+    move into a text line of their own ("17" and "• .ixf6t ..."). A single
+    character beside the number (a board's coordinate) and another number (the
+    label of the next board) do not count."""
+    return move_beside(r, others) is not None
+
+
+def move_beside(r, others):
+    """The entry (text, rect) of others printed beside the number at r that
+    makes it a move number (see continues_as_move), or None."""
+    # (OCR gives some lines a box far taller than their type: the type of a
+    # number is no taller than three times its width, nor than the line
+    # beside it)
+    h = min(r.y1 - r.y0, 3 * (r.x1 - r.x0))
     for t, o in others:
-        if o is r or not t or t.lstrip(" ")[:1] not in MOVE_DOTS:
+        s = (t or "").strip()
+        if (o is r or not s or (len(s) < 2 and s not in MOVE_DOTS)
+                or LABEL_RE.match(s.replace(" ", "") if len(s) <= 8 else s)):
             continue
+        low = min(h, o.y1 - o.y0)
         overlap = min(r.y1, o.y1) - max(r.y0, o.y0)
-        if (o.x0 > (r.x0 + r.x1) / 2 and o.x0 - r.x1 <= 15
-                and overlap >= 0.5 * min(h, o.y1 - o.y0)):
-            return True
-    return False
+        if o.x0 > (r.x0 + r.x1) / 2 and o.x0 - r.x1 <= ALONE * low and overlap >= 0.5 * low:
+            return t, o
+    return None
 
 
 def board_coords(pic, lines):
@@ -334,13 +350,14 @@ def inspect_page(doc, i):
         xpics.sort(key=lambda t: ((t[0].x0 + t[0].x1) / 2 > mid, t[0].y0))
     pics = [(r, w, h) for r, w, h, _ in xpics]
     invisible = any(t.get("type") == 3 for t in page.get_texttrace())
-    head = page.rect.height * 0.06  # running head with the page number
+    H = page.rect.height
+    head = H * 0.06  # running head or foot with the page number
     # OCR sometimes splits a number with a space ("1 15" for 115). Lines that
     # touch a picture are its rank and file letters, so they are left out.
     labels = []
     for t, r in lines:
         m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
-        if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head
+        if (m and m.group(1) not in RESULTS and head < (r.y0 + r.y1) / 2 < H - head
                 and not any(r.intersects(p + (-12, -4, 12, 4)) and not between_boards(r, p)
                             for p, _, _ in pics)
                 and not continues_as_move(r, lines)):

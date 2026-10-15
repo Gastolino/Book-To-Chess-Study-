@@ -72,7 +72,7 @@ from chessbook import textdiagram  # noqa: E402
 
 LABEL_RE, DIGIT_FIX, RESULTS, CIRCLE_RE = _s1.LABEL_RE, _s1.DIGIT_FIX, _s1.RESULTS, _s1.CIRCLE_RE
 label_for, between_boards, FULL_PAGE = _s1.label_for, _s1.between_boards, _s1.FULL_PAGE
-continues_as_move = _s1.continues_as_move
+continues_as_move, move_beside = _s1.continues_as_move, _s1.move_beside
 
 ROLES = ("head", "coord", "label", "caption", "moves", "text", "heading", "game_header", "blank")
 
@@ -1047,7 +1047,7 @@ def page_lines(doc, page_index, fonts=None):
             continue
         t, r = rl["raw_text"], rl["raw_bbox"]
         m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
-        if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head_y
+        if (m and m.group(1) not in RESULTS and head_y < (r.y0 + r.y1) / 2 < H - head_y
                 and not any(r.intersects(pc + (-12, -4, 12, 4)) and not between_boards(r, pc)
                             for pc in pics)
                 and not continues_as_move(r, row_texts)):
@@ -1082,10 +1082,28 @@ def page_lines(doc, page_index, fonts=None):
         if best is not None:
             role[k], diag[k] = "label", f"p{p}-{best[1] + 1}"
 
-    # Coordinates and other marks on or beside a board picture.
+    # Coordinates and other marks on or beside a board picture. A number with
+    # text beside it off the board ("11" "♛b2?" under a board) is a move
+    # number, never a coordinate, and the text its move; so is a number with
+    # a move beside it within a picture that holds more than the board ("25"
+    # "gxf5" over it). Other text over a board is junk read from its picture.
     if pics:
+        def off_board(r):
+            return not any(abs(r & pc) >= 0.6 * abs(r) for pc in pics) if abs(r) else True
+
+        beside = [(t, r) for t, r in row_texts if off_board(r)]
+        moves_on = [(t, r) for t, r in row_texts
+                    if not off_board(r) and is_move_token(t.strip(SPACES).split(" ")[0])]
+        moved = set()
         for k, rl in enumerate(rls):
-            if role[k]:
+            t, r = rl["raw_text"], rl["raw_bbox"]
+            if role[k] or not LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t):
+                continue
+            hit = move_beside(r, beside) or (move_beside(r, moves_on) if not off_board(r) else None)
+            if hit is not None:
+                moved |= {k, next(i for i, x in enumerate(row_texts) if x[1] is hit[1])}
+        for k, rl in enumerate(rls):
+            if role[k] or k in moved:
                 continue
             f = feats[k]
             short = all(len(w["text"]) <= 2 for w in rl["words"]) and not f["kinds"]["move"]
