@@ -176,6 +176,20 @@ def test_check_and_annotation_parsing():
     assert parse_move_text("0-0-0t") == [{"castle": "Q", "check": 1, "annotation": ""}]
 
 
+def test_bang_read_as_1_after_a_square():
+    # "c41?" is c4!? and "d3l" d3! with the "!" read as 1 or l, not a move to
+    # the first rank ("Kh1", "Ne1") with "c4" read as junk
+    b = chess.Board("r1bq1rk1/p2nbppp/4p3/1pppP3/8/3P1NP1/PPPN1PBP/R1BQR1K1 w - - 0 10")
+    (d,) = decode(b, find_sequences("10.c41?")[0].tokens)
+    assert (d.san, d.status, d.annotation) == ("c4", "ok", "!?")
+    assert sans("1.e4 e5 2.Nf3 Nc6 3.d3l d6") == ["e4", "e5", "Nf3", "Nc6", "d3", "d6"]
+    # ... also after a rank read as a letter ("hSI" for h5!)
+    assert any("h5" in q["squares"] and q["annotation"] == "!" and q["prefix"] == ""
+               for q in parse_move_text("hSI"))
+    # a square followed by 1 is still the rank where nothing else reads
+    assert "c1" in {s for q in parse_move_text("Rc1") for s in q["squares"]}
+
+
 def test_check_sign_before_annotation_is_not_a_rank():
     # "t!" after a rank digit is a check and an annotation; "Nt!" is Nf1 ("t" = f, "!" = 1)
     p = parse_move_text("Vlxh5t!")
