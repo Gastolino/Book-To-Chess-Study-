@@ -393,6 +393,52 @@ def test_a_lone_reading_that_changes_the_print_is_no_fit():
     assert [(d.san, d.status) for d in decode(board, tokenize("1.Ra8+y"))] == [("Ra8+", "ok")]
 
 
+def test_a_lone_reading_against_the_printed_pawn_capture_or_castling_is_no_fit():
+    # "cxd5" where only the knight takes on d5: the "c" and the capture
+    # mark print a pawn capture, not a piece symbol of the book.
+    board = chess.Board("4k3/8/8/3p4/8/2N5/8/4K3 w - - 0 1")
+    (d,) = decode(board, tokenize("1.cxd5"))
+    assert d.san == "Nxd5" and d.status == "guessed"
+    # A book that prints its rook as "g" has shown it so: "gxd1" is Rxd1.
+    rook_g = GlyphModel()
+    rook_g.learn([("N", "N")] * 5 + [("g", "R")] * 20)
+    board = chess.Board("4k3/8/8/8/8/8/8/R2nK3 w - - 0 1")
+    (d,) = decode(board, tokenize("1.gxd1"), glyphs=rook_g)
+    assert d.san == "Rxd1" and d.status == "ok"
+    board = chess.Board("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")
+    # "Rxa7" read as the quiet Ra7 through the symbol "Rx", which the book
+    # has learnt as a rook: the capture mark is printed all the same.
+    rx = GlyphModel()
+    rx.learn([("Rx", "R")] * 20)
+    (d,) = decode(board, tokenize("1.Rxa7"), glyphs=rx)
+    assert d.san == "Ra7" and d.glyph == "Rx" and d.capture_printed and d.status == "guessed"
+    # A reading whose own parse calls most of the token junk: "'ii'xfs" (a
+    # queen symbol, xf8) read as Qe1 through the symbol "'i", with "i" for the
+    # rank 1 and "'xfs" as promotion text.
+    junk = GlyphModel()
+    junk.learn([("'ii'", "Q"), ("'i", "Q")] * 20)
+    board = chess.Board("3k4/8/PP6/QP6/P7/8/8/6K1 w - - 0 1")
+    (d,) = decode(board, tokenize("1.'ii'xfs"), glyphs=junk)
+    assert d.san == "Qe1" and d.status == "guessed"
+    # A slip of print the book makes ("h" for the b-file, shown five times
+    # in a hundred) fits; the same slip in a book that never makes it is a
+    # change of the printed square.
+    board = chess.Board("7k/8/8/8/8/8/8/4KB2 w - - 0 1")
+    habit = GlyphModel()
+    habit.learn_squares([("h", "5", chess.B5)] * 5 + [("h", "5", chess.H5)] * 100)
+    never = GlyphModel()
+    never.learn_squares([("h", "5", chess.H5)] * 105)
+    assert [(d.san, d.status) for d in decode(board, tokenize("1.Bh5"), glyphs=habit)] == \
+        [("Bb5", "ok")]
+    assert [(d.san, d.status) for d in decode(board, tokenize("1.Bh5"), glyphs=never)] == \
+        [("Bb5", "guessed")]
+    # The other castling than the one printed.
+    board = chess.Board("4k3/8/8/8/8/8/8/R3K2R w K - 0 1")
+    (d,) = decode(board, tokenize("1.O-O-O"))
+    assert d.san == "O-O" and d.status == "guessed"
+    assert decode(board, tokenize("1.O-O"))[0].status == "ok"
+
+
 def test_decoded_offsets_and_numbers():
     text = "Or 16 ... Wfxe5 17.Wfxe5 dxe5"
     seq = find_sequences(text)[0]

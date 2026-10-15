@@ -3578,8 +3578,13 @@ class _Builder:
                     continue            # an older variation only when nothing nearer reads
                 decs = self.dec.run(fen, run.tokens)
                 f = _fit(decs)
-                if any(d.capture_mark and d.san and "x" not in d.san for d in decs):
-                    f = (2,) + f[1:]        # a printed capture read as a quiet move
+                if any(d.capture_mark and d.san and "x" not in d.san for d in decs) or (
+                        decs and decs[0].capture_printed and decs[0].san
+                        and "x" not in decs[0].san):
+                    # a printed capture read as a quiet move; the move that
+                    # ties the run to its place counts one read into its
+                    # symbol as well ("71.Rxc4" read Rc4+ through "Rx")
+                    f = (2,) + f[1:]
                 if tried is None:
                     tried = decs
                 if f[0] == 0:

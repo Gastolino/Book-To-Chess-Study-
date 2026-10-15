@@ -379,6 +379,21 @@ def test_a_move_read_by_changing_the_printed_piece_is_not_green(tmp_path):
     assert all(nodes[i]["status"] == "ok" for i in ids if i != ids[11])
 
 
+def test_a_pawn_capture_read_as_a_piece_move_is_not_green(tmp_path):
+    # The game prints the pawn capture "gxf7" where only the king can take
+    # on f7: the move is Kxf7, but the "g" is no symbol the book prints for
+    # a king, so the move is a guess.
+    game = GAME_EN[:2] + ["6.Nxf7 gxf7 7.Qf3+ Ke6"] + GAME_EN[3:]
+    pdf = make_book(tmp_path / "little.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    nodes = book["nodes"]
+    assert nodes[ids[11]]["raw"] == "gxf7" and nodes[ids[11]]["status"] == "guessed"
+    assert all(nodes[i]["status"] == "ok" for i in ids if i != ids[11])
+
+
 def test_excluded_page_has_no_lines(tmp_path):
     pdf = make_book(tmp_path / "little.pdf")
     sel = tmp_path / "books" / "little" / "selection.json"

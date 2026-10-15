@@ -158,7 +158,10 @@ C_PARITY = 1.0          # the numbering disagrees with whose move it is
 C_INSERT = 3.5          # a move missing from the text
 MAX_FAILS = 2           # consecutive failed tokens the search can bridge
 FIT_MARGIN = 0.45       # readings this close to the best one also "fit"
-OK_MAX = 1.2            # a reading that misreads its token by more than this fits it no longer
+OK_MAX = 1.05           # a reading that misreads its token by more than this fits it no longer:
+                        # one slip of a square (1.0 at most, as the book prints it) or one capture
+                        # mark read into the symbol fits; two slips, or a slip the book never
+                        # makes (a default slip made dearer by GlyphModel, 1.1), do not
 TIE = 0.2               # score differences below this are ties
 BEAM = 16
 MAX_WILD = 1500
@@ -166,6 +169,8 @@ C_UNREAD = 2.5          # a file or rank character read as a value no table allo
 WILD_WEIGHT = 0.3       # how much a failed token's resemblance to a move counts
 SQUARE_KAPPA = 4.0      # weight of the default square readings against the book's counts
 SQUARE_MIN_N = 5        # observations of a character before its learnt readings count
+SQUARE_HABIT = (3, 0.01)    # a slip of print the book has shown this often, and in this share
+                            # of the character's readings, is its habit (rarer ones are misreads)
 GLYPH_STRONG_N = 2      # whole-junk observations before a learnt glyph is trusted ...
 GLYPH_STRONG_SHARE = 0.75   # ... when this share of them name one piece
 WEAK_SPREAD = 0.7       # most a weakly learnt glyph may favour one piece over another;
@@ -242,8 +247,9 @@ class Decoded:
 
     status: 'ok' (one reading fits the raw token), 'guessed' (several readings
     were legal and the moves that follow chose one, or the only reading
-    changes what the token prints: its piece, its capture mark, its check
-    sign, or its square by more than OK_MAX), 'ambiguous' (several
+    changes what the token prints: its piece, a pawn capture
+    (_pawn_capture_print), its castling, its capture mark (_capture_printed),
+    its check sign, or its square by more than OK_MAX), 'ambiguous' (several
     readings remain equally good; the best is still filled in) or 'failed'
     (no legal reading; san, uci and fen are None, and alternatives holds the
     move the search assumed in order to carry on, if any).
@@ -259,7 +265,9 @@ class Decoded:
     contradicts a piece glyph printed in the token: a pawn move read from a
     token with a piece glyph or with a file letter before a non-capture
     ("gg4" read as g4), or a piece letter of the notation read as another
-    piece.
+    piece. capture_printed says whether the token prints a capture mark,
+    taken from the text or read into the symbol ("Rx" of "Rxd7",
+    _capture_printed).
     """
     raw: str
     start: int
@@ -278,6 +286,7 @@ class Decoded:
     missing_before: Optional[str] = None
     capture_mark: Optional[bool] = None
     glyph_lost: bool = False
+    capture_printed: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -2067,37 +2076,80 @@ def _shape_cost(scorer, shape, glyph, pt, pc):
     return new
 
 
-def _print_floor(scorer, tok, glyph, prs, m) -> float:
+def _print_floor(scorer, tok, parsed, prs, m) -> float:
+    """What the token pays, read as the move m, for what its text does not
+    print plainly: the cheapest _parse_floor() over the parses that read a
+    piece symbol as prs does (any symbol, or none). The floor belongs to the
+    token, not to the parse chosen: a parse that calls most of the token
+    junk ("'ii'xfs" read as Qe1 through the symbol "'i", with "'xfs" as
+    promotion text) cannot lift it. The rest of the reading's cost is what
+    it changes of the print."""
+    if prs is None:
+        return 0.0
+    return min(_parse_floor(scorer, tok, p, m) for p in parsed.parses
+               if bool(p.prefix) == bool(prs.prefix))
+
+
+def _parse_floor(scorer, tok, prs, m) -> float:
     """What the reading of the token through the parse prs as the move m pays
     for what the text does not print plainly: for a junk piece symbol, the
     price of the piece the book's glyph model (and the figurine's shape)
     likes best (nothing for a pawn move, a piece letter or a figurine); for
     the file and the rank, the cheapest value the character can stand for,
     or the value taken when the text lacks the character or the book prints
-    it so (a reading its print has made cheaper than the default tables,
-    GlyphModel); and the text after the square of a move that promotes
-    nothing (calibre's "Nf6+y"). The rest of the reading's cost is what it
-    changes of the print."""
+    it so (a reading its print has made cheaper than the default tables, or
+    one it shows often enough, SQUARE_HABIT: GlyphModel); and the text after
+    the square of a move that promotes nothing (calibre's "Nf6+y")."""
     out = 0.0
+    glyph = prs.prefix
     if glyph and glyph not in scorer.letters:
         costs = scorer.piece_costs(glyph)
         shape = getattr(tok, "shape", None)
         if shape:
             costs = {pt: _shape_cost(scorer, shape, glyph, pt, pc) for pt, pc in costs.items()}
         out += min(costs.values())
-    if prs is not None:
-        g = scorer.glyphs
-        if prs.promo is not None and not m.promotion:
-            out += C_PROMO_EXTRA
-        to = m.to_square
-        for costs, ch, table, v in (
-                (g.file_costs(prs.fch, prs.rch is None), prs.fch, FILE_READ, chess.square_file(to)),
-                (g.rank_costs(prs.rch, prs.fch is None), prs.rch, RANK_READ, chess.square_rank(to))):
-            if v in costs and (ch is None or costs[v] < table.get(ch, {}).get(v, math.inf)):
-                out += costs[v]
-            elif costs:
-                out += min(costs.values())
+    g = scorer.glyphs
+    if prs.promo is not None and not m.promotion:
+        out += C_PROMO_EXTRA
+    to = m.to_square
+    for costs, shown, ch, table, v in (
+            (g.file_costs(prs.fch, prs.rch is None), g.file_counts.get((prs.rch is None, prs.fch or "")),
+             prs.fch, FILE_READ, chess.square_file(to)),
+            (g.rank_costs(prs.rch, prs.fch is None), g.rank_counts.get((prs.fch is None, prs.rch or "")),
+             prs.rch, RANK_READ, chess.square_rank(to))):
+        k = shown.get(v, 0) if shown else 0
+        if v in costs and (ch is None or costs[v] < table.get(ch, {}).get(v, math.inf)
+                           or (k >= SQUARE_HABIT[0] and k >= SQUARE_HABIT[1] * sum(shown.values()))):
+            out += costs[v]
+        elif costs:
+            out += min(costs.values())
     return out
+
+
+def _capture_printed(scorer, prs) -> bool:
+    """True when the token prints a capture mark: the parse takes one from
+    the text, or reads an "x" as the end of a symbol that is a piece letter
+    or a file letter and the "x" ("Rx" of "Rxd7", "ex" of "exf3"), which
+    prints a capture as plainly. (A colon after a letter is no such mark:
+    OCR makes figurines of colons, "B:" for a rook.)"""
+    if prs.cap is True:
+        return True
+    sym = prs.prefix
+    return len(sym) == 2 and sym[1] in "xX×" and (sym[0] in scorer.letters
+                                                  or sym[0] in _FILE_LETTERS)
+
+
+def _pawn_capture_print(scorer, prs, pt) -> bool:
+    """True when the piece move of type pt is read from the print of a pawn
+    capture: a file letter that is no piece letter of the notation, then a
+    capture mark ("cxd5" read as Nxd5). The letter is a figurine only where
+    the book has shown it often as this piece (a rook that OCR reads as
+    "g"). A file letter before another file without a capture mark prints
+    no pawn move ("bf2"), and is read as other junk is."""
+    sym = prs.prefix.rstrip("".join(CAPTURE_CHARS))
+    return (pt != PAWN and sym in _FILE_LETTERS and prs.prefix not in scorer.letters
+            and _capture_printed(scorer, prs)
+            and not scorer.glyph_agrees(prs.prefix, PIECE_LETTER[pt]))
 
 
 def _shape_sure(tok, pt) -> bool:
@@ -2512,12 +2564,16 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
             elif prs.prefix in scorer.letters:
                 lost = scorer.letters[prs.prefix] != pt
         cap_mark = (prs.cap is True) if prs is not None else None
-        if status == "ok" and (lost or mine_c - _print_floor(scorer, tok, glyph, prs, m) > OK_MAX
-                               or (cap_mark and not is_cap)
-                               or (parsed.check and not b.gives_check(m))):
+        printed = _capture_printed(scorer, prs) if prs is not None else None
+        other = (_pawn_capture_print(scorer, prs, pt) or (printed and not is_cap)) \
+            if prs is not None else (
+            bool(parsed.castle) and b.is_castling(m)
+            and parsed.castle != ("K" if b.is_kingside_castling(m) else "Q"))
+        if status == "ok" and (lost or other or (parsed.check and not b.gives_check(m))
+                               or mine_c - _print_floor(scorer, tok, parsed, prs, m) > OK_MAX):
             # The only reading, but one that changes what the token prints
-            # (its piece, its square, its capture mark or its check sign)
-            # beyond a slip of print: a guess, not a fit.
+            # (its piece, its castling, its capture mark or its check sign,
+            # or its square beyond a slip of print): a guess, not a fit.
             status = "guessed"
             alts = [b.san(mm) for mm, *_ in cands if mm != m]
         san = b.san(m)
@@ -2525,5 +2581,5 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
         sq = (prs.fch, prs.rch) if prs is not None else (None, None)
         out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, san, m.uci(),
                            b.fen(), status, alts, round(mine_c, 3), glyph, parsed.annotation, sq,
-                           missing, cap_mark, lost))
+                           missing, cap_mark, lost, printed))
     return out
