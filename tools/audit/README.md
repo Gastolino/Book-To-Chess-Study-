@@ -46,7 +46,19 @@ python3 tools/audit/correct.py BOOK --board KEY=SAN [...]
                                                  a correction as the app makes it, and what follows
 python3 tools/audit/compare.py BASE_CODE [NEW_CODE] [--books a,b]
                                                  two versions of the code, book by book
+python3 tools/audit/score.py [CODE ...]          the success rate of each book (the aim is 85%)
 ```
+
+The success rate of a book is the share of its printed moves that the
+program shows green and reads as printed, with every move before them in
+their line read as printed too (OCR's slips of shape, such as "cs" for c5,
+count as printed). It is the audit's measure of progress, round after
+round; `score.py` gives it for each book and for all of them.
+
+A git worktree holds no books (they are not in git), and the tests that
+read them are skipped without a word. Link them first:
+`ln -sfn <main checkout>/corpus corpus; ln -sfn <main checkout>/primer.pdf
+primer.pdf; ln -sfn <main checkout>/local local`.
 
 `page.py` writes `output/audit/png/<book>_p<page>.png`. Read the picture
 (the Read tool shows images): the boxes are green (ok), amber (guessed),

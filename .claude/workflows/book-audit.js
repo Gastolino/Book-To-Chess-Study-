@@ -13,7 +13,9 @@ export const meta = {
 }
 
 // args (all optional):
-//   mode       "full" (default), "find" (find and verify only), "solve" (diagnose, fix, review: needs findings)
+//   mode       "full" (default), "find" (find and verify only), "solve" (diagnose, fix, review: needs findings),
+//              "fix" (fix and review the causes given in args.causes, as the diagnosis wrote them; a cause
+//              with "prior": {branch, problems} goes on from that branch and the reviewer's problems)
 //   books      the books to audit (tools/audit/books.py BOOKS); default all but the control, ivanchuk
 //   lenses     ["reading", "correcting"] by default
 //   app        [{book, device}] runs of the browser app; default [{book: "planning", device: "ipad"}]
@@ -26,6 +28,8 @@ export const meta = {
 //   maxCauses  how many causes to fix, worst first (default 8)
 //   stamp      a name for the report file (output/audit/reports/<stamp>.md)
 //   trailer    the lines that end each commit message (the session's attribution), if any
+//   causes     the causes to fix (mode "fix")
+//   main       the main checkout, which holds the books (corpus/, primer.pdf) and local/ for worktrees
 const A = args || {}
 const MODE = A.mode || 'full'
 const ALL_BOOKS = ['gpa', 'tangborn', 'brunthaler', 'planning', 'alekhine', 'kia', 'primer']
@@ -34,6 +38,7 @@ const LENSES = A.lenses || ['reading', 'correcting']
 const APP = A.app || [{ book: 'planning', device: 'ipad' }]
 const BASE = A.base || '(run: python3 -c "import sys; sys.path.insert(0, \'tools/audit\'); import books; print(books.code_digest())")'
 const MAX_CAUSES = A.maxCauses || 8
+const MAIN = A.main || '/home/user/Book-To-Chess-Study-'
 const STAMP = A.stamp || 'latest'
 const TRAILER = A.trailer ? `, ending with the lines\n   ${A.trailer.split('\n').join('\n   ')}\n  ` : ''
 
@@ -43,7 +48,12 @@ against the print, the severities, and what a finding holds. The readings of the
 code are built already (output/audit/${BASE}/); do not run tools/audit/build.py unless you are told to.
 The print is the truth: judge only what you have seen on a page picture (tools/audit/page.py, then Read
 the PNG it writes; enlarge with --clip). The text layer and the scan are leads, never evidence alone.
-Do not change any file under chessbook/, web/, tests/ or tools/ unless you are told to fix.`
+Do not change any file under chessbook/, web/, tests/ or tools/ unless you are told to fix.
+In a git worktree the books are missing, and the tests that read them are SKIPPED without a word: before
+any test or tool, link them (they are ignored by git): ln -sfn ${MAIN}/corpus corpus; ln -sfn
+${MAIN}/primer.pdf primer.pdf; ln -sfn ${MAIN}/local local.
+The audit's success rate (python3 tools/audit/score.py CODE [CODE]) is the share of each book's printed
+moves that the program shows green and reads as printed, with the whole line before them; the aim is 85%.`
 
 const FINDING = {
   type: 'object',
@@ -132,6 +142,7 @@ const FIX = {
     new_code: { type: 'string', description: 'the code digest of the fixed readings' },
     compare: { type: 'string', description: 'compare.py summary: gains and losses per book' },
     losses_checked: { type: 'string', description: 'every loss, checked on the page, and why it is acceptable or not' },
+    score: { type: 'string', description: 'score.py: the success rate of each book before and after' },
     notes: { type: 'string' },
   },
   required: ['status', 'branch', 'change', 'tests_run', 'compare'],
@@ -241,15 +252,24 @@ before correction before app before minor, then by count. Keep separate causes s
 live in one function. List the findings you cannot explain.`
 }
 
+function branchOf(c) { return c.prior ? `audit/${c.id}-r2` : `audit/${c.id}` }
+
 function fixPrompt(c, round, notes) {
+  const br = branchOf(c)
+  const start = c.prior ? `
+A first attempt is on the branch ${c.prior.branch}, made on older code. Create ${br} from your worktree's
+HEAD (git checkout -b ${br}; HEAD holds the fixes merged since), merge ${c.prior.branch} into it, resolve
+any conflict in favour of the newer code's behaviour, and then remove what its reviewer found wrong:
+${(c.prior.problems || []).join('\n')}
+` : `
+Create the branch ${br} in your worktree (git checkout -b ${br}).`
   const again = round > 1 ? `
-This is round ${round}. The branch audit/${c.id} holds the first attempt: run git checkout audit/${c.id}
+This is round ${round}. The branch ${br} holds the previous attempt: run git checkout ${br}
 in your worktree and continue from it (if git says it is checked out elsewhere, run
 git worktree list, and git -C <that worktree> checkout --detach, then try again). The
 reviewer asked for:
 ${notes}
-` : `
-Create the branch audit/${c.id} in your worktree (git checkout -b audit/${c.id}).`
+` : start
   return `${COMMON}
 
 You are told to FIX one cause of the program's failures, in your own git worktree.
@@ -265,12 +285,13 @@ ${again}
    slow e2e suite otherwise).
 4. Read the books with your code: python3 tools/audit/build.py ${c.books.join(' ')} first, then all the
    books (python3 tools/audit/build.py; about 15 minutes), and compare: python3 tools/audit/compare.py
-   ${BASE}. Look at the page of at least three gains and of every loss (page.py with --code for either
-   reading). A loss you cannot justify on the page means the fix is not done: change it.
-5. Commit on audit/${c.id} with a message in the repository's style${TRAILER}. Then run
+   ${BASE} and python3 tools/audit/score.py ${BASE} <your digest>. Look at the page of at least three gains
+   and of every loss (page.py with --code for either reading). The success rate must not fall in any
+   book; a fall or a loss you cannot justify on the page means the fix is not done: change it.
+5. Commit on ${br} with a message in the repository's style${TRAILER}. Then run
    git checkout --detach, so that the branch is free for the reviewer's worktree. Do not push. Report the branch, the commit, the code digest of your readings (compare.py prints the
    folders; python3 -c "import sys; sys.path.insert(0,'tools/audit'); import books; print(books.code_digest())"),
-   and the comparison.`
+   the comparison and the success rates before and after, book by book.`
 }
 
 function reviewPrompt(c, fx) {
@@ -287,9 +308,11 @@ them) and passes on the branch. Run the fast tests of the modules it touched. Re
 HEAD~1 or the merge base) for a special case for one book, a threshold tuned to pass, a change broader
 than the cause, or code that contradicts a docstring it leaves unchanged. The readings of the branch are
 in output/audit/${fx.new_code || '<its digest>'}/; run python3 tools/audit/compare.py ${BASE} ${fx.new_code || '<its digest>'}
-yourself and look on the page at three gains and at every loss or changed move (page.py BOOK PAGE
---code DIGEST). Approve only when the test shows the cause, the gains are true on the page, and no loss
-stands unexplained. Ask for changes when they are small and clear; reject when the approach is wrong.`
+and python3 tools/audit/score.py ${BASE} ${fx.new_code || '<its digest>'} yourself, run the tests that read
+the real books (with the books linked: they are skipped otherwise), and look on the page at three gains
+and at every loss or changed move (page.py BOOK PAGE --code DIGEST). Approve only when the test shows the
+cause, the gains are true on the page, no book's success rate falls without a reason shown on the page,
+and no loss stands unexplained. Ask for changes when they are small and clear; reject when the approach is wrong.`
 }
 
 function reportPrompt(all) {
@@ -360,11 +383,14 @@ if (MODE !== 'solve') {
 }
 
 const BRIEF = A.briefFile || ''
-if (!confirmed.length && !BRIEF) return { coverage, confirmed, refuted, unverified, causes: [], fixes: [] }
+if (MODE !== 'fix' && !confirmed.length && !BRIEF) return { coverage, confirmed, refuted, unverified, causes: [], fixes: [] }
 
-phase('Diagnose')
-const diag = await agent(diagnosePrompt(confirmed.length ? confirmed.map(brief) : null), { label: 'diagnose', phase: 'Diagnose', schema: CAUSES })
-const causes = (diag && diag.causes) || []
+let diag = null
+if (MODE !== 'fix') {
+  phase('Diagnose')
+  diag = await agent(diagnosePrompt(confirmed.length ? confirmed.map(brief) : null), { label: 'diagnose', phase: 'Diagnose', schema: CAUSES })
+}
+const causes = MODE === 'fix' ? (A.causes || []) : ((diag && diag.causes) || [])
 const todo = causes.slice(0, MAX_CAUSES)
 if (causes.length > todo.length) log(`Fixing the ${todo.length} worst causes; left for later: ${causes.slice(todo.length).map((c) => c.id).join(', ')}`)
 
