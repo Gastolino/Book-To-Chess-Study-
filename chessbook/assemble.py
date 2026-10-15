@@ -213,6 +213,15 @@ check against its board reading. When a decoded main line reaches the very
 position a diagram printed around it shows, after_node is that move and
 "checked" is true: the diagram is a checkpoint inside the line.
 
+OCR reads some characters of a square for others (b and h, c and e: the
+twins of movetext's FILE_READ and RANK_READ), and where both readings are
+legal the text's own wins. A diagram tied to a move that the line does not
+reach (nor a move before or after it) decides such a move when one other reading of the square printed in
+one of the line's moves shortly before it (MISREAD_PLIES) makes the line
+reach the diagram, but for squares its reading doubts (misread_squares):
+the line is read again with that move (forced), shown as a guess with the
+text's reading as its alternative, and the diagram is a checkpoint.
+
 Move numbers: the book's habit is learnt from its text (book_numbering).
 In a book that prints numbers without a dot ("1 e4 c5 2 Nc3"), the
 tokenizer reads such numbers too (see movetext.tokenize); a number without
@@ -266,6 +275,7 @@ CORRECTED_COUNTS = {"move": "moves", "symbol": "symbol_moves", "connected": "con
                     "split": "splits", "filled": "gap_moves", "added": "added_moves"}
 COMMENT_MAX = 2000              # characters of note text kept as one comment
 GAP_MAX = 8                     # plies a main run may skip and still continue its line
+MISREAD_PLIES = 16              # how far back from a diagram a misread square may stand
 SUGGEST_GAP = 4                 # plies a run's number may lie ahead of the line it follows (suggest)
 SUGGEST_PAGES = 2               # pages past the line's last printed move that suggest looks at
 SURE_COST = 1.5                 # how much dearer the runner-up's reading of the printed moves is
@@ -574,6 +584,14 @@ def _reach(fen, placement, count):
             path.pop()
     walk([], count)
     return out
+
+
+def _unlike(shown, board, doubt=()):
+    """The squares on which a board (chess.BaseBoard) and a diagram's
+    placement (a FEN's first field) differ, but for the squares in doubt."""
+    other = chess.BaseBoard(shown)
+    return {sq for sq in chess.SQUARES
+            if sq not in doubt and other.piece_at(sq) != board.piece_at(sq)}
 
 
 def _board_ply(fen):
@@ -1154,6 +1172,7 @@ class _Builder:
         self.by_line = defaultdict(list)        # line id -> its node ids
         self.line_pages = defaultdict(set)      # line id -> pages holding its marks
         self.base = None                # the lines as assembled, before corrections
+        self.misread = {}               # token key -> (move, text's move): misread_squares
 
     def __getstate__(self):
         # (the caches of suggest and read_on are not part of a stored reading)
@@ -1247,18 +1266,23 @@ class _Builder:
 
     def forced(self, run):
         """The run with the moves the reader corrected carrying the move they
-        gave (corrections.py "moves")."""
-        if not self.fix_moves:
+        gave (corrections.py "moves"), and the moves whose square a diagram
+        after them reads otherwise carrying that move (misread_squares)."""
+        if not self.fix_moves and not self.misread:
             return run
-        pages = self.fix_moves.pages()
+        pages = self.fix_moves.pages() if self.fix_moves else ()
         toks, changed = [], False
         for t in run.tokens:
             if t.kind == "move":
                 page, box = self.place_of(t, run.ci)
+                v = None
                 if page in pages and box is not None:
                     _, v = self.fix_moves.find(page, box, t.raw)
-                    if v and v["san"] != t.forced:
-                        t, changed = replace(t, forced=v["san"]), True
+                san = v["san"] if v else None
+                if san is None and box is not None and self.misread:
+                    san = self.misread.get(fixes.token_key(page, box, t.raw), (None,))[0]
+                if san and san != t.forced:
+                    t, changed = replace(t, forced=san), True
             toks.append(t)
         if not changed:
             return run
@@ -3073,7 +3097,11 @@ class _Builder:
                                 uci=d.uci)
             if d.alternatives:
                 self.nodes[nid]["alternatives"] = list(d.alternatives[:4])
-            if tok.forced:
+            said = self.misread_move(tok) if tok.forced else None
+            if said:
+                # a diagram after it chose the move: a guess against the text
+                self.nodes[nid].update(status="guessed", alternatives=[said])
+            elif tok.forced:
                 self.nodes[nid]["corrected"] = "move"
             elif self.named_piece(tok, d):
                 self.nodes[nid]["corrected"] = "symbol"
@@ -4191,6 +4219,99 @@ class _Builder:
                 self.after_node[did] = nid
                 self.checked[did] = nid
 
+    def misread_squares(self, fens=None):
+        """Moves whose printed square a diagram after them reads otherwise.
+
+        OCR reads some characters of a square for others (movetext FILE_READ
+        and RANK_READ: b and h, c and e), and the decoder takes the text's
+        own reading wherever it is legal. A diagram tied to a move of a line
+        (after_node) that the line does not reach, neither at that move nor
+        a move before or after it, decides one of the line's
+        moves of the last MISREAD_PLIES: the move is read with another
+        reading of the square printed in it (same piece) when exactly that
+        change makes the line reach the diagram, but for the squares its
+        reading doubts. fens holds the diagram positions the reader gave.
+        Sets self.misread {token key: (move, text's move)}, which forced()
+        gives the lines when they are replayed, and returns the diagrams
+        concerned {id: (placement, doubtful squares)}."""
+        found, boards = defaultdict(set), {}
+        for did, nid in self.after_node.items():
+            fen = (fens or {}).get(did) or self.diagram_fens.get(did)
+            node = self.nodes.get(nid)
+            if did in self.checked or not fen or node is None or not node["fen"] \
+                    or not self.diagram_selected(did) or self.not_a_board(did):
+                continue
+            shown = fen.split(" ")[0]
+            doubt = {chess.parse_square(s) for s in
+                     (self.readings.get(did) or {}).get("doubtful") or [] if s in chess.SQUARE_NAMES}
+            board = chess.Board(node["fen"])
+            if not _unlike(shown, board, doubt):
+                continue
+            # (a diagram that shows the position a move before or after it
+            # is only tied to the wrong move)
+            near = [node["parent"] and self.nodes[node["parent"]]["fen"]]
+            for mv in board.legal_moves:
+                board.push(mv)
+                near.append(board.fen())
+                board.pop()
+            if any(f and not _unlike(shown, chess.Board(f), doubt) for f in near):
+                continue
+            chain = []
+            while self.nodes[nid]["parent"] is not None and len(chain) < MISREAD_PLIES:
+                chain.append(nid)
+                nid = self.nodes[nid]["parent"]
+            chain.reverse()
+            hits = set()
+            for i, j in enumerate(chain):
+                n = self.nodes[j]
+                if n["status"] == "failed" or not n["uci"] or not n.get("key") \
+                        or not self.nodes[n["parent"]]["fen"]:
+                    continue
+                board = chess.Board(self.nodes[n["parent"]]["fen"])
+                m = chess.Move.from_uci(n["uci"])
+                name = chess.square_name(m.to_square)
+                if name not in n["raw"]:
+                    continue            # the square is not printed as the move has it
+                f, r = chess.square_file(m.to_square), chess.square_rank(m.to_square)
+                others = ({chess.square(g, r) for g in FILE_READ.get(name[0], {}) if g != f}
+                          | {chess.square(f, q) for q in RANK_READ.get(name[1], {}) if q != r})
+                piece = board.piece_type_at(m.from_square)
+                for alt in board.legal_moves:
+                    if alt.to_square not in others or alt.promotion != m.promotion \
+                            or board.piece_type_at(alt.from_square) != piece:
+                        continue
+                    b = board.copy(stack=False)
+                    b.push(alt)
+                    for k in chain[i + 1:]:
+                        mv = chess.Move.from_uci(self.nodes[k]["uci"]) if self.nodes[k]["uci"] \
+                            else None
+                        if mv is None or not b.is_legal(mv):
+                            break
+                        b.push(mv)
+                    else:
+                        if not _unlike(shown, b, doubt):
+                            hits.add((n["key"], board.san(alt), n["san"]))
+            if len(hits) == 1:
+                key, san, said = hits.pop()
+                found[key].add((san, said))
+                boards[did] = (shown, doubt)
+        self.misread = {**self.misread,
+                        **{key: v.pop() for key, v in found.items() if len(v) == 1}}
+        return boards
+
+    def misread_move(self, tok):
+        """The text's own reading of a move that a diagram after it read
+        otherwise (misread_squares), where the move was read so; None where
+        the reader gave the move."""
+        page, box = self.place_of(tok)
+        if box is None:
+            return None
+        hit = self.misread.get(fixes.token_key(page, box, tok.raw))
+        if hit is None or hit[0] != tok.forced or (
+                self.fix_moves and self.fix_moves.find(page, box, tok.raw)[1]):
+            return None
+        return hit[1]
+
     def comments(self, L):
         text = self.st.note_text.replace(NOTE_BREAK, " ")
         main = L.main_tok
@@ -5275,9 +5396,20 @@ class _Builder:
 
     def finalize(self, fix):
         """Keep the assembled lines as the base and apply the corrections
-        (apply_checked: self.fix holds them then)."""
+        (apply_checked: self.fix holds them then). The moves that diagrams
+        after them read otherwise (misread_squares) are read so, and such a
+        diagram is a checkpoint of the line that now reaches it."""
+        given = fixes.normalise(fix)["diagrams"] if fix is not None else {}
+        boards = self.misread_squares({did: v["fen"] for did, v in given.items()})
         self.snapshot()
-        return self.apply_checked(fix)
+        res = self.apply_checked(fix)
+        for did, (shown, doubt) in boards.items():
+            nid = self.after_node.get(did)
+            if nid in self.nodes and self.nodes[nid]["fen"] and \
+                    not _unlike(shown, chess.Board(self.nodes[nid]["fen"]), doubt):
+                self.checked[did] = nid
+                self.base["checked"][did] = self.nodes[nid].get("key")
+        return res
 
     def apply_checked(self, fix, chapters=None, window=None):
         """apply_fix(), then again without the corrections the program made
