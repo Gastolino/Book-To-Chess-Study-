@@ -126,6 +126,17 @@ def test_k_in_a_square_may_also_be_an_h():
     assert sans("1.Kk2", chess.Board("4k3/8/8/8/8/8/8/2K5 w - - 0 1")) == ["Kc2"]
 
 
+def test_capital_c_before_a_rank_is_the_c_file():
+    # OCR sets the c of a pawn move as a capital ("C4" for c4, "11 C3!"), and
+    # a glyph before it keeps it a file ("èC7" for Qc7) ...
+    assert sans("1.d4 d5 2.C4 e6 3.Nc3 C5") == ["d4", "d5", "c4", "e6", "Nc3", "c5"]
+    b = chess.Board("k7/8/8/4Q3/8/8/8/4K3 w - - 0 1")
+    assert sans("1.\x1bC7", b, glyphs=GlyphModel(seed=True)) == ["Qc7"]
+    # ... but where C is the knight (French, Spanish), it stays a piece letter
+    assert sans("1.e4 e5 2.C3", letters="French")[2].startswith("N")
+    assert sans("1.e4 e5 2.Cc3", letters="Spanish")[2] == "Nc3"
+
+
 def test_check_sign_printed_apart_from_its_move():
     # "'!Wfl t" is Qf1+ with the check sign set apart: the move is not lost
     assert moves("23. \x14d3 '!Wfl t 24. \x14c2 J.fl") == ["\x14d3", "'!Wfl t", "\x14c2", "J.fl"]
