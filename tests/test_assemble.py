@@ -365,6 +365,21 @@ def test_german_letters(tmp_path):
     assert sans(book, main_line(book, g)) == MAIN_SAN and g["status"] == "ok"
 
 
+def test_bang_read_as_1_after_a_square_is_the_annotation(tmp_path):
+    """OCR reads the "!" printed after a move as 1, l or I ("10 c4!?" as
+    "c41?", "11 h4!" as "h4l"): the move is the square before it, read
+    without doubt, not a move to the first rank (10.Kh1), and the game goes
+    on from the right board."""
+    game = ["1.Nf3 d5 2.g3 Nf6 3.Bg2 e6", "4.O-O Be7 5.d3 O-O 6.Nbd2 c5",
+            "7.e4 Nc6 8.Re1 b5 9.e5 Nd7", "10.c41? b4 11.h4l a5"]
+    pdf = make_book(tmp_path / "little.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids)[18:] == ["c4", "b4", "h4", "a5"]
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids[18:])
+
+
 def test_excluded_page_has_no_lines(tmp_path):
     pdf = make_book(tmp_path / "little.pdf")
     sel = tmp_path / "books" / "little" / "selection.json"

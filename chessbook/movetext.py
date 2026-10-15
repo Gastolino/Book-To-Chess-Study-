@@ -173,6 +173,7 @@ C_IMPLIED_NONCAP = 1.0  # a junk glyph that includes the capture mark, on a non-
 C_LONG_FROM = 9.0       # long notation whose from-square is not the square the piece leaves
 C_PAWN_DISAMB = 1.5     # a file letter before a pawn move that captures nothing ("gg4")
 C_SHAPE_OTHER = 1.6     # a piece other than the one its figurine's shape shows (Token.shape)
+C_BANG = 0.3            # a 1, l or I after a whole square read as the "!" it was ("c41?")
 SHAPE_SURE = 0.7        # a shape read this surely sets a reading apart as a letter does
 SHAPE_KNOWN = 0.8       # a symbol whose shape was read this surely needs no eye in the reader
 
@@ -591,6 +592,7 @@ class _Parse:
     promo: Optional[str]       # None, '' (sign without piece) or the text
     fch: Optional[str] = None  # the character read as the destination file (None: absent)
     rch: Optional[str] = None  # the character read as the destination rank (None: absent)
+    bang: bool = False         # the token's last 1, l or I read as "!" (_BANG_RE)
 
 
 @dataclass
@@ -731,6 +733,10 @@ def _enumerate_parses(core: str) -> list:
 
 
 _LONG_CORE_RE = re.compile(r"[a-h£][1-8lI]\s?[-–—x:×]\s?[a-h£][1-8lIBS]")
+# A whole square and a 1, l or I after it: OCR's reading of a "!" ("c41?" for
+# c4!?, "d3l" for d3!, "hSI" for h5!). Read as the rank, it would leave the
+# square as junk.
+_BANG_RE = re.compile(r"[a-h£][1-8sSB][1lI]$")
 
 
 @lru_cache(maxsize=200000)
@@ -743,11 +749,18 @@ def _parse_raw(raw: str) -> _Parsed:
         zeros = sum(ch in "0Oo°" for ch in cc)
         castle = "Q" if zeros >= 3 else "K"
     parses = [] if castle else _enumerate_parses(core)
+    if not castle and _BANG_RE.search(core):
+        parses += [replace(q, bang=True) for q in _enumerate_parses(core[:-1])]
     if not parses and not castle and check and text.endswith("t"):
         # the final 't' was not a check sign after all
         parses = _enumerate_parses(core + "t")
         check = 0
     return _Parsed(raw, castle, check, ann, parses)
+
+
+def _annotation(parsed: _Parsed, q: Optional[_Parse]) -> str:
+    """The annotation of a token as parse q reads it."""
+    return "!" + parsed.annotation if q is not None and q.bang else parsed.annotation
 
 
 def parse_move_text(raw: str) -> list[dict]:
@@ -760,7 +773,7 @@ def parse_move_text(raw: str) -> list[dict]:
     for q in p.parses:
         out.append({"prefix": q.prefix, "capture": q.cap,
                     "squares": sorted(chess.square_name(s) for s in q.dest),
-                    "promotion": q.promo, "check": p.check, "annotation": p.annotation})
+                    "promotion": q.promo, "check": p.check, "annotation": _annotation(p, q)})
     return out
 
 
@@ -878,7 +891,7 @@ class _Scorer:
             for f, a in fc.items():
                 for r, b_ in rc.items():
                     sq = chess.square(f, r)
-                    by_dest[sq].append((p, a + b_))
+                    by_dest[sq].append((p, a + b_ + (C_BANG if p.bang else 0.0)))
                     mask |= chess.BB_SQUARES[sq]
         hit = (dict(by_dest), mask)
         self._index_cache[parsed.raw] = hit
@@ -1006,7 +1019,7 @@ class _Scorer:
             for p in parsed.parses:
                 c = (g.file_costs(p.fch, p.rch is None).get(f, C_UNREAD)
                      + g.rank_costs(p.rch, p.fch is None).get(r, C_UNREAD)
-                     + min(self.piece_costs(p.prefix)[pt], 4.0))
+                     + min(self.piece_costs(p.prefix)[pt], 4.0) + (C_BANG if p.bang else 0.0))
                 if (p.cap is True) != board.is_capture(m):
                     c += 0.8
                 if c < best:
@@ -2386,7 +2399,7 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
     def failed(tok, parsed, alts=(), cost=C_FAIL, prs=None):
         sq = (prs.fch, prs.rch) if prs is not None else (None, None)
         return Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, None, None, None,
-                       "failed", list(alts), round(cost, 3), None, parsed.annotation, sq)
+                       "failed", list(alts), round(cost, 3), None, _annotation(parsed, prs), sq)
 
     for idx, tok in enumerate(mtoks):
         parsed = _parse_raw(tok.raw)
@@ -2475,6 +2488,6 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
         sq = (prs.fch, prs.rch) if prs is not None else (None, None)
         cap_mark = (prs.cap is True) if prs is not None else None
         out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, san, m.uci(),
-                           b.fen(), status, alts, round(mine_c, 3), glyph, parsed.annotation, sq,
-                           missing, cap_mark, lost))
+                           b.fen(), status, alts, round(mine_c, 3), glyph,
+                           _annotation(parsed, prs), sq, missing, cap_mark, lost))
     return out
