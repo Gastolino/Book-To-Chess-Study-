@@ -344,7 +344,7 @@ let refuted = []
 let unverified = []
 let coverage = []
 
-if (MODE !== 'solve') {
+if (MODE === 'full' || MODE === 'find') {   // ("solve" and "fix" do not hunt)
   const items = []
   for (const book of BOOKS) for (const lens of LENSES) {
     if (book === 'brunthaler' && lens === 'correcting') continue   // it reads no line to correct
