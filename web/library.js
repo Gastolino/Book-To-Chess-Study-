@@ -44,7 +44,7 @@
 // when the page is hidden, so that nothing is lost when the page is dropped.
 const LIB = (() => {
   const api = { on: false, kind: null, books: [], current: null, version: null, last: null,
-                persisted: null };
+                persisted: null, saving: 0 };
   const PUSH_DELAY = 1500;        // milliseconds after a change before it is sent
   const POSITION_DELAY = 4000;
   const RETRY = 30000;
@@ -1240,7 +1240,12 @@ const LIB = (() => {
     }
     return false;
   };
+  // The finished reading goes to the store. The shell's sign of work shows until the store holds
+  // it, or has refused it for good (LIB.saving counts the readings on their way): a page closed
+  // before the store's transaction is complete loses the reading, and the book is read again.
   function sendReading(cur, m, tries) {
+    let again = false;
+    if (!tries) { api.saving++; indicate(); }
     store.putReading(cur.id, m.bytes, m.version, m.size)
       .then((book) => {
         cur.book.reading = book.reading;
@@ -1248,14 +1253,17 @@ const LIB = (() => {
         if (api.current === cur) document.body.dataset.saved = cur.id;
       })
       .catch((err) => {
-        if (store.kind === "server" && tries < 4) setTimeout(() => sendReading(cur, m, tries + 1), 5000 * (tries + 1));
-        else if (api.current === cur) {
+        if (store.kind === "server" && tries < 4) {
+          again = true;
+          setTimeout(() => sendReading(cur, m, tries + 1), 5000 * (tries + 1));
+        } else if (api.current === cur) {
           status((tooFull(err)
             ? "This device has no room left to keep the program's reading (" + err.message + "). "
             : "The program's reading could not be saved to your library (" + err.message + "). ") +
             "The book is read again the next time it opens.", true);
         }
-      });
+      })
+      .finally(() => { if (!again) { api.saving--; indicate(); } });
   }
 
   // ---------------------------------------------------------------- the reader

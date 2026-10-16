@@ -337,8 +337,9 @@ function progress(text) {
 }
 // One sign of work: the book and the bar on the start page, the small book and the line along the
 // top bar's foot in the reader. It shows while a request is on its way (working), while the book
-// is read (loading), while pictures of pages are drawn and while the reading is saved. The words
-// of the work are kept, for a tap on the small book.
+// is read (loading), while pictures of pages are drawn and while the reading is saved (saving, from
+// the end of the reading until the worker gives it, then LIB.saving until the library holds it).
+// The words of the work are kept, for a tap on the small book.
 let workingNow = false, saving = false, workWords = "", fraction = null;
 function working(on) {
   workingNow = !!on;
@@ -347,7 +348,7 @@ function working(on) {
 function indicate() {
   let drawing = false;
   try { drawing = PICS.busy(); } catch (e) { drawing = false; }   // (before PICS exists)
-  const on = workingNow || loading || saving || drawing;
+  const on = workingNow || loading || saving || LIB.saving > 0 || drawing;
   const startOn = $("start").style.display !== "none" && (workingNow || busy || !ready);
   $("bar").classList.toggle("on", startOn);
   $("loader").classList.toggle("on", startOn);
@@ -378,7 +379,7 @@ function workNow() {
   let w = null;
   try { w = PICS.drawing(); } catch (e) { w = null; }
   if (w) parts.push("Drawing pages " + w[0] + " to " + w[1] + ".");
-  if (saving) parts.push("Saving the program's reading to your library.");
+  if (saving || LIB.saving > 0) parts.push("Saving the program's reading to your library.");
   if (!parts.length && workingNow) parts.push(workWords);
   return parts.filter(Boolean).join(" ").replace(/([^.])( Drawing| Saving)/g, "$1.$2");
 }
@@ -459,7 +460,8 @@ function show(name, hash, htmlText) {
 }
 worker.onmessage = (e) => {
   const m = e.data;
-  // the reading is saved to the library after the book is read: the sign of work shows meanwhile
+  // the reading is saved to the library after the book is read: the sign of work shows meanwhile,
+  // and from the worker's reading on until the library holds it (LIB.saving, LIB.message below)
   if (m.type === "done" && (!m.restored || m.resave) && LIB.on && LIB.current && !LIB.current.ephemeral) saving = true;
   if (m.type === "reading" || (m.type === "error" && m.during === "save")) { saving = false; indicate(); }
   // the library's own messages (the stored reading, the cover) end here
