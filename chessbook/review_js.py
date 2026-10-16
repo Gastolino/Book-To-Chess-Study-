@@ -842,7 +842,8 @@ function chooseGap(key, m){
   const san = done.map(d => d[1]).concat([m[0]]);
   FIX.set("gaps", key, {san});
   const left = gapInfo(key).missing - san.length;
-  afterFix();
+  // (once the gap holds every move the text lacks, the program reads on from the move after it)
+  afterFix(left > 0 ? null : key);
   openGap(key);
   setMsg("You gave " + m[0] + ". " + (left > 0 ? "The text lacks " + (left === 1 ? "one more move" : words(left) +
     " more moves") + " here: give the next one, or leave the rest. " : "The program then reads the line on from it. ") +
@@ -1361,7 +1362,9 @@ function penClick(b){
 /* ---------------- the thread: a line corrected move by move on the board */
 // With the pencil, a tap on a move the program misread, or on a box it placed in no line, asks for
 // the move printed there: the reader makes it on the board, from the position after the line's move
-// before it. The correction is stored at once (corrections.py "moves", with "connect" for a box in
+// before it (a tap on a move after a gap in the text, whose position is unknown, asks for the moves the
+// text lacks there, from the position before them). The correction is stored at once (corrections.py
+// "moves", with "connect" for a box in
 // no line, and the moves the text lacks before it as the join's "before"); once the book holds it
 // the app's worker says what follows (driver.suggest): the next printed moves to join, a move the
 // numbering says is missing, or a box that does not read, whose move the reader makes in turn. So
@@ -1603,9 +1606,18 @@ function threadTap(b){
   const id = b.dataset.node;
   if (id) {
     const n = D.nodes[id];
-    // (a gap, a move whose position the gap before it leaves unknown, a move the reader added or
-    // read, a start: their own editors)
-    if (!n || n.parent == null || !n.key || n.gap || !beforeFen(n) || n.corrected === "added" || n.region) return false;
+    // (a move the reader added or read, a start: their own editors)
+    if (!n || n.parent == null || !n.key || n.corrected === "added" || n.region) return false;
+    // a gap in the text, or a move whose position the gap before it leaves unknown: the moves the
+    // text lacks there, made on the board from the position before them (a gap the reader cannot
+    // fill so, and a move whose position is unknown otherwise: their own editors)
+    if (n.gap || !beforeFen(n)) {
+      const gk = gapKeyOf(id), g = gk ? gapInfo(gk) : null;
+      if (!g || !g.base || !g.hole || g.missing <= g.filled.length) return false;
+      const k = nodeByKey(gk);
+      threadBegin({kind: "gap", key: gk, box: gk, page: k ? D.nodes[k].page : S.page, node: id, at: markBox(b)});
+      return true;
+    }
     // while the move of a box in no line is asked for, a move tapped on its page (or the page before)
     // is the one it follows
     if (TH.on && TH.kind === "seq" && (TH.step === "own" || TH.step === "gap") &&
@@ -1658,6 +1670,19 @@ function threadBegin(o){
     TH.fen = threadFen();
     TH.step = "own";
     TH.doubt = doubted(o.node) ? o.node : null;
+  } else if (o.kind === "gap") {
+    // a gap in the text: the position after the moves given for it so far, and the move tapped chosen
+    // (the board shows that position already, not the note of a move whose position is unknown); the
+    // box after the gap is named by its printed number, the ply the moves the text lacks lead to
+    const g = gapInfo(o.key), k = nodeByKey(o.key);
+    threadSetAnchor(g.filled.length ? g.filled[g.filled.length - 1] : g.before);
+    TH.fen = threadFen();
+    threadSelect(o.node, {at: o.at});
+    TH.ply = fenPly(g.base) + g.missing;
+    TH.boxSan = k && D.nodes[k].san || null;
+    TH.step = "gap"; TH.need = g.missing - g.filled.length;
+    // (the worker offers the moves the words between may stand for)
+    if (inApp()) threadPost(true);
   } else {
     TH.ply = printedPly(o.seq, o.key);
     // (a move printed without its number after a comment follows the move the text prints it after)
@@ -1768,7 +1793,8 @@ function threadShow(){
 // the box's full editor: the place of a box in no line (or that it is no move), the gap's moves, or
 // the move's own corrections; null when it has none
 function threadMoreTarget(){
-  if (TH.kind === "gap" && TH.key) return () => openGap(TH.key);
+  // (the key is taken now: More ends the thread before it opens the editor)
+  if (TH.kind === "gap" && TH.key) { const key = TH.key; return () => openGap(key); }
   const node = TH.kind === "line" ? TH.node : TH.key && !TH.seq ? nodeByKey(TH.key) : null;
   if (node && D.nodes[node]) return () => openMove(node);
   if (TH.seq && seqInfo(TH.seq)) { const seq = TH.seq; return () => openSeq(seq); }
