@@ -17,8 +17,11 @@
 // page's applyPatch hook (as the browser app's worker sends it) turns the
 // failed move and the moves after it into decoded moves without leaving the
 // page or the move; a page that opens in the middle of a line shows that
-// line's position at the top of the page; screenshots at 1280 and 390 px in
-// the light and dark schemes; no console errors. Prints one JSON object; the
+// line's position at the top of the page; on a phone, a finger's tap inside a
+// doubtful box that carries an eye asks for the box's move (the browser's
+// touch adjustment does not move it onto the eye), and a tap on the eye's
+// drawing opens its menu; screenshots at 1280 and 390 px in the light and dark
+// schemes; no console errors. Prints one JSON object; the
 // exit code is 1 when a check fails.
 const { chromium } = require("playwright");
 const path = require("path");
@@ -197,6 +200,59 @@ function check(name, cond, detail) {
     await shot("pencil_move_390_light.png");
     await page.emulateMedia({ colorScheme: "dark" });
     await shot("pencil_move_390_dark.png");
+
+    // a finger on a phone: a tap inside a doubtful box that carries an eye (an unread piece symbol)
+    // asks for the box's move, wherever the finger lands off the eye's own drawing; the browser's
+    // touch adjustment would otherwise move it onto the eye, whose menu covers the board
+    const tctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const tp = await tctx.newPage();
+    tp.on("console", (m) => { if (m.type() === "error") out.errors.push(m.text()); });
+    tp.on("pageerror", (e) => out.errors.push(String(e)));
+    await tp.goto(url + "#page=" + gamePage);
+    await tp.waitForFunction((p) => window.readerState && window.readerState.page === p, gamePage);
+    await tp.evaluate(() => document.getElementById("showread").click());
+    await tp.waitForFunction(() => document.body.classList.contains("pencil"));
+    const eyed = await tp.evaluate(() => [...document.querySelectorAll("#ov .eye")].map((e) => e.dataset.eye)
+      .filter((i) => document.querySelector("#ov .mark[data-mark='" + i + "'][data-node]")));
+    check("the phone page has doubtful moves with an eye", eyed.length >= 2, eyed);
+    const cdp = await tctx.newCDPSession(tp);
+    const finger = async (x, y) => {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, radiusX: 10, radiusY: 10 }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await tp.waitForTimeout(450);
+      return tp.evaluate(() => { const m = document.getElementById("symmenu"), f = document.getElementById("fix");
+        return { menu: !!m && !m.hidden, sheet: f && !f.hidden && f.querySelector(".thl") ? f.querySelector(".thl").innerText : null }; });
+    };
+    const reset = async (i) => {
+      await tp.evaluate(() => { const m = document.getElementById("symmenu"); if (m) m.hidden = true; const c = document.getElementById("thcancel"); if (c) c.click(); });
+      await tp.waitForTimeout(450);
+      // (the box near the top of the window, clear of the board at its foot)
+      return tp.evaluate((i) => { const mk = document.querySelector("#ov .mark[data-mark='" + i + "']");
+        window.scrollBy(0, mk.getBoundingClientRect().top - 150);
+        const r = mk.getBoundingClientRect(), e = document.querySelector("#ov .eye[data-eye='" + i + "']").getBoundingClientRect();
+        return { x: r.left, y: r.top, w: r.width, h: r.height, eye: { x: e.left + e.width / 2, y: e.top + e.height / 2 } }; }, i);
+    };
+    const taps = [];
+    for (const i of eyed) {
+      for (const [fx, fy] of [[0.5, 0.5], [0.3, 0.4], [0.4, 0.2], [0.15, 0.8], [0.8, 0.7]]) {
+        const r = await reset(i);
+        const x = r.x + r.w * fx, y = r.y + r.h * fy;
+        // (only a place of the box the eye does not cover)
+        const own = await tp.evaluate(([x, y, i]) => { const t = document.elementFromPoint(x, y);
+          return !!t && !t.closest(".eye") && !!t.closest(".mark[data-mark='" + i + "']"); }, [x, y, i]);
+        if (!own) continue;
+        const got = await finger(x, y);
+        taps.push({ mark: i, at: [fx, fy], ...got });
+      }
+    }
+    const wrong = taps.filter((t) => t.menu || !t.sheet || !/Play this move/.test(t.sheet));
+    check("a finger's tap inside a doubtful box with an eye asks for its move, not for the piece symbol",
+          taps.length >= 6 && wrong.length === 0, { taps: taps.length, wrong });
+    // the eye's own drawing still opens its menu
+    const r0 = await reset(eyed[0]);
+    const onEye = await finger(r0.eye.x, r0.eye.y);
+    check("a finger on the eye's drawing opens the menu of its symbol", onEye.menu && !onEye.sheet, onEye);
+    await tctx.close();
     check("no console errors", out.errors.length === 0, out.errors);
     out.ok = true;
   } catch (err) {
