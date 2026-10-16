@@ -362,6 +362,31 @@ def test_chapters_from_running_heads(tmp_path):
     assert s["front_matter_end"] == 2
 
 
+def test_running_head_with_its_page_number(tmp_path):
+    """A running head that carries the page number ("7 Opening Traps",
+    "Opening Traps 8") recurs without the number: it is one head."""
+    doc = pymupdf.open()
+    word = 0
+    for p in range(1, 13):
+        page = doc.new_page(width=420, height=600)
+        head = f"{p - 1} Opening Traps" if p % 2 else f"Opening Traps {p - 1}"
+        page.insert_text((40, 30), head, fontname="tiro", fontsize=9)
+        for k in range(38):
+            out = []
+            while len(" ".join(out)) < 60:
+                out.append(PROSE[word % len(PROSE)])
+                word += 1
+            page.insert_text((40, 60 + 13 * k), " ".join(out), fontname="tiro", fontsize=10)
+    path = tmp_path / "traps.pdf"
+    doc.save(path)
+    doc = pymupdf.open(path)
+    fonts = pt.book_fonts(doc)
+    assert fonts["layout"]["folio_offset"] == 1
+    for i in (4, 5):
+        lines = pt.page_lines(doc, i, fonts)
+        assert [ln["role"] for ln in lines[:2]] == ["head", "text"]
+
+
 def test_whole_book_under_a_minute():
     fresh = pymupdf.open(PDF)          # no cached extraction
     t0 = time.perf_counter()

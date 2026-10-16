@@ -486,9 +486,15 @@ def _bands(raws, body_size):
     body text, that is a page number or a text recurring on many pages. A
     group of candidates counts only when it keeps one baseline and is the
     outermost line on its pages, which rules out captions such as "White to
-    move" that recur near the foot of a page at varying heights."""
+    move" that recur near the foot of a page at varying heights.
+
+    A text is grouped without the page's own number ("47 Opening Traps" and
+    "48 Opening Traps" are one head) but with every other number, so that
+    chapter titles "Chapter 1" .. "Chapter 10", each at the top of its page,
+    are not taken for one head recurring on ten pages."""
     n = len(raws)
     groups = defaultdict(list)
+    texts = []
     for p, raw in enumerate(raws, 1):
         H, lines = raw["h"], raw["lines"]
         if not lines:
@@ -505,9 +511,7 @@ def _bands(raws, body_size):
             num = _page_number(ln["text"])
             if num is not None:
                 groups[(zone, "num", p - num)].append((p, ln["base"], outer))
-            nt = "".join(ch for ch in ln["text"].lower() if ch.isalpha())
-            if len(nt) >= 4:
-                groups[(zone, "txt", nt)].append((p, ln["base"], outer))
+            texts.append((zone, num, ln["text"], (p, ln["base"], outer)))
     bases = {"top": [], "bot": []}
     # The printed page number is the PDF page minus an offset that most
     # running heads agree on (front matter without folios aside).
@@ -520,6 +524,16 @@ def _bands(raws, body_size):
         off, cnt = offsets.most_common(1)[0]
         if cnt >= max(3, 0.25 * n):
             folio = off
+    for zone, num, text, o in texts:
+        words = text.strip(SPACES).split(" ")
+        if num is not None and folio is not None and o[0] - num == folio and len(words) > 1:
+            # the word _page_number took the number from: the first, else the last
+            first = words[0].translate(DIGIT_FIX)
+            lead = first.isdigit() and int(first) == num and any(c.isdigit() for c in words[0])
+            words = words[1:] if lead else words[:-1]
+        nt = "".join(ch for ch in " ".join(words).lower() if ch.isalnum())
+        if sum(ch.isalpha() for ch in nt) >= 4:
+            groups[(zone, "txt", nt)].append(o)
     for (zone, kind, _), occ in groups.items():
         pages = {o[0] for o in occ}
         if len(pages) < (max(3, 0.1 * n) if kind == "num" else max(4, 0.04 * n)):

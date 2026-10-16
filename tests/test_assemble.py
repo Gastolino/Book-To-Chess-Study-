@@ -486,6 +486,102 @@ def test_bang_read_as_1_after_a_square_is_the_annotation(tmp_path):
     assert all(book["nodes"][i]["status"] == "ok" for i in ids[18:])
 
 
+CHAPTER_GAMES = [GAME_EN,
+                 ["1.d4 d5 2.c4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 c6",
+                  "8.Bd3"],
+                 ["1.e4 c5 2.Nf3 d6 3.d4 cxd4", "4.Nxd4 Nf6 5.Nc3 a6", "6.Be3 e5 7.Nb3 Be6",
+                  "8.f3"],
+                 ["1.Nf3 d5 2.g3 Nf6 3.Bg2 e6", "4.O-O Be7 5.d3 O-O", "6.Nbd2 c5 7.e4 Nc6",
+                  "8.Re1"],
+                 ["1.e4 e6 2.d4 d5 3.Nc3 Bb4", "4.e5 c5 5.a3 Bxc3+", "6.bxc3 Ne7 7.Qg4 Qc7",
+                  "8.Qxg7"]]
+
+
+def make_chapter_book(path):
+    """A book as a converter sets it, with no running heads: each chapter
+    opens with "Chapter N" in the move font at the top of its page, and its
+    game goes on at the top of the next page, at the same height."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Book of Games", fontname="tiro", fontsize=26)
+    for n, game in enumerate(CHAPTER_GAMES, 1):
+        w.page(head=False)
+        w.y = 36
+        w.line(f"Chapter {n}", bold=True)
+        w.y = 64
+        w.prose(n=8)
+        w.mixed([("Smith - Jones, ", True), (f"London {1900 + n}", False)])
+        w.line(game[0], bold=True)
+        w.line("The usual way to play this opening.", indent=8)
+        w.line(game[1], bold=True)
+        w.prose(until=H - 60)
+        w.col(1)
+        w.prose(until=H - 60)
+        w.page(head=False)
+        w.y = 36
+        w.line(game[2], bold=True)
+        w.line("Black has to defend with care.", indent=8)
+        w.line(game[3], bold=True)
+        w.line("1-0", bold=True)
+        w.prose(until=H - 60)
+        w.col(1)
+        w.y = 36
+        w.prose(until=H - 60)
+    w.save(path)
+    return path
+
+
+def test_numbered_chapter_titles_are_no_running_head(tmp_path):
+    """"Chapter 1" .. "Chapter 5" at the tops of their pages are no running
+    head that recurs on many pages: the game lines printed at the same
+    height at the top of the next pages are moves, and the games read
+    whole."""
+    pdf = make_chapter_book(tmp_path / "chapters.pdf")
+    doc = pymupdf.open(pdf)
+    tops = [pt.page_lines(doc, i)[0] for i in range(2, doc.page_count, 2)]
+    assert [ln["text"] for ln in tops] == [g[2] for g in CHAPTER_GAMES]
+    assert [ln["role"] for ln in tops] == ["moves"] * 5
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    games = [x for x in book["lines"] if x["title"].startswith("Smith - Jones")]
+    assert len(games) == 5
+    for g, game in zip(games, CHAPTER_GAMES):
+        board, san = chess.Board(), []
+        for tok in " ".join(game).split(" "):
+            san.append(board.san(board.parse_san(tok.split(".")[-1])))
+            board.push_san(san[-1])
+        assert sans(book, main_line(book, g)) == san
+
+
+def test_notes_after_a_diagram_at_the_end_of_a_chapter(tmp_path):
+    """Notes after a diagram that no line has reached, at the end of the
+    chapter, start a line from the diagram; each later note of it is placed
+    in that line, and none is left without a box."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=6)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    for k, part in enumerate(GAME_EN):
+        w.line(part, bold=True)
+        w.line("A natural move in this position.", indent=8)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.page()
+    w.prose(n=4)
+    w.picture("12")
+    w.line("White wins after 1.Rd8+ Kh7 2.Rd7, and if", indent=8)
+    w.line("then 2...Kg6 3.Rxf7 Kxf7 the ending is won.")
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p3-1": ENDING_FEN})
+    marks = [m for m in book["pages"][2]["marks"]]
+    assert [m["raw"] for m in marks] == ["Rd8+", "Kh7", "Rd7", "Kg6", "Rxf7", "Kxf7"]
+    assert all(m["status"] == "ok" and m["node"] for m in marks)
+
+
 def test_excluded_page_has_no_lines(tmp_path):
     pdf = make_book(tmp_path / "little.pdf")
     sel = tmp_path / "books" / "little" / "selection.json"

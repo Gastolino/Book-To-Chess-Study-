@@ -1785,6 +1785,7 @@ class _Builder:
                 self.on_main(rest)
         self.close(st.pos)
         self.flush_pre_notes()
+        self.close(st.pos)              # the line the held notes started, with its notes
 
     def long_runs(self, st, runs):
         """Moves in long notation that stand in the text outside any run
