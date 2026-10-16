@@ -49,6 +49,13 @@ is made of control characters that Python treats as white space ("\x1d",
 are built from character boxes and split on real spaces only. line["text"] is
 the words joined by single spaces: use line["text"].split(" "), never
 str.split().
+
+The text layer names each glyph by the letter OCR read. A font that OCR
+traced from the scan (ClearScan) draws one letter with several glyphs, and
+names some by the letter's twin (an "h" named "b"); set_letter_map reads
+the glyphs that the book's moves showed to be another letter as that letter
+where they stand as the file of a square (square_glyphs gives the glyph of
+each letter).
 """
 from __future__ import annotations
 
@@ -94,6 +101,8 @@ _FLAGS = pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES
 SPACES = " \xa0\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u202f\u205f\u3000"
 _SPACE_SET = frozenset(SPACES)
 COORD_CHARS = frozenset("abcdefgh12345678")
+_FILE_SET = frozenset("abcdefgh")
+_RANK_CHARS = frozenset("12345678lISsB")     # a rank, and what OCR prints for some
 SIZE_TOL = 0.04          # sizes of one font within 4 % are one size
 HEAD_ZONE = 0.13         # running heads and page numbers lie in the top or bottom 13 %
 
@@ -226,6 +235,62 @@ def figurine_map(doc):
     return dict(_cache(_as_doc(doc)).get("figmap") or {})
 
 
+def set_letter_map(doc, mapping):
+    """Read the file letter of a square as the letter its glyph was traced from.
+
+    A font that OCR traced from the scan (ClearScan) draws one letter with
+    several glyphs, one for each shape it found on the pages, and the text
+    layer names each glyph by the letter OCR took it for: a glyph traced
+    from an h may be named b wherever it stands. mapping: {(font name, glyph
+    id): letter} (see assemble.square_twins). Every later page_lines call on
+    doc gives that letter in place of the text's where the glyph stands as
+    the file of a square: a rank follows it, and no letter after that. Only
+    the pages' lines are read again; the fonts and chapters stay as learnt."""
+    doc = _as_doc(doc)
+    c = _cache(doc)
+    mapping = dict(mapping or {})
+    if c.get("lettermap", {}) == mapping:
+        return
+    c["raw"] = {}
+    c["lettermap"] = mapping
+
+
+def letter_map(doc):
+    """The mapping set by set_letter_map ({} when none)."""
+    return dict(_cache(_as_doc(doc)).get("lettermap") or {})
+
+
+def square_glyphs(doc, i):
+    """The letters a-h of page i (0-based) as the text layer names them, with
+    the glyph that draws each: [(letter, font name, glyph id, bbox)]."""
+    doc = _as_doc(doc)
+    cache = _cache(doc).setdefault("glyphs", {})
+    if i not in cache:
+        cache[i] = [(chr(ch[0]), s["font"], ch[1], tuple(ch[3]))
+                    for s in doc[i].get_texttrace() for ch in s["chars"]
+                    if ch[1] >= 0 and chr(ch[0]) in _FILE_SET]
+    return cache[i]
+
+
+def _letter_swaps(doc, i, chars, origins, mapping):
+    """The letters of chars (one line of page i) that set_letter_map reads
+    otherwise: {index: letter}. origins holds each character's (font, x, y)."""
+    out = {}
+    for j, (ch, *_rest) in enumerate(chars):
+        if ch not in _FILE_SET or j + 1 >= len(chars) or chars[j + 1][0] not in _RANK_CHARS \
+                or (j + 2 < len(chars) and chars[j + 2][0].islower() and chars[j + 2][0] != "x"):
+            continue
+        drawn = _cache(doc).setdefault("drawn", {})
+        if i not in drawn:
+            drawn[i] = {(s["font"], round(c[2][0], 1), round(c[2][1], 1), chr(c[0])): c[1]
+                        for s in doc[i].get_texttrace() for c in s["chars"]}
+        font, x, y = origins[j]
+        letter = mapping.get((font, drawn[i].get((font, round(x, 1), round(y, 1), ch))))
+        if letter:
+            out[j] = letter
+    return out
+
+
 # ---------------------------------------------------------------- raw pages
 
 def _pictures(page, text_diagrams=()):
@@ -299,13 +364,14 @@ def _raw_page(doc, i):
     inject = injected_strings(doc)
     d = page.get_text("rawdict", flags=_FLAGS)
     fig = _cache(doc).get("figmap")
+    letters = _cache(doc).get("lettermap")
     lines, whole = [], []
     for b in d["blocks"]:
         if b.get("type", 0) != 0:
             continue
         for ln in b["lines"]:
             whole.append(("".join(c["c"] for s in ln["spans"] for c in s["chars"]), ln["bbox"]))
-            spans, chars = [], []
+            spans, chars, origins = [], [], []
             for s in ln["spans"]:
                 size, base = s["size"], s["origin"][1]
                 # ClearScan fonts can claim absurd ascenders (3.3 em), which
@@ -322,6 +388,10 @@ def _raw_page(doc, i):
                 for c in s["chars"]:
                     ch = fig.get((s["font"], c["c"]), c["c"]) if fig else c["c"]
                     chars.append((ch, c["bbox"][0], c["bbox"][2], si))
+                    origins.append((s["font"], *c["origin"]))
+            if letters:
+                for j, letter in _letter_swaps(doc, i, chars, origins, letters).items():
+                    chars[j] = (letter, *chars[j][1:])
             bridges = []
             if inject:
                 cut = drop_injected("".join(ch[0] for ch in chars), inject)
