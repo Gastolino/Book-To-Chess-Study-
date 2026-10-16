@@ -198,7 +198,10 @@ class Token:
     tokenize() reads only when asked to (books that number moves that way).
     forced holds the SAN that a reader's correction gives a move token: the
     decoder then reads the token as that move, and as nothing else, where it
-    is legal. shape holds (piece letter, confidence) when the picture of the
+    is legal. prefer holds the SAN that the program's own reading gives a
+    move token (a diagram printed after it shows that move): the decoder
+    reads the token as that move where it is legal, and as the text reads it
+    where it is not. shape holds (piece letter, confidence) when the picture of the
     token's figurine was read (figshapes.py): a reading of that piece costs
     nothing for the symbol, a reading of another piece about as much as a
     symbol that cannot be read.
@@ -213,6 +216,7 @@ class Token:
     layout: bool = False
     dotless: bool = False
     forced: Optional[str] = None    # the SAN a reader's correction gives this move token
+    prefer: Optional[str] = None    # the SAN the program's reading gives it, where legal
     shape: Optional[tuple] = None   # (piece letter, confidence) read from the figurine's picture
 
 
@@ -2086,6 +2090,10 @@ def _forced_candidates(board: chess.Board, san: str):
 def _token_candidates(scorer, board, tok, parsed, gmap):
     if getattr(tok, "forced", None):
         return _forced_candidates(board, tok.forced)
+    if getattr(tok, "prefer", None):
+        hit = _forced_candidates(board, tok.prefer)
+        if hit:
+            return hit
     return _adjusted(_shape_candidates(scorer, board, tok, parsed), board, gmap, scorer)
 
 
@@ -2471,7 +2479,8 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
             b.push(m)
             out.append(failed(tok, parsed, [alt], c, prs))
             continue
-        if getattr(tok, "forced", None):
+        if getattr(tok, "forced", None) or (getattr(tok, "prefer", None) and
+                                            b.san(m) == tok.prefer):
             san = b.san(m)
             b.push(m)
             out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, san, m.uci(),

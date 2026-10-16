@@ -219,9 +219,21 @@ legal the text's own wins. A diagram tied to a move that the line does not
 reach (nor a move before or after it) decides such a move when one other
 reading of the square printed in one of the line's moves shortly before it
 (MISREAD_PLIES) makes the line reach the diagram, but for squares its
-reading doubts (misread_squares): the line is read again with that move
-(forced), shown as a guess with the text's reading as its alternative, and
-the diagram is a checkpoint.
+reading doubts (misread_squares): the line is read again preferring that
+move where it is legal, shown as a guess with the text's reading as its
+alternative, and the diagram is a checkpoint. A move the reader corrects
+before it can make that move illegal; the text's reading then stands.
+
+A font that OCR traced from the scan (ClearScan) draws one letter with
+several glyphs, one for each shape it found, and the text layer names each
+glyph by the letter OCR read, which for some glyphs is the twin of the
+letter drawn: a glyph of "h" named "b" wherever it stands. The moves tell:
+after the last pass but one, the glyph of each square's file letter in a
+move that only one reading of that letter makes legal counts for the letter
+the move reads (square_twins). A glyph that the moves read as its twin
+(TWIN_MIN times, TWIN_SHARE of them) is read as that letter in the last
+pass, as the file of a square (pdftext.set_letter_map): where both
+readings are legal, the move is the one the glyph draws.
 
 Move numbers: the book's habit is learnt from its text (book_numbering).
 In a book that prints numbers without a dot ("1 e4 c5 2 Nc3"), the
@@ -277,6 +289,8 @@ CORRECTED_COUNTS = {"move": "moves", "symbol": "symbol_moves", "connected": "con
 COMMENT_MAX = 2000              # characters of note text kept as one comment
 GAP_MAX = 8                     # plies a main run may skip and still continue its line
 MISREAD_PLIES = 16              # how far back from a diagram a misread square may stand
+TWIN_MIN = 3                    # moves that read a glyph as another letter (square_twins) ...
+TWIN_SHARE = 2 / 3              # ... and their share of the glyph's moves that tell
 SUGGEST_GAP = 4                 # plies a run's number may lie ahead of the line it follows (suggest)
 SUGGEST_PAGES = 2               # pages past the line's last printed move that suggest looks at
 SURE_COST = 1.5                 # how much dearer the runner-up's reading of the printed moves is
@@ -1072,7 +1086,8 @@ class _Decoder:
         from it, not added to it, for the many trial readings of read_on)."""
         if self.fixed:
             tokens = [self.named(t) for t in tokens]
-        key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced, t.shape) for t in tokens))
+        key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced, t.prefer, t.shape)
+                          for t in tokens))
         hit = self.memo.get(key)
         if hit is None and not keep:
             return decode(chess.Board(fen), tokens, glyphs=self.glyphs, letters=self.decode_letters,
@@ -1127,6 +1142,8 @@ class _Builder:
     def __init__(self, doc, fonts, chapters, diagrams, selection, decoder, diagram_fens=None,
                  dotless=False, readings=None, fix=None, shapes=None):
         self.doc, self.fonts, self.chapters = doc, fonts, chapters
+        # square letters read as the glyph draws them (square_twins)
+        self.letter_map = pt.letter_map(doc) if doc is not None else {}
         # figurine shapes (figshapes.py): where each junk piece symbol stands,
         # and the piece read from its picture
         self.spots = {}                 # token key -> (page, box of the symbol, symbol)
@@ -1184,6 +1201,13 @@ class _Builder:
         return {k: v for k, v in self.__dict__.items()
                 if k not in ("_page_lines", "_run_index", "_between", "_box_kinds",
                              "_piece_letters")}
+
+    def page_lines(self, p):
+        """pdftext.page_lines of page p (1-based), with the square letters that
+        square_twins read as their glyphs draw them (also in a document opened
+        again for a stored reading)."""
+        pt.set_letter_map(self.doc, getattr(self, "letter_map", {}))
+        return pt.page_lines(self.doc, p - 1, self.fonts)
 
     def page_label(self, page):
         """The page number printed in the book (the PDF page when unknown)."""
@@ -1272,7 +1296,8 @@ class _Builder:
     def forced(self, run):
         """The run with the moves the reader corrected carrying the move they
         gave (corrections.py "moves"), and the moves whose square a diagram
-        after them reads otherwise carrying that move (misread_squares)."""
+        after them reads otherwise preferring that move (misread_squares),
+        which they are read as where it is legal."""
         # (a reading stored by earlier code has no misread squares)
         misread = getattr(self, "misread", {})
         if not self.fix_moves and not misread:
@@ -1285,11 +1310,12 @@ class _Builder:
                 v = None
                 if page in pages and box is not None:
                     _, v = self.fix_moves.find(page, box, t.raw)
-                san = v["san"] if v else None
-                if san is None and box is not None and misread:
+                if v and v["san"] != t.forced:
+                    t, changed = replace(t, forced=v["san"]), True
+                elif not v and box is not None and misread:
                     san = misread.get(fixes.token_key(page, box, t.raw), (None,))[0]
-                if san and san != t.forced:
-                    t, changed = replace(t, forced=san), True
+                    if san and san != t.prefer:
+                        t, changed = replace(t, prefer=san), True
             toks.append(t)
         if not changed:
             return run
@@ -1398,7 +1424,7 @@ class _Builder:
                 excluded_run = True
                 continue
             excluded_run = False
-            lines = pt.page_lines(self.doc, p - 1, self.fonts)
+            lines = self.page_lines(p)
             dpos = self.diagram_positions(p, lines)
             by_line = defaultdict(list)
             for did, k in dpos.items():
@@ -3140,7 +3166,7 @@ class _Builder:
                                 uci=d.uci)
             if d.alternatives:
                 self.nodes[nid]["alternatives"] = list(d.alternatives[:4])
-            said = self.misread_move(tok) if tok.forced else None
+            said = self.misread_move(tok) if tok.prefer == d.san else None
             if said:
                 # a diagram after it chose the move: a guess against the text
                 self.nodes[nid].update(status="guessed", alternatives=[said])
@@ -4370,7 +4396,7 @@ class _Builder:
         if box is None:
             return None
         hit = getattr(self, "misread", {}).get(fixes.token_key(page, box, tok.raw))
-        if hit is None or hit[0] != tok.forced or (
+        if hit is None or hit[0] != tok.prefer or tok.forced or (
                 self.fix_moves and self.fix_moves.find(page, box, tok.raw)[1]):
             return None
         return hit[1]
@@ -5098,8 +5124,8 @@ class _Builder:
             cut, label = None, ""
             for i, t in enumerate(run.moves):
                 d = decs[i] if i < len(decs) else None
-                if t.forced and d is not None:
-                    continue            # (the reader's own move)
+                if (t.forced or t.prefer) and d is not None:
+                    continue            # (the reader's own move, or a diagram's)
                 says = self.printed_says(t.raw, d) if d is not None else None
                 if d is None or d.status in ("failed", "ambiguous") or says is False or \
                         (says is None and d.status != "ok"):
@@ -5866,7 +5892,7 @@ class _Builder:
             if p not in cache:
                 while len(cache) >= 4:
                     cache.pop(next(iter(cache)))
-                cache[p] = pt.page_lines(self.doc, p - 1, self.fonts)
+                cache[p] = self.page_lines(p)
             for ln in cache[p]:
                 if ln["role"] in ("head", "coord", "blank", "label"):
                     continue
@@ -6707,6 +6733,55 @@ def shape_disagreements(shapes, spots, glyphs):
     return [(a, b, c, n) for (a, b, c), n in out.most_common()]
 
 
+def square_twins(builder, doc):
+    """The glyphs that draw another file letter than the text layer names
+    (ClearScan, see pdftext.set_letter_map): {(font, glyph id): letter}.
+
+    Each move of the lines (and variations) whose square only one of the
+    readings of its file letter makes legal (movetext FILE_READ: b and h, c
+    and e) tells which letter the glyph of that letter stands for. A glyph
+    that the moves read as another letter TWIN_MIN times or more, and in
+    TWIN_SHARE of the moves that tell, is that letter."""
+    told = defaultdict(Counter)
+    for n in builder.nodes.values():
+        if not n.get("uci") or not n.get("raw") or not n.get("bbox") or not n.get("page") \
+                or n.get("parent") is None or n["status"] not in ("ok", "guessed", "ambiguous"):
+            continue
+        at = list(re.finditer(r"([a-h])[1-8lISsB]", n["raw"]))
+        fen = builder.nodes[n["parent"]]["fen"]
+        if not at or not fen:
+            continue
+        letter = at[-1].group(1)
+        own = "abcdefgh".index(letter)
+        twins = {f for f in FILE_READ.get(letter, {}) if f != own}
+        board = chess.Board(fen)
+        mv = chess.Move.from_uci(n["uci"])
+        piece, f, r = (board.piece_type_at(mv.from_square), chess.square_file(mv.to_square),
+                       chess.square_rank(mv.to_square))
+        if not twins or (f != own and f not in twins):
+            continue
+
+        def legal(g):
+            return any(x.to_square == chess.square(g, r) and
+                       board.piece_type_at(x.from_square) == piece for x in board.legal_moves)
+        if any(legal(g) for g in ({own} | twins) - {f}):
+            continue                # both readings legal: the move tells nothing
+        x0, y0, x1, y1 = n["bbox"]
+        drawn = sorted((g for g in pt.square_glyphs(doc, n["page"] - 1) if g[0] == letter and
+                        x0 <= (g[3][0] + g[3][2]) / 2 <= x1 and y0 <= (g[3][1] + g[3][3]) / 2 <= y1),
+                       key=lambda g: g[3][0])
+        if len(drawn) != n["raw"].count(letter):
+            continue
+        g = drawn[n["raw"][:at[-1].start()].count(letter)]
+        told[(g[1], g[2], letter)]["abcdefgh"[f]] += 1
+    out = {}
+    for (font, gid, named), c in told.items():
+        (letter, k), = c.most_common(1)
+        if letter != named and k >= TWIN_MIN and k >= TWIN_SHARE * sum(c.values()):
+            out[(font, gid)] = letter
+    return out
+
+
 def usable_fens(readings):
     """The FENs of readings that make a position with one king of each colour."""
     out = {}
@@ -6890,6 +6965,13 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
                 yield "restructure", None
                 k = 0
                 continue
+        if k + 2 == passes and not exact:
+            # glyphs of a font traced from the scan that draw another file
+            # letter than the text names: the last pass reads that letter
+            twins = square_twins(builder, doc)
+            if twins:
+                pt.set_letter_map(doc, twins)
+                say(f"read {len(twins)} glyphs of square letters as the letters they draw")
         k += 1
     if ctx.get("fix") is not None:
         fix = fixes.normalise(ctx["fix"])
