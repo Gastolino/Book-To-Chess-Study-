@@ -2424,9 +2424,20 @@ window.readingState = readingState;
 function init(){
   placeBoard();
   readingState();
+  // (where a finger touched the page: the browser moves a tap onto a small target near it, and the
+  // eye on a box's corner is smaller than its box, so that a tap inside a box went to the eye. A tap
+  // the finger made on a box, off the eye's own drawing, is the box's)
+  let touched = null;
+  $("ov").addEventListener("pointerdown", (e) => { touched = e.pointerType === "touch" ? [e.clientX, e.clientY] : null; }, true);
   $("ov").addEventListener("click", (e) => {
-    const b = e.target.closest("button");
+    let b = e.target.closest("button");
+    const at = e.detail ? touched : null;
+    touched = null;
     if (!b) return;
+    if (b.dataset.eye && at) {
+      const under = document.elementFromPoint(at[0], at[1]), box = under && under.closest("#ov .mark");
+      if (box) b = box;
+    }
     S.wanted = null;
     if (penClick(b)) return;
     if (b.dataset.eye) { openSymMenu(b); return; }
