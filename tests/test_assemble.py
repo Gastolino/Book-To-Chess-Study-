@@ -75,8 +75,8 @@ class _Writer:
                             fontname="tibo" if bold else "tiro", fontsize=size)
         self.y += 13
 
-    def mixed(self, parts):
-        x = self.x0
+    def mixed(self, parts, indent=0):
+        x = self.x0 + indent
         for text, bold in parts:
             font = "tibo" if bold else "tiro"
             self.pg.insert_text((x, self.y), text, fontname=font, fontsize=10)
@@ -116,13 +116,22 @@ class _Writer:
 
 
 def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False,
-              ocr=False, tail=()):
+              ocr=False, tail=(), note5="Safer is 5...Na5 6.Bb5+ c6"):
     """The little test book: one chapter, or with second a second chapter
     after it (pages 10 and 11) that holds another game. Set in type, its text
     is exact (pdftext.exact_text); with ocr, its producer is an OCR program,
     for a game printed as OCR's junk (test_corrections.GARBLED). tail: lines
-    (text, bold) printed right after the result of the first game."""
+    (text, bold) printed right after the result of the first game. A line of
+    the game or note5 may be a list of (text, bold) parts, for a line set in
+    both fonts."""
     w = _Writer()
+
+    def put(text, bold, indent=0):
+        if isinstance(text, str):
+            w.line(text, bold=bold, indent=indent)
+        else:
+            w.mixed(text, indent)
+
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
     w.page(head=False)
@@ -144,16 +153,16 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
     w.prose(until=H - 60 - 8 * 13)
     w.line("SHORT GAMES", bold=True, size=11, x=COLS[0] + 40)
     w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
-    w.line(game[0], bold=True)
+    put(game[0], True)
     w.line("Better is 3...Bc5 4.c3 Nf6 with a", indent=8)
     w.line("quiet game.")
-    w.line(game[1], bold=True)
-    w.line("Safer is 5...Na5 6.Bb5+ c6", indent=8)
+    put(game[1], True)
+    put(note5, False, indent=8)
     w.line("7.dxc6 bxc6.")
     w.col(1)
-    w.line(game[2], bold=True)
+    put(game[2], True)
     w.line(note7, indent=8)
-    w.line(game[3], bold=True)
+    put(game[3], True)
     w.line("White has a strong attack.", indent=8)
     w.line("1-0", bold=True)
     for text, bold in tail:
@@ -599,6 +608,25 @@ def test_two_squares_glued_by_ocr_are_two_moves(tmp_path):
     assert sans(book, ids) == ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+",
                                "bxc3", "Ne7", "Qg4", "Qc7", "Qxg7"]
     assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_moves_that_ocr_set_in_the_body_font_at_a_line_end(tmp_path):
+    """OCR sets the last moves of a line of the game in the body font now and
+    then ("3.Bc4 Nf6" with Nf6 in the body font, "8. Nc3"): they are the
+    moves the numbering expects, and belong to the main line. In a note, a
+    move whose number and signs OCR set in the move font ("6.Bb5+!" with the
+    square b5 in the body font) is a move of the note: its square decides."""
+    game = [[("1.e4 e5 2.Nf3 Nc6 3.Bc4 ", True), ("Nf6", False)], "4.Ng5 d5 5.exd5 Nxd5",
+            [("6.Nxf7 Kxf7 7.Qf3+ ", True), ("Ke6", False)], [("8. ", True), ("Nc3", False)]]
+    note5 = [("Safer is 5...Na5 ", False), ("6.B", True), ("b5", False), ("+!", True),
+             (" c6", False)]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True, note5=note5)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+    assert any(n.get("san") == "Bb5+" and not n.get("main") for n in book["nodes"].values())
 
 
 CHAPTER_GAMES = [GAME_EN,

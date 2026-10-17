@@ -1165,6 +1165,45 @@ def _vanished(d):
     return bool(d.san and d.san[0] in "KQRBN" and not d.glyph)
 
 
+# a square in a word ("e8" in "'ii'e8l", "f6" in "liJf6!")
+_SQUARE_IN_WORD_RE = re.compile(r"[a-h][1-8]")
+# a move that ends in a square as OCR reads it, and its signs ("ttJfs",
+# "i.esl"), or castling; not a word that opens brackets ("[2.'ilfb7xc8")
+_SQUARE_END_RE = re.compile(r"^[^(\[]*(?:[a-h][1-8lISsBGZ]|[0Oo]-[0Oo])[+#!?.lt]*$")
+# a move number, and the move printed against its dots ("20", "19...", "2.Nf3")
+_NUMBER_WORD_RE = re.compile(r"^([0-9lIO]{1,3})(?:([.…•·]+)(.*))?$")
+
+
+def _numbering_goes_on(words, classes, i):
+    """True when the words from i on, which end a printed line, are moves that
+    the numbering of the main-font words before them expects: after the last
+    move number, a move for each side ("20 l:tb1 ti:\\c6"), the next number,
+    and so on."""
+    k = i - 1
+    while k >= 0 and classes[k] == "m" and not _NUMBER_WORD_RE.match(words[k]):
+        k -= 1
+    if k < 0 or classes[k] != "m":
+        return False
+    last, moves = None, 0
+    for w in words[k:]:
+        m = _NUMBER_WORD_RE.match(w)
+        if m:
+            n = int(m.group(1).translate(pt.DIGIT_FIX).replace("O", "0"))
+            if last is not None and n != last + 1:
+                return False
+            dots = m.group(2) or ""
+            last, moves = n, 1 if len(dots) >= 3 or "…" in dots else 0
+            w = m.group(3) or ""
+        if not w or _DOTS_RE.match(w):
+            if w:
+                moves = 1
+            continue
+        moves += 1
+        if moves > 2:
+            return False
+    return True
+
+
 def _fit(decs):
     """(rank, failed, mean cost): rank 0 = reads cleanly, 1 = reads with a few
     failures, 2 = does not read from this position."""
@@ -1364,7 +1403,9 @@ class _Builder:
         return replace(run, tokens=toks, moves=[t for t in toks if t.kind == "move"])
 
     # -------------------------------------------------------- stream building
-    def word_classes(self, ln):
+    def word_classes(self, ln, nxt=None):
+        """'m' (main line) or 'n' (notes) for each word of printed line ln, by
+        the font its characters are set in; nxt is the printed line after it."""
         words = ln["text"].split(" ")
         if not self.moves_font:
             c = "m" if ln["role"] == "moves" else "n"
@@ -1382,9 +1423,15 @@ class _Builder:
         line_c = "m" if total["m"] > total["n"] else "n"
         out, k = [], 0
         for w in words:
-            cnt = Counter(r for r in roles[k:k + len(w)] if r)
+            rs = roles[k:k + len(w)]
+            cnt = Counter(r for r in rs if r)
             k += len(w)
-            if cnt["m"] > cnt["n"]:
+            sq = [m.span() for m in _SQUARE_IN_WORD_RE.finditer(w)]
+            if sq and rs[sq[-1][0]] and rs[sq[-1][0]] == rs[sq[-1][0] + 1]:
+                # a move goes with the font of its square, which OCR reads
+                # surely, not of its piece glyph's junk ("'ii'e8!", "liJf6")
+                out.append(rs[sq[-1][0]])
+            elif cnt["m"] > cnt["n"]:
                 out.append("m")
             elif cnt["n"] > cnt["m"]:
                 out.append("n")
@@ -1403,7 +1450,9 @@ class _Builder:
                 out[i] = before or after or line_c
         # OCR sets a stretch of a line of moves in the body font now and then
         # ("6 tiJgf3 .i.e7 7 o-o o-o"): moves and numbers between main-font
-        # words on both sides belong to the main line
+        # words on both sides belong to the main line, and so do those that
+        # end the printed line ("20 l:tb1 ti:\\c6") when the next line starts
+        # in the move font or they are the moves the numbering expects
         i = 0
         while i < len(out):
             if out[i] != "n" or i == 0 or out[i - 1] != "m":
@@ -1412,12 +1461,24 @@ class _Builder:
             j = i
             while j < len(out) and out[j] == "n":
                 j += 1
-            if j < len(out) and all(_shape(w) or _BARE_NUMBER_RE.match(w) or _DOTS_RE.match(w)
-                                    for w in words[i:j]) \
-                    and all(any(ch.isalnum() for ch in w) for w in (words[i - 1], words[j])):
+            if all(_shape(w) or _BARE_NUMBER_RE.match(w) or _DOTS_RE.match(w)
+                   for w in words[i:j]) and any(ch.isalnum() for ch in words[i - 1]) and (
+                    any(ch.isalnum() for ch in words[j]) if j < len(out)
+                    else _SQUARE_END_RE.search(words[j - 1])
+                    and all(_SQUARE_END_RE.search(w) or _BARE_NUMBER_RE.match(w) or _DOTS_RE.match(w)
+                            for w in words[i:j])
+                    and (self.starts_main(nxt) or _numbering_goes_on(words, out, i))):
                 out[i:j] = ["m"] * (j - i)
             i = j
         return out
+
+    @staticmethod
+    def starts_main(ln):
+        """True when printed line ln starts with a character in the move font."""
+        for s in (ln or {}).get("spans", []):
+            if s["text"].strip():
+                return s["role"] == "moves"
+        return False
 
     def column_edges(self, page, col):
         lay = self.fonts.get("layout") or {}
@@ -1509,7 +1570,7 @@ class _Builder:
                         fresh = going = False
                         depth = 0
                     continue
-                classes = self.word_classes(ln)
+                classes = self.word_classes(ln, lines[k + 1] if k + 1 < len(lines) else None)
                 if bare and role == "text":
                     shaped, first, depth = _moves_only(ln["text"], depth)
                     if first is not None and (first == 1 or fresh or going):
