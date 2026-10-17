@@ -870,6 +870,54 @@ def printed_orientation(words, rect):
     return None
 
 
+def marker_turn(page, words, rect):
+    """'b' or 'w' when a small square printed just beside the board gives
+    the side to move, filled for Black and empty for White (Brunthaler
+    prints one above each board's right corner), else None. The text layer
+    holds a short word there (OCR reads the square as "•", "o", "0" or
+    "D"); the page's picture tells a square from a letter, and its colour.
+    words comes from page_words."""
+    r = pymupdf.Rect(rect)
+    side = min(r.width, r.height)
+    m = 0.15 * side
+    for box, t in words:
+        t = t.strip()
+        cx, cy = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
+        if (not t or len(t) > 2 or t in "abcdefgh12345678" or (r.x0 < cx < r.x1 and r.y0 < cy < r.y1)
+                or not (r.x0 - m < cx < r.x1 + m and r.y0 - m < cy < r.y1 + m)
+                or not (r.x0 < cx < r.x1 or r.y0 < cy < r.y1)):
+            continue
+        s = 0.12 * side
+        clip = pymupdf.Rect(cx - s, cy - s, cx + s, cy + s) & page.rect
+        zoom = 4.0
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, colorspace=pymupdf.csGRAY)
+        ink = (_gray_from_pixmap(pix) < 128).astype(np.uint8)
+        # the board's own squares are no marker
+        b = (r + (-1, -1, 1, 1)) & clip
+        if not b.is_empty:
+            ink[int((b.y0 - clip.y0) * zoom):int(np.ceil((b.y1 - clip.y0) * zoom)),
+                int((b.x0 - clip.x0) * zoom):int(np.ceil((b.x1 - clip.x0) * zoom))] = 0
+        n, lab, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+        for k in range(1, n):
+            x, y, w, h, _ = stats[k]
+            if not (0.03 * side * zoom <= min(w, h) and max(w, h) <= 0.12 * side * zoom
+                    and 0.75 <= w / h <= 1.33):
+                continue
+            sq = lab[y:y + h, x:x + w] == k
+            q = max(1, min(w, h) // 5)
+            # a square is inked all along its four edges; a letter is not
+            edges = (sq[:q].any(0).mean(), sq[-q:].any(0).mean(),
+                     sq[:, :q].any(1).mean(), sq[:, -q:].any(1).mean())
+            if min(edges) < 0.9:
+                continue
+            inner = sq[h // 3:h - h // 3, w // 3:w - w // 3].mean()
+            if inner > 0.9:
+                return "b"
+            if inner < 0.1:
+                return "w"
+    return None
+
+
 # ---------------------------------------------------------------- the book
 
 LAST = {}      # the groups and names of the last book read, for inspection
@@ -894,7 +942,8 @@ def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None, cells=N
     diagram); they help to name the book's piece drawings. Returns
     {id: {"fen", "confidence", "doubtful": [squares], "status", "turn",
     "turn_from", "flipped"}}; status is "read", "doubtful", "partial" (no
-    whole board in the picture) or "unread" (no position could be made).
+    whole board in the picture) or "unread" (no position could be made);
+    turn_from is "caption", "marker" (marker_turn) or "default".
     cells maps diagram ids to the boards picture_cells found in them."""
     from . import selection as sel
     say = progress or (lambda *_: None)
@@ -1051,9 +1100,13 @@ def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None, cells=N
                 group_of=group_of, flip=flip)
     # the positions
     for bi, r in enumerate(boards):
-        turn = caption_turn(texts[r["rec"]["page"]][1], r["rec"]["rect"])
+        words, lines = texts[r["rec"]["page"]]
+        turn = caption_turn(lines, r["rec"]["rect"])
+        marker = None if turn else marker_turn(doc[r["rec"]["page"] - 1], words, r["rec"]["rect"])
         out[r["id"]] = _position(r, bi, groups, names, margins, group_of, closeness,
-                                 flip.get(bi, False), turn, typical)
+                                 flip.get(bi, False), turn or marker, typical)
+        if marker:
+            out[r["id"]]["turn_from"] = "marker"
     say(f"board reading: {ngroups} groups of piece drawings, "
         f"{sum(1 for v in out.values() if v['status'] == 'read')} boards read")
     return out

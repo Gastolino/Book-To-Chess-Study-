@@ -2814,7 +2814,13 @@ class _Builder:
         if not fen:
             return None
         b = chess.Board(fen)
-        side = self.diag_info.get(did, {}).get("side") if run.ply is None else None
+        side = None
+        if run.ply is None:
+            # the side printed with the diagram: in its caption, or by a
+            # marker beside the board that Stage 3 read
+            reading = self.readings.get(did) or {}
+            side = self.diag_info.get(did, {}).get("side") or (
+                reading.get("turn") if reading.get("turn_from") in ("caption", "marker") else None)
         want = chess.BLACK if (run.ply or 0) % 2 or side == "b" else chess.WHITE
         if b.turn != want:
             b.turn = want

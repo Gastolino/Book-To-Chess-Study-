@@ -272,6 +272,31 @@ def test_caption_turn_and_printed_coordinates():
     assert boards.printed_orientation(words, rect) is None
 
 
+def test_side_to_move_square_beside_the_board(tmp_path):
+    """Brunthaler prints a small square above each board's right corner:
+    filled for Black to move, empty for White, which OCR reads as "•" and
+    "o". A letter there is no such square, and a board without one keeps
+    the default."""
+    fens = positions(4, seed=2)
+    pdf = tmp_path / "markers.pdf"
+    recs = make_pdf(pdf, fens)
+    doc = pymupdf.open(pdf)
+    page = doc[0]
+    for rec, fill, text in ((recs[0], 0, "•"), (recs[1], None, "o"), (recs[2], None, "Do")):
+        x1, y0 = rec["rect"][2], rec["rect"][1]
+        if text == "Do":
+            page.insert_text((x1 - 14, y0 - 6), text, fontsize=9)
+        else:
+            page.draw_rect(pymupdf.Rect(x1 - 10, y0 - 13, x1 - 2, y0 - 5), color=0, fill=fill, width=1)
+            page.insert_text((x1 - 10, y0 - 5), text, fontsize=9, render_mode=3)
+    pdf2 = tmp_path / "markers2.pdf"
+    doc.save(pdf2)
+    res = boards.read_book_boards(pdf2, recs)
+    assert [res[f"p1-{k}"]["turn"] for k in (1, 2, 3, 4)] == ["b", "w", "w", "w"]
+    assert [res[f"p1-{k}"]["turn_from"] for k in (1, 2, 3, 4)] == ["marker", "marker", "default", "default"]
+    assert res["p1-1"]["fen"].split()[1] == "b"
+
+
 def test_build_book_reads_the_boards(tmp_path):
     """The assembly reads the boards itself when no FENs are given, and a
     line that starts from a diagram is decoded instead of waiting."""

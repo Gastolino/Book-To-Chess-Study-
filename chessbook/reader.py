@@ -2304,6 +2304,7 @@ function diagramReading(d){
         ", which " + (dq.length === 1 ? "carries" : "carry") + " a dashed outline on the board above.";
     if (R && R.flipped) t += " The book shows this board from Black's side, and so does the board above.";
     if (R && R.turn_from === "caption") t += " The caption gives the side to move.";
+    if (R && R.turn_from === "marker") t += " The square printed beside the board gives the side to move.";
     return t;
   }
   if (d.status === "partial") return "The picture shows part of a board only, so board reading (Stage 3) does not read it.";
