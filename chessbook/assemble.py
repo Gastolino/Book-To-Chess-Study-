@@ -1148,6 +1148,8 @@ class _Line:
     hold_inside: bool = False   # that diagram stands among the moves of the line's last run
     ended_at_hold: bool = False  # the line ended at that diagram (see _Builder.close)
     tail_end: int = 0           # end of its main runs left unread after it ended (from_diagram)
+    hand_on: Optional[int] = None   # a diagram after which its notes may wait for the next line
+    handed: list = field(default_factory=list)        # the note runs that wait so (do_note)
     note_state: Optional[dict] = None   # where its notes went (see _Builder.attach_notes)
     start_note: str = ""        # how the starting position was chosen, in plain words
     spec: dict = field(default_factory=dict)          # where the line starts (see _Builder.replay_line)
@@ -3020,13 +3022,21 @@ class _Builder:
                 # the game goes on after a diagram, but moves before it are
                 # missing from the text (printed inside the picture)
                 self.gap(L, run, P, follow=False)
+            L.hand_on = self.hand_on_at(L, run) if between and P is not None else None
             self.close(run.start)
+            handed, L.hand_on, L.handed = L.handed, None, []
             if P is None:
                 self.unplaced(run, "its first move carries no move number")
                 return
             self.pending_header = self.pending_header or header
             self.release_pre_notes(self.usable_diagram(run.start))
             L2 = self.from_diagram(run, "main", kind="fragment" if header else None, title=title)
+            if L2 is not None:
+                self.pre_notes.extend(handed)
+            for r in handed if L2 is None else ():
+                op = ("unplaced", r, self.why_not(L, r, None))
+                L.ops.append(op)
+                self.do_note(L, op, None)
         else:
             if P is None:
                 self.unplaced(run, "its first move carries no move number")
@@ -3037,6 +3047,15 @@ class _Builder:
             self.active = L2
             self.extend(L2, run)
             self.adopt_pre_notes(L2)
+
+    def hand_on_at(self, L, run):
+        """Where L's notes start to wait for the line that a main run starts
+        after a diagram (on_main, between): the first diagram printed after
+        L's last move, or None."""
+        if L.waiting or self.replaying:
+            return None
+        cut = [off for off, _ in self.diagram_events if L.last_token_end < off < run.start]
+        return cut[0] if cut else None
 
     def variation_across_hold(self, L, run):
         """True when the run after a diagram printed among the moves of the
@@ -3531,6 +3550,9 @@ class _Builder:
             op = tuple(op)
         L.ops.append(op)
         placed = self.do_note(L, op, state, base=True)
+        if placed == "handed":
+            L.ops.pop()                 # the run is the next line's note
+            return
         if placed and op[0] == "note":
             tail = self.bare_tail(L, run, state, op[3])
             if tail is not None:
@@ -3807,6 +3829,14 @@ class _Builder:
                 return False
         if side:
             return False                # the sequence is a line of its own
+        if (placed is None and base and not follows and run.ply is not None
+                and L.hand_on is not None and run.start > L.hand_on):
+            # printed after the diagram that the next line starts from, and
+            # numbered for a move L does not reach: it waits for that line
+            # (see hand_on_at), where its numbering may find the move
+            run.owner = run.home = None
+            L.handed.append(run)
+            return "handed"
         self.unplaced(run, self.why_not(L, run, placed, follows), src=L)
         if base:
             self.tidy(L, run)
