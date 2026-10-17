@@ -384,6 +384,70 @@ def test_move_missing_from_the_text_is_bridged():
     assert decs[3].missing_before is not None and decs[2].missing_before is None
 
 
+def _out_of_step(decs, board=None):
+    """The moves read at another ply than their printed number names."""
+    start = (board or chess.Board()).ply()
+    out, ply = [], start
+    for d in decs:
+        if d.san:
+            ply = chess.Board(d.fen).ply() - 1
+            if ply != (d.number - 1) * 2 + d.black:
+                out.append((d.number, d.black, d.raw, d.san, d.status))
+    return out
+
+
+def test_printed_numbers_anchor_the_moves():
+    # Move 2 is lost from the text: 3.d4 stands at its printed ply, so it is
+    # not read, rather than read as 2.d4 with 4.Nxd4 bent to 3.Qxd4, all ok.
+    board = chess.Board()
+    for san in ("e4", "c5"):
+        board.push_san(san)
+    toks = find_sequences("3.d4 cxd4 4.Nxd4 a6 5.Nc3 e6")[0].tokens
+    for insert in (False, True):
+        decs = decode(board, toks, insert=insert)
+        assert _out_of_step(decs) == [] and decs[0].san is None, insert
+    # Black's sixth move is lost ("6.Nb3 7.Qe2"): the moves after it are
+    # never read a ply early, nor is d6, printed without a number, read as
+    # Black's sixth; with insert the missing move is supplied.
+    toks = find_sequences("1.e4 c5 2.Nf3 e6 3.d4 cxd4 4.Nxd4 a6 5.Bd3 Bc5 6.Nb3 7.Qe2 d6 "
+                          "8.Be3 Nf6 9.Bxa7 Rxa7")[0].tokens
+    decs = decode(chess.Board(), toks, insert=False)
+    assert _out_of_step(decs) == []
+    assert [d.san for d in decs[:11]] == ["e4", "c5", "Nf3", "e6", "d4", "cxd4", "Nxd4", "a6",
+                                          "Bd3", "Bc5", "Nb3"]
+    decs = decode(chess.Board(), toks)
+    assert _out_of_step(decs) == [] and decs[11].missing_before is not None
+    # a White move printed as such is not played as Black's ("3.Bd6" for 2...Bd5)
+    board = chess.Board("7k/1b6/5N1P/8/8/6p1/8/B5K1 w - - 0 1")
+    decs = decode(board, find_sequences("1.Be5 Bh1 2.Bxg3 3.Bd6")[0].tokens, insert=False)
+    assert [d.san for d in decs[:3]] == ["Be5", "Bh1", "Bxg3"] and _out_of_step(decs) == []
+    # a number misread by OCR names its move with its other readings ("S" for 8)
+    board = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5",
+                "Bb3", "d6"):
+        board.push_san(san)
+    decs = decode(board, find_sequences("S. c3 O-O 9. h3")[0].tokens, insert=False)
+    assert [(d.san, d.status) for d in decs] == [("c3", "ok"), ("O-O", "ok"), ("h3", "ok")]
+    # a position that repeats stands at its own move number, not at the first's
+    decs = decode(chess.Board(), find_sequences(
+        "1.Nf3 Nf6 2.Ng1 Ng8 3.Nf3 Nf6 4.Ng1 Ng8 5.e4 e5")[0].tokens, insert=False)
+    assert [d.status for d in decs] == ["ok"] * 10 and _out_of_step(decs) == []
+
+
+def test_a_move_read_for_the_other_side_is_guessed():
+    # A number printed without dots names no side for sure ("12 Qc7" in a
+    # book that prints none): read as Black's move of that number, Qc7 is
+    # 'guessed', never 'ok'.
+    board = chess.Board()
+    for san in ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2", "e5",
+                "Nb3", "Be7", "O-O", "O-O", "Be3", "Be6", "Qd2", "Nbd7", "a4", "Rc8", "f3"):
+        board.push_san(san)
+    (num, qc7) = tokenize("12 Qc7", dotless=True)
+    assert not num.side_known and not qc7.black
+    (d,) = decode(board, [num, qc7], insert=False)
+    assert d.san == "Qc7" and d.status == "guessed"
+
+
 def test_prose_word_after_a_move_ends_the_run():
     seqs = find_sequences("1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 and 4.Ba4 Nf6")
     assert [(s.first_number, len(s.moves)) for s in seqs] == [(1, 6), (4, 2)]

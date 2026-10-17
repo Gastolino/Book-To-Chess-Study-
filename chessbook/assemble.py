@@ -444,6 +444,28 @@ def _renumbered(run, ply):
     return replace(run, tokens=toks, moves=moves, ply=_ply(moves[0]))
 
 
+def _numbered_at(run, ply):
+    """The run with its move numbers moved so that its first numbered move
+    stands at ply, where the reader placed it (the decoder reads each move
+    where its number puts it, movetext._places); the numbers keep their
+    differences, so a move the text lacks inside the run still shows."""
+    if ply is None:
+        return run
+    moves = [t for t in run.tokens if t.kind == "move"]
+    j = next((j for j, t in enumerate(moves) if t.number is not None), None)
+    if j is None or _ply(moves[j]) == ply + j:
+        return run
+    d = ply + j - _ply(moves[j])
+    toks = []
+    for t in run.tokens:
+        if t.kind in ("move", "number") and t.number is not None:
+            p = (t.number - 1) * 2 + int(bool(t.black)) + d
+            t = replace(t, number=p // 2 + 1, black=bool(p % 2))
+        toks.append(t)
+    moves = [t for t in toks if t.kind == "move"]
+    return replace(run, tokens=toks, moves=moves, ply=_ply(moves[0]))
+
+
 def _tokens_text(tokens):
     """The text of a run's tokens: "6.Nxf7 Kxf7 7.Qf3+"."""
     out = ""
@@ -938,6 +960,26 @@ def _split_at_diagrams(toks, diagrams):
         cur.append(t)
         if t.kind == "move" and t.number is not None:
             last = (t.number, bool(t.black))
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _split_at_gaps(toks):
+    """Split a run of tokens before a move number that skips a move ("6.Nb3
+    7.Qe2", Black's sixth missing from the text). The program never
+    supplies the move, and the decoder reads each move only where its
+    number puts it: the moves after the number follow a gap in the line,
+    as a run printed after a jump in the numbering does."""
+    out, cur, last = [], [], None
+    for t in toks:
+        if cur and t.kind == "number" and t.number is not None and last is not None \
+                and _ply(t) > last + 1:
+            out.append(cur)
+            cur = []
+        cur.append(t)
+        if t.kind == "move" and t.number is not None:
+            last = _ply(t)
     if cur:
         out.append(cur)
     return out
@@ -1751,7 +1793,8 @@ class _Builder:
                 for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font,
                                         dotless=self.dotless, exact=self.dec.glyphs.exact):
                     toks = [replace(t, start=t.start + a, end=t.end + a) for t in s.tokens]
-                    parts = _split_at_diagrams(toks, diagrams)
+                    parts = [q for part in _split_at_diagrams(toks, diagrams)
+                             for q in _split_at_gaps(part)]
                     if kind == "main" and self.moves_font:
                         parts = [q for part in parts for q in self.split_inline(st, part)]
                     for part in parts:
@@ -5094,16 +5137,18 @@ class _Builder:
             for parent in (node["parent"], nid):
                 if parent is None or not self.nodes[parent]["fen"]:
                     continue
-                decs = self.dec.run(self.nodes[parent]["fen"], run.tokens)
+                # (the reader's choice numbers the moves, whatever the text prints)
+                there = _numbered_at(run, _board_ply(self.nodes[parent]["fen"]))
+                decs = self.dec.run(self.nodes[parent]["fen"], there.tokens)
                 f = _fit(decs)
                 if f[0] <= 1 and (best is None or f < best[0]):
-                    best = (f, parent, decs)
+                    best = (f, parent, decs, there)
         if best is None:
             why = ("you tied it to a move that the program no longer finds" if nid is None else
                    "its moves are not legal at the move you tied it to")
             self.unplaced(run, why, src=L)
             return
-        _, parent, decs = best
+        _, parent, decs, run = best
         nodes = self.insert_decoded(L, parent, run, decs)
         L.variations += 1
         if nodes:
@@ -5194,7 +5239,8 @@ class _Builder:
         if missing:
             refuse(why, missing)
             return
-        decs = self.dec.run(start, run0.tokens)
+        # (the reader's join numbers the moves, whatever the text prints)
+        decs = self.dec.run(start, _numbered_at(run0, _board_ply(start)).tokens)
         if not decs or decs[0].status == "failed" or (_fit(decs)[0] == 2 and not why):
             shown = self.shown_move(run0.moves[0].raw)
             side = "Black" if board.turn == chess.BLACK else "White"
@@ -5215,8 +5261,8 @@ class _Builder:
             return
         # a variation from the move chosen: the runs read as one sequence
         toks = [t for r in mains for t in self.forced(r).tokens if r.ci == run0.ci]
-        whole = replace(run0, tokens=toks, moves=[t for t in toks if t.kind == "move"],
-                        end=toks[-1].end)
+        whole = _numbered_at(replace(run0, tokens=toks, moves=[t for t in toks if t.kind == "move"],
+                                     end=toks[-1].end), _board_ply(start))
         decs = self.dec.run(start, whole.tokens)
         nodes = self.insert_decoded(L, parent, whole, decs)
         L.variations += 1

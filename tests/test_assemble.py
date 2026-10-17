@@ -725,6 +725,31 @@ def test_notes_after_a_diagram_at_the_end_of_a_chapter(tmp_path):
     assert all(m["status"] == "ok" and m["node"] for m in marks)
 
 
+# a game with Black's sixth move missing from the text ("6.Nb3 7.Qe2")
+LOST_REPLY = ["1.e4 c5 2.Nf3 e6 3.d4 cxd4", "4.Nxd4 a6 5.Bd3 Bc5", "6.Nb3 7.Qe2 d6 8.Be3 Nf6",
+              "9.Bxa7 Rxa7"]
+LOST_PRINTED = {"Qe2": (7, False), "d6": (7, True), "Be3": (8, False), "Nf6": (8, True),
+                "Bxa7": (9, False), "Rxa7": (9, True)}
+
+
+def test_printed_numbers_anchor_the_line(tmp_path):
+    """A move lost from the text does not shift the moves after it: 7.Qe2 is
+    never read as Black's sixth move, d6 as Black's sixth, nor 9...Rxa7 as
+    8...Ra7; the moves after the gap are read at their printed numbers, or
+    not at all."""
+    pdf = make_book(tmp_path / "lost.pdf", game=LOST_REPLY)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids[:11]) == ["e4", "c5", "Nf3", "e6", "d4", "cxd4", "Nxd4", "a6", "Bd3",
+                                    "Bc5", "Nb3"]
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids[:11])
+    nodes = [book["nodes"][i] for i in ids]
+    out_of_step = [(n["number"], n["black"], n["raw"], n["san"]) for n in nodes
+                   if n["raw"] in LOST_PRINTED and n["san"]
+                   and (n["number"], n["black"]) != LOST_PRINTED[n["raw"]]]
+    assert out_of_step == []
+
+
 def test_excluded_page_has_no_lines(tmp_path):
     pdf = make_book(tmp_path / "little.pdf")
     sel = tmp_path / "books" / "little" / "selection.json"
