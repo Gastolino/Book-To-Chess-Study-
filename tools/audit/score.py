@@ -14,8 +14,9 @@ such as "ANSWER:" that are not moves), the token counts as READ when
     (a move that only looks right in a line gone wrong does not count).
 
 OCR's slips of shape that change no move ("cs" for c5, "Khl" for Kh1,
-"£4" for f4, "o-o" for castling, a space inside a square: "Ng4-e 3+") read
-as the square they show. The
+"£4" for f4, "o-o" for castling, a space inside a square: "Ng4-e 3+", and
+ClearScan's signs for f3 and f1 after a figurine: "tLlo", "tLlfJ", "tLln")
+read as the square they show. The
 success rate of a book is READ / TOKENS. It also prints the moves shown
 green against the print (WRONG), the measure of the silent errors. The
 check compares squares and piece letters with the text layer, so in a
@@ -61,9 +62,24 @@ def squares(raw):
             continue
         r = raw[i + 1]
         ranks = r if r in "12345678" else RANK_SLIP.get(r, "")
-        if ranks:
-            out.append((i, {f + x for x in ranks if x in "12345678"}))
+        found = {f + x for x in ranks if x in "12345678"}
+        if found:
+            out.append((i, found))
     return out
+
+
+# ClearScan's signs for a whole square, after a figurine's junk: "tLlo",
+# "'bO", "tLlfJ" for f3 and "tLln" for f1. They count only after a short
+# prefix (the figurine) and where the token shows no other square.
+WHOLE_SQUARE = (("fJ", "f3"), ("o", "f3"), ("O", "f3"), ("n", "f1"))
+
+
+def whole_square(raw):
+    core = raw.rstrip("!?+#t ")
+    for sign, sq in WHOLE_SQUARE:
+        if core.endswith(sign) and 1 <= len(core) - len(sign) <= 4:
+            return sq
+    return None
 
 
 def agrees(raw, san):
@@ -77,6 +93,8 @@ def agrees(raw, san):
         return bool(m) and long_ == san.startswith("O-O-O")
     ss = SQ.findall(san.split("=")[0])
     sq = squares(raw)
+    if not sq and whole_square(raw):
+        sq = [(len(raw), {whole_square(raw)})]
     if not ss or not sq or ss[-1] not in sq[-1][1]:
         return False
     if raw[:1] in "KQRBN" and san[:1] in "KQRBN" and raw[:1] != san[:1]:
@@ -109,7 +127,8 @@ def score(book):
     for pg in book["pages"]:
         for m in pg["marks"]:
             raw = m.get("raw") or ""
-            if m["status"] == "unattached" and not (squares(_joined(raw)) or CASTLE.search(raw)):
+            if m["status"] == "unattached" and not (squares(_joined(raw)) or CASTLE.search(raw)
+                                                    or whole_square(raw)):
                 continue
             tokens += 1
             n = nodes.get(m.get("node")) if m.get("node") else None
