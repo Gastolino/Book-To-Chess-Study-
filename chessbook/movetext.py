@@ -1147,6 +1147,8 @@ _NUM_DOTS_RE = re.compile(r"^([0-9lIOoSsB|]{1,3})([.…•·]+)(.*)$", re.S)
 _BARE_NUM_RE = re.compile(r"^[0-9lIOoSsB|]{1,3}$")
 _DOTS_ONLY_RE = re.compile(r"^[.…•·]+$")
 _LEAD_DOTS_RE = re.compile(r"^([.…•·]+)(.+)$", re.S)
+# a pawn's move, as OCR reads it ("f6", "exd5", "es" for e5, "f51" for f5!)
+_PAWN_AFTER_DOT_RE = re.compile(r"[a-h](?:x[a-h])?[1-8sS](?![a-zA-Z])")
 _GLUE_AFTER = set("12345678t+#!?)")
 _GLUED_NUM_RE = re.compile(r"([0-9][0-9lIOo]{0,2}|[lI][0-9lIOo]{0,2}|[sS])(?=[.…•·]+\S)")
 _DOTLESS_RE = re.compile(r"^(\d{1,3})(?=[^\d.…•·])(.+)$", re.S)
@@ -1447,8 +1449,11 @@ def _collect_dots(text, pieces, j, groups):
         ml = _LEAD_DOTS_RE.match(w)
         if ml:
             d = len(ml.group(1))
-            if d == 1 and groups:
+            if d == 1 and groups and not (_dot_count(text, groups) == 2
+                                          and _PAWN_AFTER_DOT_RE.match(w, 1)):
                 return j + 1, (a, b)            # that dot belongs to the glyph (".ic4")
+            # (but "13 .. .f6" is "13...f6": a pawn's move after the dot has
+            # no glyph, and the dot is the third of the ellipsis)
             groups.append((a, a + d))
             return j + 1, (a + d, b)
         break

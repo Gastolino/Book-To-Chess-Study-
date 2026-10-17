@@ -78,6 +78,17 @@ def test_black_continuation_with_space_before_move():
     assert toks[1].raw == "axb5"
 
 
+def test_split_ellipsis_before_a_pawn_move():
+    # KIA page 104 prints "13...f6", read "13 .. .f6": the third dot is the
+    # ellipsis's, not a bishop's sign (it was read as 13...Bf6); a dot before
+    # a piece's junk glyph (".ic4") stays the glyph's
+    toks = tokenize("13 .. .f6 he would")
+    assert (toks[0].kind, toks[0].number, toks[0].black) == ("number", 13, True)
+    assert (toks[1].kind, toks[1].raw) == ("move", "f6")
+    assert [t.raw for t in tokenize("13 .. .exds 14 c4")][1] == "exds"
+    assert [t.raw for t in tokenize("13 .. .ic4")][1] == ".ic4"
+
+
 def test_bare_ellipsis_before_black_move():
     toks = tokenize("Black has ... d5 available")
     assert [(t.kind, t.raw) for t in toks] == [
