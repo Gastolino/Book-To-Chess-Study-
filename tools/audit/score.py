@@ -16,7 +16,11 @@ such as "ANSWER:" that are not moves), the token counts as READ when
 OCR's slips of shape that change no move ("cs" for c5, "Khl" for Kh1,
 "£4" for f4, "o-o" for castling, a space inside a square: "Ng4-e 3+", and
 ClearScan's signs for f3 and f1 after a figurine: "tLlo", "tLlfJ", "tLln")
-read as the square they show. The
+read as the square they show, and so does "C4" for c4 (the gpa and KIA
+text layers). In the scanned books (Planning, KIA, the Primer), a letter
+that OCR confuses with another (b and h, c and e, "t" for f) reads as its
+twin only where the print, read literally, is no legal move in the position
+and the twin leaves the program's move as the one legal move it shows. The
 success rate of a book is READ / TOKENS. It also prints the moves shown
 green against the print (WRONG), the measure of the silent errors. The
 check compares squares and piece letters with the text layer, so in a
@@ -39,7 +43,7 @@ CASTLE = re.compile(r"[0Oo]-?[0Oo]")
 # OCR's slips of shape, which change no move: the letter or sign OCR prints
 # for a file or a rank character. A move whose printed square reads so is
 # the same move; any other difference of square or piece is a misreading.
-FILE_SLIP = {"£": "f"}
+FILE_SLIP = {"£": "f", "C": "c"}
 RANK_SLIP = {"l": "1", "I": "1", "i": "1", "!": "1", "|": "1", "t": "1",
              "s": "58", "S": "58", "B": "8", "Z": "2", "z": "2", "O": "0"}
 
@@ -108,9 +112,80 @@ def agrees(raw, san):
     return True
 
 
-def score(book):
+# The scanned books, whose text layer is OCR's: only there may a letter be
+# another letter's twin.
+TWIN_BOOKS = {"planning", "kia", "primer"}
+
+# OCR's slips that change a square's letter into another square's letter
+# (b/h and c/e in ClearScan, "t" for f, "C" for c, "l" for 1, 2 or 7): such a
+# print may show either square, so it counts as the program's move only where
+# the print read literally is no legal move in the position and the slip
+# leaves the program's move as the one legal move it can show.
+FILE_TWIN = {"C": "c", "t": "f", "H": "f", "k": "c", "r": "f", "£": "f",
+             "b": "bh", "h": "bh", "c": "ce", "e": "ce"}
+RANK_TWIN = {"l": "127", "i": "17", "I": "17", "t": "17", "!": "1", "|": "1",
+             "s": "58", "S": "58", "B": "8", "Z": "2", "z": "2"}
+
+
+def twin_squares(raw):
+    out = []
+    for i in range(len(raw) - 1):
+        files = FILE_TWIN.get(raw[i], raw[i] if raw[i] in "abcdefgh" else "")
+        r = raw[i + 1]
+        ranks = r if r in "12345678" else RANK_TWIN.get(r, "")
+        found = {f + x for f in files for x in ranks}
+        if found:
+            out.append((i, found))
+    return out
+
+
+def twin_agrees(raw, san):
+    raw = _joined(_norm(raw)).replace("'", "")
+    ss = SQ.findall(_norm(san).split("=")[0])
+    sq = twin_squares(raw)
+    if not ss or not sq or ss[-1] not in sq[-1][1]:
+        return False
+    # a pawn's print ("h4", "cs", "exf6") stays a pawn's move
+    if re.match(r"[a-h][1-8xsSlIiBZz]", raw) and not san[:1].islower():
+        return False
+    if re.match(r"[KQRBN][a-hx]", raw) and raw[:1] != (san[:1] if san[:1] in "KQRBN" else ""):
+        return False
+    pos = sq[-1][0]
+    return not ("x" in raw[max(0, pos - 2):pos] and "x" not in san)
+
+
+def agrees_here(raw, san, fen):
+    """The move san agrees with raw, read literally or, where the literal
+    reading is no legal move in the position fen, read with a twin slip that
+    leaves san the one legal move it shows."""
+    if agrees(raw, san):
+        return True
+    if not fen or not san or san.startswith("O-O"):
+        return False
+    import chess
+    try:
+        board = chess.Board(fen if len(fen.split()) > 4 else fen + " - 0 1")
+        legal = [board.san(m) for m in board.legal_moves]
+    except ValueError:
+        return False
+    if any(agrees(raw, m) for m in legal):
+        return False
+    return [m for m in legal if twin_agrees(raw, m)] == [san]
+
+
+def score(book, twins=False):
     nodes = book["nodes"]
     good = {}
+
+    def fen_before(nid):
+        p = nodes[nid].get("parent")
+        return nodes[p].get("fen") if p in nodes else None
+
+    def fits(nid, raw):
+        n = nodes[nid]
+        if not twins:
+            return agrees(raw, n.get("san"))
+        return agrees_here(raw, n.get("san"), fen_before(nid))
 
     def path_ok(nid):
         if nid in good:
@@ -123,7 +198,7 @@ def score(book):
         for x in reversed(chain):
             n = nodes[x]
             if n.get("san") and n.get("raw"):
-                ok = ok and agrees(n["raw"], n["san"])
+                ok = ok and fits(x, n["raw"])
             good[x] = ok
         return good[nid]
 
@@ -138,7 +213,7 @@ def score(book):
             n = nodes.get(m.get("node")) if m.get("node") else None
             if m["status"] != "ok" or not n:
                 continue
-            if agrees(raw, n.get("san")):
+            if fits(m["node"], raw):
                 if path_ok(m["node"]):
                     read += 1
             else:
@@ -164,7 +239,7 @@ def main():
             if not (books.cache_dir(c) / f"{name}.json").exists():
                 row += f"{'-':>26}"
                 continue
-            s = score(books.load(name, code=c))
+            s = score(books.load(name, code=c), twins=name in TWIN_BOOKS)
             out.setdefault(c, {})[name] = s
             tot[c][0] += s["tokens"]; tot[c][1] += s["read"]; tot[c][2] += s["wrong"]
             row += f"{s['rate']:>9}% ({s['read']}/{s['tokens']}, {s['wrong']} wrong)".rjust(26)
