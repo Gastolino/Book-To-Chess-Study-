@@ -88,8 +88,9 @@ def test_dotless_ocr_forms():
     assert move_raws("14 lDc4lDg6 15 l:tds!") == [["lDc4", "lDg6", "l:tds!"]]
     # castling split by a space
     assert move_raws("6 o -o Nxb5 7 Nxbs ds") == [["o -o", "Nxb5", "Nxbs", "ds"]]
-    # dots spread over several words, and an OCR result
-    assert runs("26 .. .fS 27 Rd1 1-o")[0][2] == [(".fS", 26, True), ("Rd1", 27, False)]
+    # dots spread over several words (the third is the ellipsis's, not a
+    # bishop's sign), and an OCR result
+    assert runs("26 .. .fS 27 Rd1 1-o")[0][2] == [("fS", 26, True), ("Rd1", 27, False)]
 
 
 def test_dotless_black_moves():
