@@ -407,8 +407,9 @@ def _local_stats(a, sigma):
 
 
 def segment(a):
-    """Piece masks (8, 8, N, N) of the squares of a cleaned board image, and
-    each mask's area before thin strokes were removed.
+    """Piece masks (8, 8, N, N) of the squares of a cleaned board image, each
+    mask's area before thin strokes were removed, and the pixels (8, 8, N, N)
+    of an occupied dark square that have the square's own shade.
 
     A pixel belongs to the background when its neighbourhood looks like the
     empty squares of its colour (mean grey and texture). The piece is what
@@ -439,10 +440,13 @@ def segment(a):
         ts = min(0.25, max(0.06, 2 * float(np.percentile(ds, 98))))
         info[p] = (mb, sb, tm, ts)
     masks = np.zeros((8, 8, N, N), bool)
+    shade = np.zeros((8, 8, N, N), bool)
     raw = np.zeros((8, 8))
     P = np.array([[info[bool(PAR[i, j])] for j in range(8)] for i in range(8)], np.float32)
     BG = ((np.abs(M - P[:, :, 0, None, None]) < P[:, :, 2, None, None])
           & (np.abs(S - P[:, :, 1, None, None]) < P[:, :, 3, None, None]))
+    A = a.reshape(8, N, 8, N).transpose(0, 2, 1, 3)
+    dark = PAR if info[True][0] < info[False][0] else ~PAR
     BG |= ring
     busy = (~BG).sum(axis=(2, 3))
     for i in range(8):
@@ -471,7 +475,14 @@ def segment(a):
                     keep = [k for k in range(1, n) if stats[k, cv2.CC_STAT_AREA] >= 0.3 * big]
                     mk = np.isin(lab, keep).astype(np.uint8)
             masks[i, j] = mk > 0
-    return masks, raw
+            if dark[i, j]:
+                # the dark square's own shade in patches wider than a stroke
+                # (between the points of a crown, which the mask encloses);
+                # the paper of a light square is paper anyway
+                own = float(np.median(A[i, j][ring]))
+                sh = (np.abs(A[i, j] - own) < 0.08).astype(np.uint8)
+                shade[i, j] = cv2.morphologyEx(sh, cv2.MORPH_OPEN, OPEN_K) > 0
+    return masks, raw, shade
 
 
 ERODE = np.ones((3, 3), np.uint8)
@@ -494,7 +505,7 @@ def board_cells(gray):
         return out
     a = board_image(gray, x0, y0, s)
     c, hatch = remove_hatching(a)
-    masks, raw = segment(c)
+    masks, raw, shade = segment(c)
     C = c.reshape(8, N, 8, N).transpose(0, 2, 1, 3)
     occ = {}
     areas = masks.mean(axis=(2, 3))
@@ -504,7 +515,10 @@ def board_cells(gray):
             if areas[i, j] < MIN_AREA:
                 continue
             ys, xs = np.nonzero(mk)
-            g = np.where(mk, C[i, j], 1.0)
+            # the square's colour that the mask encloses (between the points
+            # of a crown) is no part of the drawing: it counts as paper, as
+            # it would on a light square
+            g = np.where(mk & ~shade[i, j], C[i, j], 1.0)
             dx = int(round(N / 2 - (xs.min() + xs.max() + 1) / 2))
             dy = int(round(0.9 * N - (ys.max() + 1)))
             T = np.float32([[1, 0, dx], [0, 1, dy]])
@@ -633,6 +647,19 @@ def group_drawings(X, T=GROUP_DIST):
         remap = {u: k for k, u in enumerate(used)}
         lab = np.array([remap[v] for v in lab])
         C = np.array([X[lab == k].mean(0) for k in range(len(used))])
+        # centres that ended up closer than T hold one drawing (the first
+        # pass seeds a group with whichever drawing comes first): one group
+        near = _sqdist(C, C) < limit
+        root = list(range(len(C)))
+        for a, b in zip(*np.nonzero(np.triu(near, 1))):
+            ra, rb = root[a], root[b]
+            if ra != rb:
+                root = [ra if r == rb else r for r in root]
+        if len(set(root)) < len(C):
+            used = sorted(set(root))
+            remap = {u: k for k, u in enumerate(used)}
+            lab = np.array([remap[root[v]] for v in lab])
+            C = np.array([X[lab == k].mean(0) for k in range(len(used))])
     return lab, C
 
 

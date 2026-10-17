@@ -37,9 +37,11 @@ def _pieces(design="svg"):
     return {str(sym): z["pieces"][k][i] for i, sym in enumerate(z["order"])}
 
 
-def draw_board(fen, hatched=False, flip=False, design="svg", border=6):
+def draw_board(fen, hatched=False, flip=False, design="svg", border=6, halo=True):
     """A grey picture of the position: dark squares hatched or grey, white
-    pieces filled with paper (as diagram fonts draw them), a frame round it."""
+    pieces filled with paper (as diagram fonts draw them), a frame round it.
+    halo: a rim of paper round every piece; without it the square's colour
+    shows wherever the drawing does not cover it (between a crown's points)."""
     pieces = _pieces(design)
     n = 8 * SQ + 2 * border
     img = np.full((n, n), 255, np.uint8)
@@ -63,9 +65,10 @@ def draw_board(fen, hatched=False, flip=False, design="svg", border=6):
             glyph = cv2.resize(pieces[p.symbol()], (SQ, SQ), interpolation=cv2.INTER_AREA)
             ink = glyph < 128
             filled = boards._fill(ink)
-            halo = cv2.dilate(filled.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+            if halo:
+                filled = cv2.dilate(filled.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
             cell = img[y:y + SQ, x:x + SQ]
-            cell[halo] = 255
+            cell[filled] = 255
             cell[ink] = 0
     return img
 
@@ -135,6 +138,48 @@ def test_synthetic_boards_read(tmp_path, hatched):
     first = res["p1-1"]
     assert set(first) >= {"fen", "confidence", "doubtful", "status"}
     assert first["status"] in ("read", "doubtful")
+
+
+def test_white_queen_on_a_dark_square(tmp_path):
+    """Tangborn and Brunthaler print pieces without a rim of paper: between
+    the points of a white queen's crown on a dark square the square's grey
+    shows, and the mask of the drawing encloses it. The grey is the square,
+    not ink: the drawing is a white queen (it was read as a black knight,
+    pawn or queen, without a doubt)."""
+    fens, queens = [], []
+    for k, fen in enumerate(positions(40, seed=7)):
+        b = chess.Board(fen + " w - - 0 1")
+        for s in list(b.pieces(chess.QUEEN, chess.WHITE)):
+            b.remove_piece_at(s)
+        dark = [s for s in chess.SQUARES if not b.piece_at(s) and 0 < chess.square_rank(s) < 7
+                and (chess.square_file(s) + chess.square_rank(s)) % 2 == 0]
+        queens.append(random.Random(k).choice(dark))
+        b.set_piece_at(queens[-1], chess.Piece(chess.QUEEN, chess.WHITE))
+        fens.append(b.board_fen())
+    pdf = tmp_path / "queens.pdf"
+    recs = make_pdf(pdf, fens, halo=False)
+    res = boards.read_book_boards(pdf, recs)
+    read = [chess.Board(res[f"p{k // 4 + 1}-{k % 4 + 1}"]["fen"]).piece_at(q) for k, q in enumerate(queens)]
+    assert sum(p == chess.Piece(chess.QUEEN, chess.WHITE) for p in read) >= 38, read
+    sq, whole = score(res, fens)
+    assert sq >= 0.995 and whole >= 0.9, (sq, whole)
+
+
+def test_one_drawing_is_one_group():
+    """The first pass seeds a group with whichever drawing comes first: two
+    drawings of one piece a little more than GROUP_DIST apart start two
+    groups, and the drawings between them split between the two. Centres
+    that end up closer than GROUP_DIST hold one drawing, and are one group
+    (else the two halves are named apart, and one of them wrongly)."""
+    rng = np.random.default_rng(1)
+    base = rng.random(G2 := boards.G * boards.G).astype(np.float32)
+    step = rng.standard_normal(G2).astype(np.float32)
+    step /= np.sqrt((step ** 2).mean())             # RMS 1
+    other = rng.random(G2).astype(np.float32)        # another piece, far away
+    X = [base, base + 0.11 * step, other]
+    X += [base + t * step for t in rng.uniform(0, 0.11, 40)]
+    lab, C = boards.group_drawings(np.array(X, np.float32))
+    assert len(set(lab[[0, 1]])) == 1 and lab[2] != lab[0] and len(C) == 2
 
 
 def test_board_seen_from_black_side(tmp_path):
