@@ -78,13 +78,17 @@ the book; notes are set in the body font. A second style of the move font
 pdftext "note_moves") sets moves named in the notes, and its words are
 notes. Every word is classed by the font
 of its characters (a book without a distinct move font falls back to the
-line roles). Each chapter becomes three aligned text buffers: the original
-text, the main-font words only and the note words only, the other words
-blanked out. find_sequences runs on the two filtered buffers, so a main line
-continues across the notes between its moves, while a note never merges
-with the main line. Token offsets are the same in all buffers and map back
-to the word boxes on the page. Moves in the move font inside a sentence of
-body text ("should White play 1.g6+, ...") count as notes.
+line roles). On a page of an OCR'd book with no word in the move font (OCR
+set the main lines there in the body font), a line that holds moves only
+is a main line where it starts at move 1, stands right after a diagram or a
+solution number, or goes on with a main line read so. Each chapter becomes
+three aligned text buffers: the original text, the main-font words only and
+the note words only, the other words blanked out. find_sequences runs on
+the two filtered buffers, so a main line continues across the notes between
+its moves, while a note never merges with the main line. Token offsets are
+the same in all buffers and map back to the word boxes on the page. Moves
+in the move font inside a sentence of body text ("should White play 1.g6+,
+...") count as notes.
 
 How lines are formed
 --------------------
@@ -275,7 +279,7 @@ from . import pdftext as pt
 from . import region
 from . import selection as sel
 from .movetext import GlyphModel, Token, clean_run, decode, find_sequences, numbering_counts
-from .movetext import DOTLESS_MIN, DOTLESS_SHARE
+from .movetext import DOTLESS_MIN, DOTLESS_SHARE, tokenize
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
 from .movetext import CAPTURE_CHARS, _ocr_digit_slip, junk_prefix, letter_symbol, symbol_span
 from .movetext import _resolve_letters, SHAPE_KNOWN, _RESULT_RE, _CASTLE_RE
@@ -622,6 +626,37 @@ def _board_ply(fen):
 
 
 _DRAW_RE = re.compile(r"^(?:[1l]/2|½|Y2)-(?:[1l]/2|½|Y2)$")
+
+
+def _moves_only(text, depth):
+    """A line read by its shape: (classes, number, depth). Outside brackets
+    the line holds moves only, a move number or a move first and no other
+    word ("2.afSxg7+ hSxg7 3.'ifh5xh7+ [3...Kh8 4.Qh8#]"): those words are
+    "m" and the bracketed ones "n", and number is the line's first move
+    number (0 when it opens with a move); else classes and number are None.
+    depth is the depth of brackets at the start of the line, and at its end."""
+    words = text.split(" ")
+    inside = []
+    for w in words:
+        # brackets open a word and close it (OCR's glyphs hold some: "J:[e8")
+        opens = len(w) - len(w.lstrip("[("))
+        closes = len(w) - len(w.rstrip("])"))
+        inside.append(depth > 0 or opens > 0)
+        depth += opens
+        if closes > depth:              # a bracket opened before this line
+            inside = [True] * len(inside)
+        depth = max(depth - closes, 0)
+    rest = " ".join(w for w, x in zip(words, inside) if not x)
+    toks = tokenize(rest, lenient=True)
+    if toks and toks[0].kind == "other":
+        # a line that goes on with the moves before it opens with a move, which
+        # tokenize takes for one only after a number
+        toks = tokenize("1. " + rest, lenient=True)[1:]
+    if not toks or toks[0].kind not in ("number", "move") \
+            or not any(t.kind == "move" for t in toks) or any(t.kind == "other" for t in toks):
+        return None, None, depth
+    first = (toks[0].number or 0) if toks[0].kind == "number" else 0
+    return ["n" if x else "m" for x in inside], first, depth
 
 
 def _norm_result(raw):
@@ -1424,6 +1459,10 @@ class _Builder:
         st = _Stream()
         excluded_run = False
         list_next = None        # the next item number of a numbered list in the prose
+        # on a page read by the shape of its lines: right after a diagram or a
+        # solution number, and in a main line that such a page started
+        fresh = going = False
+        depth = 0               # brackets open on a page read by the shape of its lines
         for p in range(ch["start"], ch["end"] + 1):
             if not self.selection.page_selected(p):
                 if not excluded_run:
@@ -1442,9 +1481,14 @@ class _Builder:
                 by_line[k].append(did)
             st.event("page", p)
             prev = prev_classes = None
+            # OCR set the page's main lines in the body font: no word stands in
+            # the move font, and a line of moves alone is read by its shape
+            bare = bool(self.moves_font) and not self.dec.glyphs.exact and not any(
+                s["role"] == "moves" for x in lines for s in x.get("spans", []))
             for k, ln in enumerate(lines):
                 for did in sorted(by_line.get(k, []), key=sel.id_key):
                     st.event("diagram", did)
+                    fresh, going = True, False
                 role = ln["role"]
                 if role == "label" and self.move_number_label(lines, k):
                     role = "text"
@@ -1462,8 +1506,16 @@ class _Builder:
                     prev = None
                     if role != "caption":
                         list_next = None
+                        fresh = going = False
+                        depth = 0
                     continue
                 classes = self.word_classes(ln)
+                if bare and role == "text":
+                    shaped, first, depth = _moves_only(ln["text"], depth)
+                    if first is not None and (first == 1 or fresh or going):
+                        classes = shaped
+                        going = True
+                fresh = False
                 if prev is not None and prev_classes:
                     self.number_line_move(prev, prev_classes, ln, classes)
                 para = self.para_start(p, ln, prev)
@@ -1512,6 +1564,7 @@ class _Builder:
                     mask = len(text)
                     st.margins[st.pos] = lab
                     st.event("exercise", lab)
+                    fresh, going, depth = True, False, 0
                 if _BARE_NUMBER_RE.match(text) and self.centred(p, ln):
                     st.event("number", int(text.translate(pt.DIGIT_FIX).replace("O", "0")))
                 st.add(p, ln, classes, mask, para)

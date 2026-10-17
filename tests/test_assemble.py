@@ -351,12 +351,14 @@ def test_solutions_find_their_exercise_diagrams(little):
     assert nodes[nodes[by_diagram["p6-2"]["root"]]["children"][0]]["raw"] == "Nf6+"
 
 
-def make_day_book(path):
+def make_day_book(path, plain=False):
     """An exercise book in the manner of a daily puzzle book, as OCR read it:
     boards captioned "Day 14" and "Day 1S" (OCR's S for 5), one captioned
     "Diagram 3 (B)" with the side to move, and the solutions later with the
     number in the margin beside the paragraph, no dot after it and spaced by
-    OCR ("1 4"), printed in another order than the boards (15, then 14)."""
+    OCR ("1 4"), printed in another order than the boards (15, then 14).
+    The solutions' main lines are bold, a variation in brackets between
+    them; with plain, OCR set the solutions' page all in the body font."""
     w = _Writer()
     w.page(head=False)
     w.pg.insert_text((80, 120), "Daily Exercises", fontname="tiro", fontsize=26)
@@ -372,13 +374,15 @@ def make_day_book(path):
     w.col(1)
     w.prose(until=H - 60)
     w.page()
-    for num, moves in (("1S", "1.Nf6+ Kh8 2.Qh7#"), ("1 4", "1.Rd8+ Kh7 2.Rd7")):
+    for num, first, then in (("1S", "1.Nf6+ Kh8", "2.Qh7#"), ("1 4", "1.Rd8+ Kh7", "2.Rd7")):
         w.y += 8
-        w.pg.insert_text((COLS[0], w.y), num, fontname="tibo", fontsize=11)
+        w.pg.insert_text((COLS[0], w.y), num, fontname="tiro" if plain else "tibo", fontsize=11)
         w.x0 = COLS[0] + 34
         w.line("A quick blow decides,")
         w.line("as the king has no air:")
-        w.line(moves, bold=True, indent=8)
+        w.line(first, bold=not plain, indent=8)
+        w.line("[1...Kg7 2.Qf7#]", indent=8)
+        w.line(then, bold=not plain, indent=8)
         w.line("And Black is lost.")
         w.line("1.Qa1 Kb8 is no better.", indent=8)
     w.x0 = COLS[0]
@@ -417,6 +421,20 @@ def test_solutions_numbered_in_the_margin(tmp_path):
     assert first == {"p2-1": "Rd8+", "p2-2": "Nf6+"}
     qa1 = [n for n in nodes.values() if n.get("raw") == "Qa1"]
     assert len(qa1) == 2 and {n["line"] for n in qa1} == {x["id"] for x in by_diagram.values()}
+
+
+def test_main_lines_that_ocr_set_in_the_body_font(tmp_path):
+    """On a page where OCR set the bold main lines in the body font (no word
+    of the page in the move font), a line of moves alone is a main line where
+    it starts at move 1 or goes on with one: the solution reads 1.Nf6+ Kh8
+    2.Qh7#, and the bracketed moves between are its variation."""
+    pdf = make_day_book(tmp_path / "days.pdf", plain=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    line = next(x for x in book["lines"] if x["diagram"] == "p2-2")
+    assert [book["nodes"][i]["raw"] for i in main_line(book, line)] == ["Nf6+", "Kh8", "Qh7#"]
+    nodes = book["nodes"]
+    kg7 = next(n for n in nodes.values() if n.get("raw") == "Kg7" and n["line"] == line["id"])
+    assert not kg7["main"] and nodes[kg7["parent"]]["raw"] == "Nf6+"
 
 
 def test_note_after_the_result_stays_with_its_game(tmp_path):
