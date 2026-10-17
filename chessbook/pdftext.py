@@ -1168,7 +1168,7 @@ def page_lines(doc, page_index, fonts=None):
             continue
         t, r = rl["raw_text"], rl["raw_bbox"]
         m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
-        if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head_y
+        if (m and m.group(1) not in RESULTS and head_y < (r.y0 + r.y1) / 2 < H - head_y
                 and not any(r.intersects(pc + (-12, -4, 12, 4)) and not between_boards(r, pc)
                             for pc in pics)
                 and not continues_as_move(r, row_texts)):
@@ -1203,7 +1203,9 @@ def page_lines(doc, page_index, fonts=None):
         if best is not None:
             role[k], diag[k] = "label", f"p{p}-{best[1] + 1}"
 
-    # Coordinates and other marks on or beside a board picture.
+    # Coordinates and other marks on or beside a board picture. A number with
+    # its move or dots beside it ("12" and "d6!" under a board) is a move
+    # number, unless it is a rank digit at the board's edge.
     if pics:
         for k, rl in enumerate(rls):
             if role[k]:
@@ -1212,6 +1214,11 @@ def page_lines(doc, page_index, fonts=None):
             short = all(len(w["text"]) <= 2 for w in rl["words"]) and not f["kinds"]["move"]
             j = _pic_zone_index(rl["bbox"], pics, (2.5 if short else 1.6) * bs)
             if j is None:
+                continue
+            t, r, pic = rl["raw_text"].strip(), rl["raw_bbox"], pics[j]
+            rank = (len(t) == 1 and pic.y0 <= (r.y0 + r.y1) / 2 <= pic.y1
+                    and (abs(r.x1 - pic.x0) <= 16 or abs(r.x0 - pic.x1) <= 16))
+            if LABEL_RE.match(t) and not rank and continues_as_move(r, row_texts):
                 continue
             box = pymupdf.Rect(rl["bbox"])
             inside = abs(box & pics[j]) >= 0.6 * abs(box) if abs(box) else False

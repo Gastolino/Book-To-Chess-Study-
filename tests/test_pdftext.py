@@ -400,3 +400,54 @@ def test_whole_book_under_a_minute():
           f"{total} lines")
     assert structure["chapters"] and total > 10000
     assert elapsed < 60
+
+
+def test_move_numbers_beside_a_board_are_no_label(tmp_path):
+    """A book that sets its moves as a table prints each number a tab before
+    its move ("11" and "Nec3" above a board, "11" "..." "Qb2?" and "12"
+    "d6!" under it): such a number is a move number, neither the board's
+    label nor a coordinate, and the folio at the foot is no label either. A
+    number alone on its line above a board is still its label."""
+    doc = pymupdf.open()
+    W, H = 420, 600
+    pix = pymupdf.Pixmap(pymupdf.csGRAY, pymupdf.IRect(0, 0, 64, 64), False)
+    pix.clear_with(255)
+    word = 0
+    for pno in range(1, 7):
+        page = doc.new_page(width=W, height=H)
+        page.insert_text((40, 30), "The Art of Planning", fontname="tiro", fontsize=9)
+        y = 60
+        for k in range(8):
+            out = []
+            while len(" ".join(out)) < 60:
+                out.append(PROSE[word % len(PROSE)])
+                word += 1
+            page.insert_text((40, y), " ".join(out), fontname="tiro", fontsize=10)
+            y += 13
+        page.insert_text((60, y + 10), "11", fontname="tiro", fontsize=10)
+        page.insert_text((90, y + 10), "Nec3", fontname="tibo", fontsize=10)
+        if pno % 2:
+            # the board stands under its own label on the odd pages
+            page.insert_text((90, y + 28), "12", fontname="tiro", fontsize=10)
+            y += 18
+        rect = pymupdf.Rect(60, y + 30, 180, y + 150)
+        page.insert_image(rect, pixmap=pix)
+        page.insert_text((60, rect.y1 - 3), "11", fontname="tiro", fontsize=10)
+        page.insert_text((80, rect.y1 - 3), "...", fontname="tiro", fontsize=10)
+        page.insert_text((130, rect.y1 - 3), "Qb2?", fontname="tibo", fontsize=10)
+        page.insert_text((60, rect.y1 + 20), "12", fontname="tiro", fontsize=10)
+        page.insert_text((90, rect.y1 + 20), "d6!", fontname="tibo", fontsize=10)
+        page.insert_text((W / 2 - 5, H - 25), str(pno + 10), fontname="tiro", fontsize=9)
+    path = tmp_path / "table.pdf"
+    doc.save(path)
+    doc = pymupdf.open(path)
+    fonts = pt.book_fonts(doc)
+    import stage1_inspect as s1
+    for i in (2, 3):
+        lines = pt.page_lines(doc, i, fonts)
+        roles = [(ln["text"], ln["role"]) for ln in lines if ln["text"] in ("11", "12")]
+        labelled = [("12", "label")] if i % 2 == 0 else []
+        assert [x for x in roles if x[1] in ("label", "coord")] == labelled, roles
+        _, diagrams, numbers, _ = s1.inspect_page(doc, i)
+        assert [d["label"] for d in diagrams] == (["12"] if i % 2 == 0 else [None])
+        assert [n["label"] for n in numbers] == (["12"] if i % 2 == 0 else [])

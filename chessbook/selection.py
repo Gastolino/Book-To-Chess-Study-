@@ -108,7 +108,9 @@ def picture_kinds(diagrams, first_page=1):
                   board
     board_plus    not square, but as wide as a whole board and at least as tall:
                   boards stacked in one picture, a board with printed text
-                  beneath it, or a board framed by a number or a margin
+                  beneath it, or a board framed by a number or a margin;
+                  also wider, when the grid inside it is a whole board
+                  (Stage 1's "whole": a margin with the rank digits)
     partial       part of a board only, such as a corner or a strip of files;
                   also a square picture well below board size around which
                   fewer than seven file letters and rank numbers are printed
@@ -141,7 +143,7 @@ def picture_kinds(diagrams, first_page=1):
             files, ranks = (d.get("coords") or [None, None])[:2]
             whole = files is not None and (files >= 7 or ranks >= 7)
             kind = "partial" if (min(w, h) < 0.7 * B and not whole) else "board"
-        elif 0.9 * B <= w <= 1.35 * B and 0.9 * B <= h <= 4.2 * B:
+        elif (0.9 * B <= w <= 1.35 * B and 0.9 * B <= h <= 4.2 * B) or d.get("whole"):
             kind = "board_plus"
         elif w > 1.35 * B and h > 1.35 * B:
             kind = "illustration"

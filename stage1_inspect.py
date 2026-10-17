@@ -132,6 +132,20 @@ def stacked_boards(doc, xref, rect):
     return [pymupdf.Rect(rect.x0, rect.y0 + a * k, rect.x1, rect.y0 + b * k) for a, b in bands]
 
 
+def whole_inside(doc, xref, rect):
+    """True when a picture that is no square holds a whole board all the
+    same (boards.whole_board): ClearScan keeps a board with its margin and
+    rank digits as one picture wider than tall. A part of a board, or two
+    of them side by side, is not whole; a square picture is not looked at."""
+    if abs(rect.width / rect.height - 1) <= 0.12:
+        return False
+    from chessbook import boards
+    try:
+        return boards.whole_board(boards.picture_gray(doc, xref))
+    except (RuntimeError, ValueError):
+        return False
+
+
 def page_kind(chars, cover, boards, invisible):
     if cover:
         return "scan"
@@ -151,18 +165,26 @@ def between_boards(r, pic):
 
 
 MOVE_DOTS = ".•…·"
+# A word that holds a square or castles: the shape of a move, figurine junk
+# before it or not ("♘ec3", "tL'lec3", "'ifb2?", "d6!").
+MOVE_SHAPE_RE = re.compile(r"[a-h][1-8]|^[0O]-[0O]")
 
 
 def continues_as_move(r, others):
-    """True when a bare number at r is a move number whose dot and move OCR
-    split off into a text line of their own on the same row ("17" and
-    "• .ixf6t ..."): such a number is not a diagram label."""
+    """True when a bare number at r is a move number with its move printed
+    beside it on the same row, in a text line of its own: OCR splits off the
+    number's dot and move ("17" and "• .ixf6t ..."), and books that set their
+    moves as a table print the move a tab away ("11" and "♘ec3"), within
+    three line heights of the number. Such a number is not a diagram label,
+    which stands alone on its line. (A move further off, at Black's tab, has
+    the dots between, which ClearScan may print as a picture.)"""
     h = r.y1 - r.y0
     for t, o in others:
-        if o is r or not t or t.lstrip(" ")[:1] not in MOVE_DOTS:
+        words = (t or "").split()
+        if o is r or not words or not (words[0][0] in MOVE_DOTS or MOVE_SHAPE_RE.search(words[0])):
             continue
         overlap = min(r.y1, o.y1) - max(r.y0, o.y0)
-        if (o.x0 > (r.x0 + r.x1) / 2 and o.x0 - r.x1 <= 15
+        if (o.x0 > (r.x0 + r.x1) / 2 and o.x0 - r.x1 <= 3 * h
                 and overlap >= 0.5 * min(h, o.y1 - o.y0)):
             return True
     return False
@@ -359,13 +381,14 @@ def inspect_page(doc, i):
         xpics.sort(key=lambda t: ((t[0].x0 + t[0].x1) / 2 > mid, t[0].y0))
     pics = [(r, w, h) for r, w, h, _ in xpics]
     invisible = any(t.get("type") == 3 for t in page.get_texttrace())
-    head = page.rect.height * 0.06  # running head with the page number
+    H = page.rect.height
+    head = H * 0.06  # running head or foot with the page number
     # OCR sometimes splits a number with a space ("1 15" for 115). Lines that
     # touch a picture are its rank and file letters, so they are left out.
     labels, sides = [], {}
     for t, r in lines:
         m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
-        if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head
+        if (m and m.group(1) not in RESULTS and head < (r.y0 + r.y1) / 2 < H - head
                 and not any(r.intersects(p + (-12, -4, 12, 4)) and not between_boards(r, p)
                             for p, _, _ in pics)
                 and not continues_as_move(r, lines)):
@@ -423,6 +446,7 @@ def inspect_page(doc, i):
             "side": side,
             "circled": circled,
             "partial": abs(pic.width / pic.height - 1) > 0.12,
+            "whole": whole_inside(doc, xref, pic),
             "tall": pic.height > 1.3 * pic.width,
             "coords": list(board_coords(pic, lines)),
         })

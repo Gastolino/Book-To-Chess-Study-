@@ -337,6 +337,37 @@ def test_fl_ligature_reads_as_f2_when_the_moves_need_it():
     assert sans("1.\x1dfl Kd7", b, glyphs=GlyphModel(seed=True)) == ["Rf1", "Kd7"]
 
 
+def test_clearscan_square_forms():
+    # ClearScan prints f3 as "o", "O" or "fJ", f1 as "n" and the rank 1
+    # after a file as "t" (The Art of Planning: "2 lbo d5", "2 ttJO e6",
+    # "2 tbfJ d6", "7 tbn d5", "Rfe1" as ":tfet"). The number before such a
+    # move and the reply after it are moves of the run, and the move is
+    # read as the square, not as an a-file ("tLlo" is no Na3).
+    toks = tokenize("1 e4 e5 2 ttJO e6 3 d4 exd4", dotless=True)
+    assert [(t.kind, t.raw) for t in toks][3:7] == [
+        ("number", "2"), ("move", "ttJO"), ("move", "e6"), ("number", "3")]
+    toks = tokenize("1 e4 e6 2 lbo d5 3 exd5 exd5", dotless=True)
+    assert [(t.kind, t.raw) for t in toks][3:6] == [("number", "2"), ("move", "lbo"),
+                                                    ("move", "d5")]
+    decs = decode(chess.Board(), toks)
+    assert [d.san for d in decs] == ["e4", "e6", "Nf3", "d5", "exd5", "exd5"]
+    assert sans("1.e4 c5 2.tLlo d6 3.d4 cxd4 4.tLlxd4 tLlf6 5.tLlc3")[2] == "Nf3"
+    assert sans("1.e4 c5 2.tbfJ d6 3.d4 cxd4 4.tbxd4")[2] == "Nf3"
+    assert sans("1.tbn Kd7", chess.Board("4k3/8/8/8/8/8/3N4/4K3 w - - 0 1"))[0] == "Nf1"
+    assert sans("1.:tfet Kh7", chess.Board("7k/8/8/8/8/8/8/R4RK1 w - - 0 1"))[0] == "Rfe1"
+    # a "t" set apart from the square is the check sign ("i.d t" for Bc1+)
+    from chessbook.movetext import _parse_raw
+    assert not any(q.whole for q in _parse_raw("i.d t").parses)
+    assert any(q.whole == "et" for q in _parse_raw(":tfet").parses)
+    # prose is no move ("two", "in", "at", "OPEN"), nor are the forms in a book set
+    # in type
+    assert moves("I have two and win in two at last") == []
+    toks = tokenize("12 OPEN 13 tLlo", dotless=True)
+    assert [t.raw for t in toks if t.kind == "move"] == ["tLlo"]
+    toks = tokenize("1.e4 e6 2.lbo d5")
+    assert decode(chess.Board(), toks, glyphs=GlyphModel(exact=True))[2].san != "Nf3"
+
+
 def test_castling_and_promotion():
     b = chess.Board("4k3/1P6/8/8/8/8/8/R3K2R w KQ - 0 1")
     assert sans("1.0-0-0 Kf7 2.b8=Q", b) == ["O-O-O", "Kf7", "b8=Q"]

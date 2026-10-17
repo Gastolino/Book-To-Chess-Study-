@@ -242,6 +242,21 @@ def locate_grid(gray):
     return X0 / f2, Y0 / f2, S / f2, v
 
 
+def whole_board(gray):
+    """True when the picture holds one whole board: an 8 x 8 grid that
+    board_cells would read, standing inside the picture and filling most of
+    its longer side, whatever the margin round it (rank digits beside it).
+    A corner or strip of a board, or two boards side by side, is none."""
+    if gray is None or min(gray.shape) < 48 or max(gray.shape) > 4 * min(gray.shape):
+        return False
+    x0, y0, s, score = locate_grid(gray)
+    agree, _ = grid_check(gray, x0, y0, s)
+    H, W = gray.shape
+    return (agree >= 0.8 and score >= 0.06 and 8 * s >= 0.6 * max(H, W)
+            and -s / 2 <= x0 and x0 + 8 * s <= W + s / 2
+            and -s / 2 <= y0 and y0 + 8 * s <= H + s / 2)
+
+
 def grid_check(gray, x0, y0, s):
     """(agreement, dark_top_left): the share of the squares' corner patches
     on the expected side of the light/dark divide (a whole board scores well
