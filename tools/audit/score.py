@@ -99,6 +99,10 @@ def agrees(raw, san):
         return False
     if raw[:1] in "KQRBN" and san[:1] in "KQRBN" and raw[:1] != san[:1]:
         return False
+    # a capture mark printed before the square ("Rxe7+", "tDxf6") makes a capture
+    pos = sq[-1][0]
+    if "x" in raw[max(0, pos - 2):pos] and "x" not in san:
+        return False
     if raw[:1] in "KQRBN" and san[:1].islower():
         return False
     return True
