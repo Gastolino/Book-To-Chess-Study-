@@ -1470,11 +1470,15 @@ function threadFen(){
 }
 // the last move the board shows, in words: "5…f5", or the anchor's
 function lastText(){
-  if (!TH.before.length) return TH.anchor != null && D.nodes[TH.anchor] && D.nodes[TH.anchor].parent != null ?
-    moveText(TH.anchor, true) : "the start";
-  let fen = nodeFen(TH.anchor), t = "";
+  let fen = TH.anchor != null ? nodeFen(TH.anchor) : null, t = "";
+  // (a patch may take the anchor away, as Undo does: then the move Undo goes back to, or the start)
+  if (!TH.before.length || !fen) {
+    const u = TH.undo && TH.undo.state, id = D.nodes[TH.anchor] ? TH.anchor : u && D.nodes[u.anchor] ? u.anchor : null;
+    return id != null && D.nodes[id].parent != null ? moveText(id, true) : "the start";
+  }
   for (const s of TH.before) {
     const m = sanIn(fen, s);
+    if (!m) break;
     t = moveWords(fen, s);
     fen = CJ.after(fen, m[1]);
   }
@@ -2250,6 +2254,8 @@ function applyPatch(p){
   if (edit && edit.node && (ren[edit.node] || !D.nodes[edit.node])) edit.node = ren[edit.node] || null;
   if (S.node) S.line = D.nodes[S.node].line;
   else if (S.line && !D.lines[S.line]) S.line = null;
+  // (the thread finds its moves again before the page names them)
+  threadRebase();
   showPage(S.page);
   renderTree(); renderBoard(); renderInfo(); layoutPanel(false); highlightMark(false);
   if (RV.on) { const keep = RV.cur; renderReview(); RV.cur = keep; }
@@ -2278,7 +2284,6 @@ function applyPatch(p){
     else { closeFix(); said = "Placed in the line."; }
   }
   // the thread goes on once the book holds the move made on the board
-  threadRebase();
   const thread = !!(edit && edit.kind === "thread" && TH.on);
   if (thread && p.corrections) threadPatched(p);
   // the move made on the board: it is chosen once the book holds it

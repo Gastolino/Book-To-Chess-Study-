@@ -93,6 +93,7 @@ def test_reading_on_stops_for_the_reader_in_the_app(site, tmp_path):
     res = _run("readon_e2e.js", site, book, ROOT / "output" / "screens" / "thread")
     names = {c["name"] for c in res["checks"]}
     assert {"a reading on that fails says why in one line, keeps the correction as made, and goes on without reading on",
+            "Undo takes the move back, with the move made after it, and the move list drops them",
             "a reading on queued while the book is read keeps the correction, and the sheet waits for the book",
             "once the book holds the move, the program reads on from it",
             "Undo after reading on brings the page and the move list back to 4...Qb6",
