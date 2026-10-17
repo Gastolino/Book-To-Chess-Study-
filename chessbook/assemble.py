@@ -227,12 +227,17 @@ OCR reads some characters of a square for others (b and h, c and e: the
 twins of movetext's FILE_READ and RANK_READ), and where both readings are
 legal the text's own wins. A diagram tied to a move that the line does not
 reach (nor a move before or after it) decides such a move when one other
-reading of the square printed in one of the line's moves shortly before it
-(MISREAD_PLIES) makes the line reach the diagram, but for squares its
-reading doubts (misread_squares): the line is read again preferring that
-move where it is legal, shown as a guess with the text's reading as its
-alternative, and the diagram is a checkpoint. A move the reader corrects
-before it can make that move illegal; the text's reading then stands.
+reading of the square printed in one of the line's moves since the last
+checkpoint (MISREAD_PLIES at most) makes the line reach the diagram, but for
+squares its reading doubts, or in OCR's text one other reading of such a
+move that costs little more than its own (a lost figurine, MISREAD_COST)
+does (misread_squares): the line is read again preferring that move where
+it is legal, shown as a guess with the text's reading as its alternative,
+and the diagram is a checkpoint. A move the reader corrects before it can
+make that move illegal; the text's reading then stands. Where no reading
+reaches a diagram read without doubt inside the line, the last move since
+the checkpoint to leave or reach each square on which they differ is shown
+as a guess instead of "ok" (doubt_unreached), until the line reaches it.
 
 A font that OCR traced from the scan (ClearScan) draws one letter with
 several glyphs, one for each shape it found, and the text layer names each
@@ -283,7 +288,7 @@ from .movetext import DOTLESS_MIN, DOTLESS_SHARE, tokenize
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
 from .movetext import CAPTURE_CHARS, _ocr_digit_slip, junk_prefix, letter_symbol, symbol_span
 from .movetext import _resolve_letters, SHAPE_KNOWN, _RESULT_RE, _CASTLE_RE
-from .movetext import FILE_READ, RANK_READ
+from .movetext import FILE_READ, RANK_READ, _Scorer, _parse_raw
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -299,6 +304,10 @@ CORRECTED_COUNTS = {"move": "moves", "symbol": "symbol_moves", "connected": "con
 COMMENT_MAX = 2000              # characters of note text kept as one comment
 GAP_MAX = 8                     # plies a main run may skip and still continue its line
 MISREAD_PLIES = 16              # how far back from a diagram a misread square may stand
+MISREAD_COST = 2.5              # how much dearer than the move read another reading of its
+                                # text may be for a diagram after it to decide it (a lost figurine)
+UNREACHED_DOUBT = 0             # doubtful squares of a diagram whose moves it may doubt ...
+UNREACHED_SQUARES = 8           # ... and the squares on which it differs from its line, at most
 TWIN_MIN = 3                    # moves that read a glyph as another letter (square_twins) ...
 TWIN_SHARE = 2 / 3              # ... and their share of the glyph's moves that tell
 SUGGEST_GAP = 4                 # plies a run's number may lie ahead of the line it follows (suggest)
@@ -1318,6 +1327,7 @@ class _Builder:
         self.line_pages = defaultdict(set)      # line id -> pages holding its marks
         self.base = None                # the lines as assembled, before corrections
         self.misread = {}               # token key -> (move, text's move): misread_squares
+        self.unreached = {}             # diagram id -> (placement, doubtful squares): misread_squares
 
     def __getstate__(self):
         # (the caches of suggest and read_on are not part of a stored reading)
@@ -4541,14 +4551,28 @@ class _Builder:
         own reading wherever it is legal. A diagram tied to a move of a line
         (after_node) that the line does not reach, neither at that move nor
         a move before or after it, decides one of the line's
-        moves of the last MISREAD_PLIES: the move is read with another
-        reading of the square printed in it (same piece) when exactly that
-        change makes the line reach the diagram, but for the squares its
-        reading doubts. fens holds the diagram positions the reader gave.
-        Sets self.misread {token key: (move, text's move)}, which forced()
-        gives the lines when they are replayed, and returns the diagrams
-        concerned {id: (placement, doubtful squares)}."""
-        found, boards = defaultdict(set), {}
+        moves since the last checkpoint (MISREAD_PLIES at most): the move is
+        read with another reading of the square printed in it (same piece)
+        when exactly that change makes the line reach the diagram, but for
+        the squares its reading doubts; failing that, in a text OCR read,
+        with another reading of its text that costs at most MISREAD_COST
+        more than its own (a figurine OCR lost: "f6" for Nf6), when exactly
+        that one does. The moves after it are read as they were where they
+        stay legal, else (OCR's text) with the cheapest reading of their
+        text. fens holds the diagram positions the reader gave. Sets
+        self.misread {token key: (move, text's move)}, which forced() gives
+        the lines when they are replayed, and self.unreached, the diagrams
+        inside a line (it goes on after their move, and starts from no
+        diagram of theirs) read with no more doubtful squares than
+        UNREACHED_DOUBT, that differ from it on few (UNREACHED_SQUARES) and
+        that no variation the text gives in place of their move reaches
+        (in_variation): the moves they contradict are doubted when no
+        reading reaches them (doubt_unreached). Returns the diagrams decided
+        {id: (placement, doubtful squares)}."""
+        found, boards, unreached = defaultdict(set), {}, {}
+        scorer = _Scorer(self.dec.decode_letters, self.dec.glyphs)
+        checked = set(self.checked.values())
+        starts = {L.diagram for L in self.lines}
         for did, nid in self.after_node.items():
             fen = (fens or {}).get(did) or self.diagram_fens.get(did)
             node = self.nodes.get(nid)
@@ -4570,12 +4594,15 @@ class _Builder:
                 board.pop()
             if any(f and not _unlike(shown, chess.Board(f), doubt) for f in near):
                 continue
-            chain = []
-            while self.nodes[nid]["parent"] is not None and len(chain) < MISREAD_PLIES:
-                chain.append(nid)
-                nid = self.nodes[nid]["parent"]
-            chain.reverse()
-            hits = set()
+            # (a diagram after the line's last move, or one a line starts
+            # from, may show the next position the text takes up, and one
+            # that a variation given in place of its move reaches shows it)
+            if len(doubt) <= UNREACHED_DOUBT and node["children"] and did not in starts and \
+                    len(_unlike(shown, board, doubt)) <= UNREACHED_SQUARES and \
+                    not self.in_variation(nid, shown, doubt):
+                unreached[did] = (shown, doubt)
+            chain = self.since_checkpoint(nid, checked)
+            twins, close = set(), set()
             for i, j in enumerate(chain):
                 n = self.nodes[j]
                 if n["status"] == "failed" or not n["uci"] or not n.get("key") \
@@ -4584,34 +4611,124 @@ class _Builder:
                 board = chess.Board(self.nodes[n["parent"]]["fen"])
                 m = chess.Move.from_uci(n["uci"])
                 name = chess.square_name(m.to_square)
-                if name not in n["raw"]:
-                    continue            # the square is not printed as the move has it
-                f, r = chess.square_file(m.to_square), chess.square_rank(m.to_square)
-                others = ({chess.square(g, r) for g in FILE_READ.get(name[0], {}) if g != f}
-                          | {chess.square(f, q) for q in RANK_READ.get(name[1], {}) if q != r})
+                others = set()
+                if name in n["raw"]:    # (the square printed as the move has it)
+                    f, r = chess.square_file(m.to_square), chess.square_rank(m.to_square)
+                    others = ({chess.square(g, r) for g in FILE_READ.get(name[0], {}) if g != f}
+                              | {chess.square(f, q) for q in RANK_READ.get(name[1], {}) if q != r})
                 piece = board.piece_type_at(m.from_square)
+                costs = self.reading_costs(scorer, board, n["raw"])
+                # (a text set in type is read as printed: no other reading of it)
+                limit = costs[m] + MISREAD_COST if m in costs and not self.dec.glyphs.exact \
+                    else -1.0
+                # (a move the text gives in its place is a variation the
+                # diagram may show)
+                given = {self.nodes[c]["san"] for c in self.nodes[n["parent"]]["children"]}
                 for alt in board.legal_moves:
-                    if alt.to_square not in others or alt.promotion != m.promotion \
-                            or board.piece_type_at(alt.from_square) != piece:
+                    twin = alt.to_square in others and alt.promotion == m.promotion \
+                        and board.piece_type_at(alt.from_square) == piece
+                    if alt == m or not (twin or costs.get(alt, limit + 1) <= limit) \
+                            or board.san(alt) in given:
                         continue
                     b = board.copy(stack=False)
                     b.push(alt)
-                    for k in chain[i + 1:]:
-                        mv = chess.Move.from_uci(self.nodes[k]["uci"]) if self.nodes[k]["uci"] \
-                            else None
-                        if mv is None or not b.is_legal(mv):
-                            break
-                        b.push(mv)
-                    else:
-                        if not _unlike(shown, b, doubt):
-                            hits.add((n["key"], board.san(alt), n["san"]))
+                    if self.replay_reads(scorer, b, chain[i + 1:]) and not _unlike(shown, b, doubt):
+                        (twins if twin else close).add((n["key"], board.san(alt), n["san"]))
+            hits = twins or close
             if len(hits) == 1:
                 key, san, said = hits.pop()
                 found[key].add((san, said))
                 boards[did] = (shown, doubt)
         self.misread = {**getattr(self, "misread", {}),
                         **{key: v.pop() for key, v in found.items() if len(v) == 1}}
+        self.unreached = unreached
         return boards
+
+    def since_checkpoint(self, nid, checked):
+        """The moves of a line up to node nid since the last move a diagram
+        checks (checked: those nodes), MISREAD_PLIES at most, first first."""
+        chain = []
+        while self.nodes[nid]["parent"] is not None and len(chain) < MISREAD_PLIES \
+                and nid not in checked:
+            chain.append(nid)
+            nid = self.nodes[nid]["parent"]
+        return chain[::-1]
+
+    def in_variation(self, nid, shown, doubt, most=400):
+        """Whether a variation that the text gives in place of node nid's
+        move reaches the placement shown (but for the squares in doubt),
+        among its first `most` moves."""
+        parent = self.nodes[nid]["parent"]
+        todo = [c for c in self.nodes[parent]["children"] if c != nid] if parent is not None else []
+        while todo and most > 0:
+            n = self.nodes[todo.pop()]
+            most -= 1
+            if n["fen"] and not _unlike(shown, chess.Board(n["fen"]), doubt):
+                return True
+            todo += n["children"]
+        return False
+
+    @staticmethod
+    def reading_costs(scorer, board, raw):
+        """{move: cost} of the readings of a move's text in a position."""
+        costs = {}
+        for mv, c, *_ in scorer.candidates(board, _parse_raw(raw or "")):
+            costs[mv] = min(c, costs.get(mv, c))
+        return costs
+
+    def replay_reads(self, scorer, board, chain):
+        """Play the moves of chain (node ids) on board: each as it was read
+        where it is legal, else (in a text OCR read) as the cheapest reading
+        of its text; False where a move has no legal reading."""
+        for k in chain:
+            n = self.nodes[k]
+            mv = chess.Move.from_uci(n["uci"]) if n["uci"] else None
+            if mv is None or not board.is_legal(mv):
+                if self.dec.glyphs.exact:
+                    return False
+                costs = self.reading_costs(scorer, board, n["raw"])
+                if not costs:
+                    return False
+                mv = min(costs, key=costs.get)
+            board.push(mv)
+        return True
+
+    def doubt_unreached(self):
+        """The moves that a diagram tied to their line contradicts, where no
+        reading of them reaches it (misread_squares' self.unreached): of the
+        moves since the last checkpoint, the last to leave or reach each
+        square on which the diagram differs is shown as "guessed" where the
+        line reads it as "ok", so that the reader is warned. A move the
+        reader gave stays as it is, and so do all once the line reaches the
+        diagram. Returns the pages whose marks changed."""
+        pages = set()
+        checked = set(self.checked.values())
+        for did, (shown, doubt) in getattr(self, "unreached", {}).items():
+            nid = self.after_node.get(did)
+            node = self.nodes.get(nid)
+            if node is None or not node["fen"]:
+                continue
+            differ = _unlike(shown, chess.Board(node["fen"]), doubt)
+            if not differ:
+                continue
+            for j in reversed(self.since_checkpoint(nid, checked)):
+                n = self.nodes[j]
+                if not n["uci"]:
+                    continue
+                m = chess.Move.from_uci(n["uci"])
+                touched = {m.from_square, m.to_square} & differ
+                differ -= touched
+                if not touched or n["status"] != "ok" or n.get("corrected"):
+                    continue
+                n["status"] = "guessed"
+                for mk in self.marks.get(n["page"], ()):
+                    if mk["node"] == j:
+                        mk["status"] = "guessed"
+                L = self.line_by_id.get(n["line"])
+                if L is not None and L.status == "ok":
+                    L.status = "guessed"
+                pages.add(n["page"])
+        return pages
 
     def misread_move(self, tok):
         """The text's own reading of a move that a diagram after it read
@@ -5707,6 +5824,7 @@ class _Builder:
                 self.after_node = out
             else:
                 self.checked = out
+        pages |= self.doubt_unreached()
         self.derived = sigs
         return {"lines": [L.id for L in todo], "removed": removed, "pages": sorted(pages),
                 "pending": sorted(pending)}

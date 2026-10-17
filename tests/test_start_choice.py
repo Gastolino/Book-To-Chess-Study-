@@ -323,6 +323,68 @@ def test_correction_before_a_misread_square_reads_the_text(tmp_path):
     assert third["status"] == "ok" and not third.get("reason")
 
 
+def _two_boards(b, moves):
+    _front(b)
+    b.page()
+    b.prose(3)
+    b.pictures("Diagram 7")
+    b.line(moves, bold=True)
+    b.prose(2)
+    b.pictures("Diagram 8")
+    b.prose(2)
+    b.line("3.Rd8+ Kh7", bold=True)
+    b.prose(3)
+
+
+def test_diagram_decides_a_lost_figurine(tmp_path):
+    """OCR loses a knight's figurine: "f4" reads as the pawn move, and as
+    Nf4 nearly as well. The board printed after the moves shows the knight
+    on f4: the move is 1.Nf4, a guess with the text's reading as its
+    alternative, and the board is a checkpoint."""
+    start = "6k1/5pp1/7p/8/8/8/4NPPP/3R2K1 w - - 0 1"
+    b = _Book()
+    b.doc.set_metadata({"producer": "Adobe Acrobat 9.0 Paper Capture Plug-in with ClearScan"})
+    _two_boards(b, "1.f4 Kh7 2.Rd7 Kg8")
+    book = _build(tmp_path, b, {"p3-1": start,
+                                "p3-2": _after(start, "Nf4", "Kh7", "Rd7", "Kg8")})
+    line = _line_with(book, "Rd7")
+    ids = _main_line(book, line)
+    assert _sans(book, line) == ["Nf4", "Kh7", "Rd7", "Kg8", "Rd8+", "Kh7"]
+    first = book["nodes"][ids[0]]
+    assert first["status"] == "guessed" and first["alternatives"] == ["f4"]
+    board = {d["id"]: d for p in book["pages"] for d in p["diagrams"]}["p3-2"]
+    assert board["checked"] and board["after_node"] == ids[3]
+
+
+def test_diagram_no_reading_reaches_warns_of_its_moves(tmp_path):
+    """The board printed after the moves shows 2.g4 where the text prints
+    2.h3, and no reading of the moves reaches it: 2.h3, the move that the
+    board contradicts, is no longer shown green (its mark neither), the
+    moves the board agrees with stay so. When the reader gives 2.g4, the
+    line reaches the board and every move is green again."""
+    from chessbook import live
+    start = "6k1/5pp1/7p/8/8/8/5PPP/3R2K1 w - - 0 1"
+    b = _Book()
+    _two_boards(b, "1.Rd7 Kh7 2.h3 Kg8")
+    pdf = b.save(tmp_path / "endings.pdf")
+    state = {}
+    book = build_book(pdf, output_dir=tmp_path / "out", books_dir=tmp_path / "books",
+                      diagram_fens={"p3-1": start,
+                                    "p3-2": _after(start, "Rd7", "Kh7", "g4", "Kg8")},
+                      state=state)
+    line = _line_with(book, "Rd8+")
+    ids = _main_line(book, line)
+    assert _sans(book, line) == ["Rd7", "Kh7", "h3", "Kg8", "Rd8+", "Kh7"]
+    assert [book["nodes"][n]["status"] for n in ids] == ["ok", "ok", "guessed", "ok", "ok", "ok"]
+    marks = {m["node"]: m["status"] for p in book["pages"] for m in p["marks"]}
+    assert marks[ids[2]] == "guessed" and line["status"] == "guessed"
+    live.apply(state, book, {"moves": {book["nodes"][ids[2]]["key"]: {"san": "g4"}}})
+    line = _line_with(book, "Rd8+")
+    ids = _main_line(book, line)
+    assert _sans(book, line) == ["Rd7", "Kh7", "g4", "Kg8", "Rd8+", "Kh7"]
+    assert all(book["nodes"][n]["status"] == "ok" for n in ids)
+
+
 def _mixed(b, parts, size=10):
     """One line of moves set in Times-Bold, but for the parts given another
     font: [(text, font name)]."""
