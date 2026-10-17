@@ -19,8 +19,8 @@ from chessbook.movetext import (  # noqa: E402
 )
 
 
-def kinds(text):
-    return [(t.kind, t.raw) for t in tokenize(text)]
+def kinds(text, **kw):
+    return [(t.kind, t.raw) for t in tokenize(text, **kw)]
 
 
 def numbers(text):
@@ -117,6 +117,27 @@ def test_number_glued_to_rook_glyph_starts_a_run():
     # a "k" within a word is no file
     assert kinds("the bk7 and")[1] == ("other", "bk7")
 
+
+def test_ocr_number_forms_start_a_run():
+    # OCR's text only (primer p271, p316, p194; gpa p125): a number glued to
+    # a figurine's junk whose square OCR misread ("34J!bl!" for 34.Rb1!), or
+    # with its 0 read as a letter ("3oJ:k5!" for 30.Rc5!), "1." read as "t."
+    # or "L.", and a letter for a number of a book without dots ("S es NdS
+    # 6" for 5 e5 Nd5 6) where the next number follows it
+    assert kinds("Kxg8 A classic example. 34J!bl! As a rule")[4:6] == [
+        ("number", "34"), ("move", "J!bl!")]
+    assert kinds("Kxg8 A classic example. 34J!bl! As a rule", exact=True)[4][0] == "other"
+    assert kinds("text 3oJ:k5! <it?gs 31.a4!")[1:3] == [("number", "3o"), ("move", "J:k5!")]
+    assert tokenize("text 3oJ:k5! <it?gs")[1].number == 30
+    assert kinds("Solution t.Yff2? l...i.xg2")[1:3] == [("number", "t."), ("move", "Yff2?")]
+    assert kinds("L.mf3 2.i.xg3!")[:2] == [("number", "L."), ("move", "mf3")]
+    toks = tokenize("will be slower. S es NdS 6 Bc4!", dotless=True)
+    assert [(t.kind, t.raw, t.number) for t in toks[3:]] == [
+        ("number", "S", 5), ("move", "es", 5), ("move", "NdS", 5), ("number", "6", 6),
+        ("move", "Bc4!", 6)]
+    # an initial, a word and prose numbers are left alone
+    assert [k for k, _ in kinds("L. Kubbel")] == ["other", "other"]
+    assert all(t.kind == "other" for t in tokenize("with 2 as 3 for", dotless=True))
 
 def test_k_in_a_square_may_also_be_an_h():
     # OCR reads an h as a k as well as a c joined to the glyph before it: in

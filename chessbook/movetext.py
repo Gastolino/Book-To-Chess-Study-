@@ -1151,6 +1151,12 @@ _GLUE_AFTER = set("12345678t+#!?)")
 _GLUED_NUM_RE = re.compile(r"([0-9][0-9lIOo]{0,2}|[lI][0-9lIOo]{0,2}|[sS])(?=[.…•·]+\S)")
 _DOTLESS_RE = re.compile(r"^(\d{1,3})(?=[^\d.…•·])(.+)$", re.S)
 _ONE_GLYPH_RE = re.compile(r"^(?:[1Il](?=J[^ ])|U(?=[:J][^ ]))")
+# OCR's forms of a move number in a text it read (not one set in type): "1."
+# read as "t.", "L." or "!." ("t.Yff2?" for 1.Qf2?), and a number glued to the
+# junk of a figurine with its dot lost and a 0 or 1 read as a letter ("3oJ:k5!"
+# for 30.Rc5!): the junk starts with a capital and a sign ("J!", "J:", "E:")
+_OCR_ONE_RE = re.compile(r"^[tL!]([.…•·]+)")
+_OCR_GLUED_RE = re.compile(r"^([1-9][0-9lIOo]{1,2})(?=[A-Z][^\w\s])(.+)$", re.S)
 # Words after which a number names a diagram, a page or an exercise.
 _REF_WORD_RE = re.compile(r"^(?:[DO][il1]a?gr[ae](?:m|rn|in)s?|Diag\.?|Positions?|Pos\.?|Nos?\.|"
                           r"[Pp]ages?|pp?\.|Fig(?:ure)?s?\.?|Exercises?|Problems?|Games?|"
@@ -1539,6 +1545,18 @@ def _scan_number(text, pieces, i, st: Optional[_TokState], dotless: bool = False
 MAX_DOTLESS = 200      # highest move number read without a dot
 
 
+def _successor(text, pieces, k, vals) -> Optional[int]:
+    """The value among vals of a move number printed without a dot when the
+    word at piece k (Black's reply) reads as a move and the next word is the
+    number after it ("S es NdS 6 Bc4!": S is 5), else None."""
+    if k + 1 >= len(pieces):
+        return None
+    w, n = text[pieces[k][0]:pieces[k][1]], text[pieces[k + 1][0]:pieces[k + 1][1]]
+    if not (_shape(w) or _square_word(w)) or not re.fullmatch(r"\d{1,3}", n):
+        return None
+    return int(n) - 1 if int(n) - 1 in vals else None
+
+
 def _dotless_number(text, pieces, digit_spans, j, st, rest=None):
     """A move number printed without dots ("12 Nf3", the digits split "1 1 Nb5"):
     (token, next index, move span) when the word after it looks like a move.
@@ -1557,7 +1575,11 @@ def _dotless_number(text, pieces, digit_spans, j, st, rest=None):
         alone = ((digits in ("S", "s") or (len(digits) >= 2 and digits[0].isdigit()))
                  and _shape(text[a:b]) == "strong")
         if not alone and (exp[0] is None or (exp[0] + 1 if exp[1] else exp[0]) not in vals):
-            return None
+            # or where the number after the next two moves follows it
+            nxt = _successor(text, pieces, j + 1 if rest is None else j, vals)
+            if nxt is None:
+                return None
+            vals = [nxt]
     a, b = rest or pieces[j]
     w2 = text[a:b]
     if (_NUM_DOTS_RE.match(w2) or _BARE_NUM_RE.match(w2) or _RESULT_RE.match(w2)
@@ -1693,7 +1715,9 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
             other(s, e)                          # "1. A pawn ...", "4. White's": a numbered list
             return j
         if _shape(w) or (_parse_raw(w).parses and not w[:1].isupper()
-                         and (next_is_boundary(j) or next_is_strong(j))):
+                         and (next_is_boundary(j) or next_is_strong(j)
+                              or (toks[-1].dotless
+                                  and _successor(text, pieces, j, {toks[-1].number})))):
             move(s, e)
             return j
         if j < len(pieces) and len(w) <= 5 and not any(ch.isdigit() for ch in w) \
@@ -1789,7 +1813,7 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
         # out of the run's numbering, a number without dots names no side: it
         # stands before Black's reply too in books that set moves as a table
         tok.side_known = False
-        if shp == "strong":
+        if shp == "strong" or _successor(text, pieces, j, vals) is not None:
             return True
         if shp != "weak":
             # a word that is also a square ("es" for e5) only with a move's
@@ -1864,6 +1888,20 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
             st.in_seq, st.prev = True, "number"
             i = after_number(rest[0], rest[1], j)
             continue
+        mo = None if exact or (st.in_seq and st.prev == "move") else _OCR_ONE_RE.match(w)
+        if mo:
+            de = s + mo.end()
+            nj = i + 1 if de < e else i + 2
+            nxt = (de, e) if de < e else (pieces[i + 1] if i + 1 < len(pieces) else None)
+            w2 = text[nxt[0]:nxt[1]] if nxt is not None else ""
+            if _shape(w2) and not _NUM_DOTS_RE.match(w2) and not _prose_word(w2) \
+                    and not (re.match(r"[A-Z][a-z]{2}", w2) and _shape(w2) != "strong"):
+                # "1." that OCR read as "t.", "L." or "!." ("t.Yff2?", "L. mf3"),
+                # not an initial ("L. Kubbel")
+                many = _dot_count(text, [(s + 1, de)]) >= 2
+                number(Token("number", text[s:de], s, de, 1, many, not many))
+                i = after_number(nxt[0], nxt[1], nj)
+                continue
         mj = _ONE_GLYPH_RE.match(w)
         if mj and not (st.in_seq and st.prev == "move") and _shape(w[1:]) == "strong":
             # "1." printed with its dot lost before a glyph that starts with
@@ -1883,13 +1921,17 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
                 number(Token("number", w, s, e, exp_n, False, True))
                 i = after_number(pieces[i + 1][0], pieces[i + 1][1], i + 2)
                 continue
-        mg = _DOTLESS_RE.match(w)
+        mg = (None if exact else _OCR_GLUED_RE.match(w)) or _DOTLESS_RE.match(w)
         if mg:                                   # dotless number glued to a move: "4JWxd8t"
-            val, rest_w = int(mg.group(1)), mg.group(2)
+            val, rest_w = _read_number(mg.group(1))[0] if mg.group(1)[0] != "0" else 0, mg.group(2)
             exp_n, exp_b = st.expect()
             in_ctx = st.in_seq and st.prev == "move" and exp_n == val and _shape(rest_w)
-            alone = (len(mg.group(1)) >= 2 and _shape(rest_w) == "strong"
-                     and not rest_w[0].islower() and not rest_w[0].isdigit())
+            alone = (len(mg.group(1)) >= 2 and not rest_w[0].islower() and not rest_w[0].isdigit()
+                     and (_shape(rest_w) == "strong"
+                          # in OCR's text, also a square OCR misread after a
+                          # figurine's junk ("34J!bl!" for 34.Rb1!)
+                          or (not exact and _shape(rest_w) == "weak"
+                              and bool(re.match(r"[A-Z][^\w\s]", rest_w)))))
             if dotless and not alone and _shape(rest_w) == "strong" \
                     and not rest_w[0].isdigit() and val <= MAX_DOTLESS \
                     and not (st.in_seq and st.prev == "move" and exp_n is not None):
