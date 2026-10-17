@@ -69,6 +69,7 @@ def test_the_reader_threads_the_line_in_the_app(site, tmp_path):
     assert {"turning reading on under the board turns the pencil on",
             "Cancel closes the sheet and leaves no joining",
             "Close ends the join",
+            "a move that is not legal here says so in the sheet, which still asks for the move",
             "the sheet said, line by line: reading on, then how far it read and that the line reads to its end",
             "the line holds the whole game, with no further tap",
             "Undo takes back the reader's move and the program's join after it, and asks for the move again",

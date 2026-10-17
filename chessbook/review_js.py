@@ -2686,6 +2686,15 @@ function askPromotion(src, moves){
     if (m) boardMove(src, m);
   });
 }
+// a move tried on the board that is not legal there: one line says so, in the thread's sheet or on
+// the page, and names the first move before it that the program reads with doubt
+function notLegal(src){
+  let first = null;
+  for (let id = src.at; id != null && D.nodes[id]; id = D.nodes[id].parent) if (doubted(id)) first = id;
+  const t = "Not legal here: an earlier move may be misread." +
+    (first ? " The program is not sure of " + moveText(first, true) + "." : "");
+  if (src.thread) { TH.said = t; threadShow(); } else say(t);
+}
 function playFrom(src, from, to){
   const moves = targetsOf(src.fen, from).filter(m => m[1].slice(2, 4) === to);
   BM.pick = null;
@@ -2753,15 +2762,16 @@ function initBoardMoves(){
       }
       const sq = squareAt(d.svg, e.clientX, e.clientY);
       if (d.own && dragged) {
-        // a drop on a square the piece can reach plays the move; any other drop puts it back
+        // a drop on a square the piece can reach plays the move; any other drop puts it back, and a
+        // drop on another square of the board says that the move is not legal
         if (sq && sq !== d.sq && targetsOf(d.src.fen, d.sq).some(m => m[1].slice(2, 4) === sq)) playFrom(d.src, d.sq, sq);
-        else { if (sq !== d.sq) BM.pick = null; paintBoards(); }
+        else { if (sq !== d.sq) BM.pick = null; paintBoards(); if (sq && sq !== d.sq) notLegal(d.src); }
       } else if (d.own) {
         if (d.was) BM.pick = null;
         paintBoards();
       } else if (sq === d.sq && targetsOf(d.src.fen, BM.pick.sq).some(m => m[1].slice(2, 4) === sq)) {
         playFrom(d.src, BM.pick.sq, sq);
-      } else { BM.pick = null; paintBoards(); }
+      } else { const tried = sq === d.sq; BM.pick = null; paintBoards(); if (tried) notLegal(d.src); }
     };
     box.addEventListener("pointerup", (e) => up(e, false));
     box.addEventListener("pointercancel", (e) => up(e, true));
