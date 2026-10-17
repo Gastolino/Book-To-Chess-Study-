@@ -500,10 +500,13 @@ def test_gpa_lines_start_from_the_right_diagram(gpa):
     # "(Diagram N)" boards become checkpoints of the lines that reach them
     assert sum(d["checked"] for p in gpa["pages"] for d in p["diagrams"]) >= 100
     # Spassky - Kasparov: 7 d3 goes on from Diagram 21, not from Diagram 22
+    # (the line may begin with the game's first moves on page 159)
     line = next(x for x in gpa["lines"] if any(
         n["page"] == 160 and n["san"] == "d3" for n in (gpa["nodes"][i]
                                                          for i in _main_line(gpa, x))))
-    assert [gpa["nodes"][i]["san"] for i in _main_line(gpa, line)][:8] == [
+    sans = [(gpa["nodes"][i]["page"], gpa["nodes"][i]["san"]) for i in _main_line(gpa, line)]
+    at = sans.index((160, "d3"))
+    assert [s for _, s in sans[at:at + 8]] == [
         "d3", "g6", "Nxd4", "cxd4", "Ne2", "Bg7", "Bd2", "O-O"]
 
 
