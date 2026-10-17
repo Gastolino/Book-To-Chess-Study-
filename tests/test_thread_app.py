@@ -69,6 +69,7 @@ def test_the_reader_threads_the_line_in_the_app(site, tmp_path):
     assert {"turning reading on under the board turns the pencil on",
             "Cancel closes the sheet and leaves no joining",
             "Close ends the join",
+            "a move that is not legal here says so in the sheet, which still asks for the move",
             "the sheet said, line by line: reading on, then how far it read and that the line reads to its end",
             "the line holds the whole game, with no further tap",
             "Undo takes back the reader's move and the program's join after it, and asks for the move again",
@@ -93,6 +94,7 @@ def test_reading_on_stops_for_the_reader_in_the_app(site, tmp_path):
     res = _run("readon_e2e.js", site, book, ROOT / "output" / "screens" / "thread")
     names = {c["name"] for c in res["checks"]}
     assert {"a reading on that fails says why in one line, keeps the correction as made, and goes on without reading on",
+            "Undo takes the move back, with the move made after it, and the move list drops them",
             "a reading on queued while the book is read keeps the correction, and the sheet waits for the book",
             "once the book holds the move, the program reads on from it",
             "Undo after reading on brings the page and the move list back to 4...Qb6",

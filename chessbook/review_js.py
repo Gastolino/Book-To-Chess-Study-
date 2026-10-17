@@ -1473,11 +1473,15 @@ function threadFen(){
 }
 // the last move the board shows, in words: "5…f5", or the anchor's
 function lastText(){
-  if (!TH.before.length) return TH.anchor != null && D.nodes[TH.anchor] && D.nodes[TH.anchor].parent != null ?
-    moveText(TH.anchor, true) : "the start";
-  let fen = nodeFen(TH.anchor), t = "";
+  let fen = TH.anchor != null ? nodeFen(TH.anchor) : null, t = "";
+  // (a patch may take the anchor away, as Undo does: then the move Undo goes back to, or the start)
+  if (!TH.before.length || !fen) {
+    const u = TH.undo && TH.undo.state, id = D.nodes[TH.anchor] ? TH.anchor : u && D.nodes[u.anchor] ? u.anchor : null;
+    return id != null && D.nodes[id].parent != null ? moveText(id, true) : "the start";
+  }
   for (const s of TH.before) {
     const m = sanIn(fen, s);
+    if (!m) break;
     t = moveWords(fen, s);
     fen = CJ.after(fen, m[1]);
   }
@@ -2276,6 +2280,8 @@ function applyPatch(p){
   if (edit && edit.node && (ren[edit.node] || !D.nodes[edit.node])) edit.node = ren[edit.node] || null;
   if (S.node) S.line = D.nodes[S.node].line;
   else if (S.line && !D.lines[S.line]) S.line = null;
+  // (the thread finds its moves again before the page names them)
+  threadRebase();
   showPage(S.page);
   renderTree(); renderBoard(); renderInfo(); layoutPanel(false); highlightMark(false);
   if (RV.on) { const keep = RV.cur; renderReview(); RV.cur = keep; }
@@ -2304,7 +2310,6 @@ function applyPatch(p){
     else { closeFix(); said = "Placed in the line."; }
   }
   // the thread goes on once the book holds the move made on the board
-  threadRebase();
   const thread = !!(edit && edit.kind === "thread" && TH.on);
   if (thread && p.corrections) threadPatched(p);
   // the move made on the board: it is chosen once the book holds it
@@ -2707,6 +2712,15 @@ function askPromotion(src, moves){
     if (m) boardMove(src, m);
   });
 }
+// a move tried on the board that is not legal there: one line says so, in the thread's sheet or on
+// the page, and names the first move before it that the program reads with doubt
+function notLegal(src){
+  let first = null;
+  for (let id = src.at; id != null && D.nodes[id]; id = D.nodes[id].parent) if (doubted(id)) first = id;
+  const t = "Not legal here: an earlier move may be misread." +
+    (first ? " The program is not sure of " + moveText(first, true) + "." : "");
+  if (src.thread) { TH.said = t; threadShow(); } else say(t);
+}
 function playFrom(src, from, to){
   const moves = targetsOf(src.fen, from).filter(m => m[1].slice(2, 4) === to);
   BM.pick = null;
@@ -2774,15 +2788,16 @@ function initBoardMoves(){
       }
       const sq = squareAt(d.svg, e.clientX, e.clientY);
       if (d.own && dragged) {
-        // a drop on a square the piece can reach plays the move; any other drop puts it back
+        // a drop on a square the piece can reach plays the move; any other drop puts it back, and a
+        // drop on another square of the board says that the move is not legal
         if (sq && sq !== d.sq && targetsOf(d.src.fen, d.sq).some(m => m[1].slice(2, 4) === sq)) playFrom(d.src, d.sq, sq);
-        else { if (sq !== d.sq) BM.pick = null; paintBoards(); }
+        else { if (sq !== d.sq) BM.pick = null; paintBoards(); if (sq && sq !== d.sq) notLegal(d.src); }
       } else if (d.own) {
         if (d.was) BM.pick = null;
         paintBoards();
       } else if (sq === d.sq && targetsOf(d.src.fen, BM.pick.sq).some(m => m[1].slice(2, 4) === sq)) {
         playFrom(d.src, BM.pick.sq, sq);
-      } else { BM.pick = null; paintBoards(); }
+      } else { const tried = sq === d.sq; BM.pick = null; paintBoards(); if (tried) notLegal(d.src); }
     };
     box.addEventListener("pointerup", (e) => up(e, false));
     box.addEventListener("pointercancel", (e) => up(e, true));

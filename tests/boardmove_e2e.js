@@ -8,7 +8,8 @@
 // the reader adds 2...d6 after 2.Nf3, makes it 2...d6 3.d4, and removes it).
 // On a desktop, with the mouse: a drag of the book's move steps to it; a tap on
 // a piece marks it and its squares, a second tap lets it go; a drop on a square
-// the piece cannot reach puts it back; a move the line does not hold opens the
+// the piece cannot reach puts it back, and says that an earlier move may be misread (naming the
+// first move before it that the program reads with doubt); a move the line does not hold opens the
 // chooser, which outside reading mode only adds a variation and in reading
 // mode also corrects (correct the main line, add a variation, cancel), whose Cancel brings
 // the board back; "Add a new variation" stores it ("added"), and the patch
@@ -134,6 +135,18 @@ function check(name, cond, detail) {
     check("the piece stands on its square again", await page.evaluate(() =>
       !!document.querySelector("#board use[data-at='d7']") && !document.querySelector("#board use.lifted") &&
       !document.querySelector("#board .ghost")));
+    check("an illegal drop says that an earlier move may be misread",
+      s.msg === "Not legal here: an earlier move may be misread.", s.msg);
+    // (a move before it that the program reads with doubt is named; a tap on a square the piece cannot
+    // reach says so too)
+    const was = await page.evaluate((id) => { const n = READER.nodes[READER.nodes[id].parent], w = n.status;
+      n.status = "guessed"; return w; }, I.nf3);
+    await click(page, B, "d7");
+    await click(page, B, "d4");
+    s = await state(page);
+    await page.evaluate(([id, w]) => { READER.nodes[READER.nodes[id].parent].status = w; }, [I.nf3, was]);
+    check("an illegal tap says so, and names the earlier move the program is not sure of",
+      s.id === I.nf3 && !s.open && s.msg === "Not legal here: an earlier move may be misread. The program is not sure of 1…e5.", s.msg);
 
     // another move outside reading mode: the chooser adds a variation only, and says where the
     // corrections of the book's line are
