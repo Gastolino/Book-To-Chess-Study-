@@ -699,7 +699,10 @@ def _capture_opts(rest: str):
     while run < len(rest) and rest[len(rest) - 1 - run] in CAPTURE_CHARS:
         run += 1
     opts = [(True, rest[:len(rest) - k]) for k in range(1, run + 1)]
-    opts.append((False, rest))
+    if not (run < len(rest) and rest[-1] in "xX×"):
+        # an "x" after a glyph's junk is the capture mark, not part of the
+        # glyph ("E:xfl t" is Rxf1+, never a quiet rook move)
+        opts.append((False, rest))
     if rest and rest[-1] in LONG_SEP:
         opts.append(("-", rest[:-1]))
     return opts

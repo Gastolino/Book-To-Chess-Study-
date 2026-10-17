@@ -184,6 +184,15 @@ def test_check_and_annotation_parsing():
     assert parse_move_text("0-0-0t") == [{"castle": "Q", "check": 1, "annotation": ""}]
 
 
+def test_capture_mark_after_glyph_junk_stays_a_capture():
+    # an "x" after a figurine's junk ("E:xfl t", primer p255) is the printed
+    # capture, never part of the glyph: a quiet move read from it does not
+    # take the capture mark as printed
+    assert all(q["capture"] is True for q in parse_move_text("E:xfl t"))
+    b = chess.Board("5r1k/6pp/8/8/8/8/6PP/6K1 b - - 0 24")
+    (d,) = decode(b, find_sequences("24...E:xflt")[0].tokens)
+    assert d.san == "Rf1+" and d.capture_mark is True
+
 def test_bang_read_as_1_after_a_square():
     # "c41?" is c4!? and "d3l" d3! with the "!" read as 1 or l, not a move to
     # the first rank ("Kh1", "Ne1") with "c4" read as junk
