@@ -586,6 +586,21 @@ def test_square_split_by_an_ocr_space_is_one_move(tmp_path):
     assert all(book["nodes"][i]["status"] == "ok" for i in ids)
 
 
+def test_two_squares_glued_by_ocr_are_two_moves(tmp_path):
+    """OCR loses the space between two pawn moves ("1 e4 e6" as "1.e4e6"):
+    the word is two moves, not one in long notation (nothing stands on e4 at
+    move 1), and the game is read from its first move."""
+    game = ["1.e4e6 2.d4 d5 3.Nc3 Bb4", "4.e5 c5 5.a3 Bxc3+", "6.bxc3 Ne7 7.Qg4 Qc7",
+            "8.Qxg7"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+",
+                               "bxc3", "Ne7", "Qg4", "Qc7", "Qxg7"]
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
 CHAPTER_GAMES = [GAME_EN,
                  ["1.d4 d5 2.c4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 c6",
                   "8.Bd3"],

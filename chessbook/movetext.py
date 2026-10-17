@@ -204,7 +204,10 @@ class Token:
     where it is not. shape holds (piece letter, confidence) when the picture of the
     token's figurine was read (figshapes.py): a reading of that piece costs
     nothing for the symbol, a reading of another piece about as much as a
-    symbol that cannot be read.
+    symbol that cannot be read. glued marks a square that a text OCR read
+    prints against the move before it ("1.e4e6"): the two are two moves whose
+    space was lost, or one move in long notation ("e2e4"), as decode() finds
+    the board allows.
     """
     kind: str
     raw: str
@@ -218,6 +221,7 @@ class Token:
     forced: Optional[str] = None    # the SAN a reader's correction gives this move token
     prefer: Optional[str] = None    # the SAN the program's reading gives it, where legal
     shape: Optional[tuple] = None   # (piece letter, confidence) read from the figurine's picture
+    glued: bool = False             # a square printed against the move before it ("e4e6")
 
 
 @dataclass
@@ -250,7 +254,10 @@ class Decoded:
     were legal and the moves that follow chose one), 'ambiguous' (several
     readings remain equally good; the best is still filled in) or 'failed'
     (no legal reading; san, uci and fen are None, and alternatives holds the
-    move the search assumed in order to carry on, if any).
+    move the search assumed in order to carry on, if any) or 'joined' (a
+    square glued to the move before it, Token.glued, that the two read as one
+    move in long notation, "e2e4": the move is the token before's, san and uci
+    are None, and fen is the position after it).
     fen is the position after the move. cost is the reading's cost (0 for a
     clean token). glyph is the text read as the piece glyph, annotation the
     "!", "?" etc. printed after the move, square_read the characters read as
@@ -1276,21 +1283,25 @@ _BARE_SQUARE_RE = re.compile(r"^[a-h][1-8]$")
 
 
 @lru_cache(maxsize=20000)
-def _glued_moves(w: str) -> Optional[int]:
+def _glued_moves(w: str, exact: bool = False) -> Optional[int]:
     """Where a second move starts in a word that holds two moves printed without
     a space ("lDc4lDg6", "Nf3Nc6", "qa4ltlf6"), if it does. Both parts must
-    look clearly like moves; a square after a square ("e2e4", "Ng1f3") is one
-    move in long notation."""
-    if len(w) < 5:
+    look clearly like moves. In a text set in type (exact), a square after a
+    square ("e2e4", "Ng1f3") is one move in long notation; in a text OCR read
+    it may be two moves whose space was lost ("1.e4e6"), and the word is cut,
+    for decode() to read either way (Token.glued)."""
+    if len(w) < (5 if exact else 4):
         return None
-    for m in _SQUARE_END_RE.finditer(w, 1):
+    for m in _SQUARE_END_RE.finditer(w, 1 if exact else 0):
         p = m.end()
         left, right = w[:p], w[p:]
-        if len(right) < 3 or right[0] in "-–—x:×=+#!?.,;()" or right[0].isdigit():
+        square = bool(_BARE_SQUARE_RE.match(_strip_suffix(right)[0]))
+        if len(right) < (2 if square and not exact else 3) \
+                or right[0] in "-–—x:×=+#!?.,;()" or right[0].isdigit():
             continue
         if _shape(left) != "strong" or _shape(right) != "strong":
             continue
-        if _BARE_SQUARE_RE.match(_strip_suffix(right)[0]):
+        if square and exact:
             continue                # long notation without its dash: "e2e4", "Qd1h5+"
         return p
     return None
@@ -1565,16 +1576,16 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
             st.in_seq = False
             st.prev = "other"
 
-    def move(s, e):
-        cut = _glued_moves(text[s:e])
+    def move(s, e, glued=False):
+        cut = _glued_moves(text[s:e], exact)
         if cut:                                  # two moves printed without a space
             move(s, s + cut)
-            move(s + cut, e)
+            move(s + cut, e, bool(_BARE_SQUARE_RE.match(_strip_suffix(text[s + cut:e])[0])))
             return
         n, b = st.expect()
         if n is None:                            # after a bare "...": sides alternate
             b = st.last_black == (st.moves_since % 2 == 0)
-        toks.append(Token("move", text[s:e], s, e, n, bool(b)))
+        toks.append(Token("move", text[s:e], s, e, n, bool(b), glued=glued))
         st.moves_since += 1
         st.in_seq = True
         st.prev = "move"
@@ -2240,7 +2251,9 @@ WILD_MARGIN = 2.5     # a failed-token expansion must come this close to the bes
 WILD_HYPS = 3         # only the best few hypotheses expand a failed token
 
 # A path entry: (token index, kind, move, inserted move, cost, glyph, parse);
-# kind is "move", "wild" (a failed token, any move played) or "skip" (no ply).
+# kind is "move", "wild" (a failed token, any move played), "skip" (no ply),
+# "long" (the token and the square glued to it read as one move in long
+# notation, "e2e4") or "joined" (that square, which takes no ply of its own).
 
 
 def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
@@ -2259,23 +2272,36 @@ def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
         children: dict = {}
         failing = []
         best_total = math.inf
+        readings = [("move", tok, parsed)]
+        if k + 1 < len(mtoks) and getattr(mtoks[k + 1], "glued", False):
+            # a square glued to this move: two moves, or one in long notation
+            long_tok = _long_token(tok, mtoks[k + 1])
+            readings.append(("long", long_tok, _parse_raw(long_tok.raw)))
 
         def expand(h, b, off, extra, ins):
             nonlocal best_total
             best_local = math.inf
-            for m, c, glyph, pc, b2, prs in _token_candidates(scorer, b, tok, parsed, h.gmap):
-                total = h.cost + extra + c
-                best_local = min(best_local, extra + c)
-                best_total = min(best_total, total)
-                key = (_board_key(b2), off)
-                old = children.get(key)
-                if old is None or total < old.cost:
-                    gm = _with_glyph(h.gmap, glyph, b.piece_type_at(m.from_square), scorer)
-                    children[key] = _Hyp(total, b2, (h.node, (k, "move", m, ins, c, glyph, prs)),
-                                         off, 0, gm)
+            for kind, t, p in readings:
+                for m, c, glyph, pc, b2, prs in _token_candidates(scorer, b, t, p, h.gmap):
+                    total = h.cost + extra + c
+                    best_local = min(best_local, extra + c)
+                    best_total = min(best_total, total)
+                    key = (_board_key(b2), off, kind)
+                    old = children.get(key)
+                    if old is None or total < old.cost:
+                        gm = _with_glyph(h.gmap, glyph, b.piece_type_at(m.from_square), scorer)
+                        children[key] = _Hyp(total, b2, (h.node, (k, kind, m, ins, c, glyph, prs)),
+                                             off, 0, gm)
             return best_local
 
         for rank, h in enumerate(hyps):
+            if h.node is not None and h.node[1][1] == "long":
+                # the square of a move read in long notation: no ply of its own
+                best_total = min(best_total, h.cost)
+                children[(_board_key(h.board), h.offset ^ 1, "joined")] = _Hyp(
+                    h.cost, h.board, (h.node, (k, "joined", None, None, 0.0, None, None)),
+                    h.offset ^ 1, 0, h.gmap)
+                continue
             want = chess.BLACK if labels[k] ^ bool(h.offset) else chess.WHITE
             if h.board.turn == want:
                 best_local = expand(h, h.board, h.offset, 0.0, None)
@@ -2370,9 +2396,14 @@ def _prune(kids: list, beam: int, old_keep: int) -> list:
 def _has_failure(node) -> bool:
     while node is not None:
         node, entry = node
-        if entry[1] != "move":
+        if entry[1] not in ("move", "long", "joined"):
             return True
     return False
+
+
+def _long_token(tok: Token, nxt: Token) -> Token:
+    """tok with the square glued to it, as one move in long notation ("e2e4")."""
+    return replace(tok, raw=tok.raw + nxt.raw, end=nxt.end, glued=False)
 
 
 def _better(a, a_died, b, b_died) -> bool:
@@ -2475,6 +2506,15 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
             out.append(failed(tok, parsed))
             continue
         _, kind, m, ins, c, glyph, prs = entries[idx]
+        if kind == "joined":
+            offset ^= 1
+            out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, None, None,
+                               b.fen(), "joined"))
+            continue
+        step = 1                                 # the next token the moves after it start at
+        if kind == "long":
+            kind, step = "move", 2
+            parsed = _parse_raw(_long_token(tok, mtoks[idx + 1]).raw)
         missing = None
         if ins is not None:
             missing = b.san(ins)
@@ -2521,12 +2561,12 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
         status, alts = "ok", []
         if others or mine_c > lo + FIT_MARGIN:
             def score(mv, cc, gg, n_ahead):
-                toks_ = mtoks[idx + 1: idx + 1 + n_ahead]
+                toks_ = mtoks[idx + step: idx + step + n_ahead]
                 b2 = b.copy(stack=False)
                 b2.push(mv)
                 gm = _with_glyph(gmap, gg, b.piece_type_at(mv.from_square), scorer)
-                return cc + _future_cost(b2, toks_, labels[idx + 1: idx + 1 + n_ahead],
-                                         scorer, offset, gm)
+                return cc + _future_cost(b2, toks_, labels[idx + step: idx + step + n_ahead],
+                                         scorer, offset ^ (step - 1), gm)
 
             mine = score(m, score_c, glyph, lookahead)
             scored = sorted(((score(mm, cc, gg, lookahead), mm, cc, gg) for mm, cc, gg in others),

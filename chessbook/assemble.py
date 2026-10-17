@@ -1128,7 +1128,7 @@ class _Decoder:
         from it, not added to it, for the many trial readings of read_on)."""
         if self.fixed:
             tokens = [self.named(t) for t in tokens]
-        key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced, t.prefer, t.shape)
+        key = (fen, tuple((t.kind, t.raw, t.number, t.black, t.forced, t.prefer, t.shape, t.glued)
                           for t in tokens))
         hit = self.memo.get(key)
         if hit is None and not keep:
@@ -3262,6 +3262,10 @@ class _Builder:
         (reused is True). The move number and side come from the position the
         move is played in, so that the labels always match the board."""
         out = []
+        if d.status == "joined":
+            # the square of a move in long notation ("e2e4"): the move's box
+            self.mark(self.st, tok, parent, self.nodes[parent]["status"], L.id)
+            return [parent], True
         board = chess.Board(self.nodes[parent]["fen"])
         number, black = board.fullmove_number, board.turn == chess.BLACK
         if d.san and d.fen:
@@ -3894,7 +3898,9 @@ class _Builder:
                 continue
             d = decs[di]
             di += 1
-            if d.san:
+            if d.status == "joined":
+                L.replace.append((t.start, t.end, ""))
+            elif d.san:
                 lab = ""
                 if t.number is not None and (first or not t.black):
                     lab = f"{t.number}..." if t.black else f"{t.number}."

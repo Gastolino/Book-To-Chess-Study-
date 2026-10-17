@@ -147,8 +147,16 @@ def test_check_sign_printed_apart_from_its_move():
 def test_two_moves_glued_after_a_one_character_glyph():
     assert moves("4.qa4ltlf6 5.0-0") == ["qa4", "ltlf6", "0-0"]
     assert moves("1.e4 e5 2.Nf3Nc6") == ["e4", "e5", "Nf3", "Nc6"]
-    # a square after a square is one move in long notation
-    assert moves("1.e2e4 e7e5 2.Ng1f3 Qd8h4+") == ["e2e4", "e7e5", "Ng1f3", "Qd8h4+"]
+    # in a text set in type, a square after a square is one move in long notation
+    exact = [t.raw for t in tokenize("1.e2e4 e7e5 2.Ng1f3 Qd8h4+", exact=True) if t.kind == "move"]
+    assert exact == ["e2e4", "e7e5", "Ng1f3", "Qd8h4+"]
+    # in a text OCR read, it may be two moves whose space was lost: the
+    # decoder reads it either way, as the board allows
+    assert moves("1.e4e6 2.d4") == ["e4", "e6", "d4"]
+    assert sans("1.e4e6 2.d4") == ["e4", "e6", "d4"]
+    toks = tokenize("1.e2e4 e7e5 2.Ng1f3 Nb8c6")
+    assert [d.san for d in decode(chess.Board(), toks)] == ["e4", None, "e5", None,
+                                                            "Nf3", None, "Nc6", None]
 
 
 def test_glyph_dot_after_number():
