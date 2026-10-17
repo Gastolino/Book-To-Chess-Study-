@@ -92,7 +92,7 @@ FIGURINES = {"♔": "K", "♕": "Q", "♖": "R", "♗": "B", "♘": "N", "♙": 
 #: particular book is learnt from that book.
 COMMON_GLYPH_JUNK: dict[str, list[str]] = {
     "N": ["\x18", "tLl", "ti)", "lt)", "tt:l", "ttl", "tLJ", "ttJ", "lLl", "lbl", "lb",
-          "<:l", "tl)", "t!i)", "c!L!", "ltl", "tll", "lt:\\"],
+          "<:l", "tl)", "t!i)", "c!L!", "ltl", "tll", "lt:\\", "tb"],
     "Q": ["\x1b", "YlY", "'i!Y", "'ilY", "Wf", "1W", "V", "Y«", "Vl", "'!W", "VN", "'lW",
           "Wff", "YB", "1Mf", "'Wf"],
     "K": ["\x14", "®", "lt>", "<.!.>", "\\t>", "Wi>", "'it>", "<i!?", "<i!>", "ci>", "i>",
@@ -128,6 +128,15 @@ RANK_READ: dict[str, dict[int, float]] = {
     "B": {7: 0.3, 2: 0.9}, "S": {7: 0.4, 4: 0.5}, "s": {7: 0.4, 4: 0.6},
     "b": {5: 0.5}, "G": {5: 0.5}, "Z": {1: 0.6}, "z": {1: 0.7}, "T": {6: 0.7},
     "A": {3: 0.9}, "?": {6: 1.0},
+}
+# ClearScan's own signs for a whole square, printed after figurine junk: f3
+# as "o", "O" or "fJ" (the 3 a "J"), f1 as "n", and a square of the first
+# rank as its file and a "t" ("lbo", "ttJO", "tbfJ" for Nf3, "tbn" for Nf1,
+# ":tfet" for Rfe1). They cost more than the readings above, and a text set
+# in type (GlyphModel.exact) has none of them (_square_form).
+SQUARE_FORMS: dict[str, dict[int, float]] = {
+    "o": {chess.F3: 0.6}, "O": {chess.F3: 0.6}, "fJ": {chess.F3: 0.6}, "n": {chess.F1: 0.9},
+    **{f + "t": {chess.square(k, 0): 0.6} for k, f in enumerate("abcdefgh")},
 }
 CAPTURE_CHARS = set("xX:×*")
 LONG_SEP = set("-–—")
@@ -625,6 +634,8 @@ class _Parse:
     fch: Optional[str] = None  # the character read as the destination file (None: absent)
     rch: Optional[str] = None  # the character read as the destination rank (None: absent)
     bang: bool = False         # the token's last 1, l or I read as "!" (_BANG_RE)
+    whole: Optional[str] = None  # a sign for the whole square (SQUARE_FORMS), dest its square
+    nocheck: bool = False      # the final "t" read as that sign's rank 1, not as a check sign
 
 
 @dataclass
@@ -758,11 +769,35 @@ def _enumerate_parses(core: str) -> list:
                             continue
                         out.append(_Parse(_strip_spaces(prefix), dfile, drank, cap, dest, promo,
                                           fch, rch))
+    for form, dest in SQUARE_FORMS.items():
+        if _square_form(core, form):
+            for cap, rest in _capture_opts(core[:-len(form)].rstrip(NOISE_CHARS)):
+                for dfile, drank, prefix in _disamb_opts(rest):
+                    out.append(_Parse(_strip_spaces(prefix), dfile, drank, cap, dest, None,
+                                      whole=form))
     if _LONG_CORE_RE.search(core):
         # long notation ("Ng1-f3", "e2-e4", "d2xd3"): the square the piece leaves is
         # printed, so only readings that take it as that square count
         out = [q for q in out if q.dfile is not None and q.drank is not None] or out
     return out
+
+
+_LOWER_JUNK = {j for js in COMMON_GLYPH_JUNK.values() for j in js
+               if len(j) > 1 and j.isalpha() and j.islower()}
+
+
+def _square_form(core: str, form: str) -> bool:
+    """True when core ends in the ClearScan sign form for a square
+    (SQUARE_FORMS) after figurine junk: text that is no word in small
+    letters ("lb", "ttJ", ":tf"; "ex" before an "O"), so that "two", "in",
+    "at" and "OPEN" stay words."""
+    if form not in SQUARE_FORMS or not core.endswith(form):
+        return False
+    pre = core[:-len(form)].rstrip(NOISE_CHARS)
+    if not pre or (pre.isalpha() and pre.isupper()):
+        return False
+    return (form == "O" or not (pre.isalpha() and pre.islower())
+            or pre.rstrip("x") in _LOWER_JUNK)
 
 
 _LONG_CORE_RE = re.compile(r"[a-h£][1-8lI]\s?[-–—x:×]\s?[a-h£][1-8lIBS]")
@@ -788,6 +823,9 @@ def _parse_raw(raw: str) -> _Parsed:
         # the final 't' was not a check sign after all
         parses = _enumerate_parses(core + "t")
         check = 0
+    if not castle and check and re.search(r"[a-h]t[!?]*$", raw.strip()):
+        # ClearScan's rank 1 ("Rfe1" printed ":tfet"), right after the file
+        parses += [replace(q, nocheck=True) for q in _enumerate_parses(core + "t") if q.whole]
     return _Parsed(raw, castle, check, ann, parses)
 
 
@@ -929,6 +967,12 @@ class _Scorer:
         mask = 0
         g = self.glyphs
         for p in parsed.parses:
+            if p.whole:
+                if not g.exact:
+                    for sq, a in p.dest.items():
+                        by_dest[sq].append((p, a))
+                        mask |= chess.BB_SQUARES[sq]
+                continue
             if p.fch in self.letters:
                 continue        # the book's piece letter ("C3" in French) is no file
             fc = g.file_costs(p.fch, p.rch is None)
@@ -1038,7 +1082,8 @@ class _Scorer:
                 if best <= limit:
                     b2 = board.copy(stack=False)
                     b2.push(m)
-                    best += self._check_cost(b2, parsed.check)
+                    best += self._check_cost(b2, 0 if best_p is not None and best_p.nocheck
+                                             else parsed.check)
                     if best <= limit:
                         out.append((m, best, glyph, best_pc, b2, best_p))
         out.sort(key=lambda t: t[1])
@@ -1063,11 +1108,12 @@ class _Scorer:
             if parsed.castle and board.is_castling(m):
                 best = 0.5
             for p in parsed.parses:
-                if p.fch in self.letters:
+                if p.fch in self.letters or (p.whole and g.exact):
                     continue
-                c = (g.file_costs(p.fch, p.rch is None).get(f, C_UNREAD)
-                     + g.rank_costs(p.rch, p.fch is None).get(r, C_UNREAD)
-                     + min(self.piece_costs(p.prefix)[pt], 4.0) + (C_BANG if p.bang else 0.0))
+                sq_c = (p.dest.get(m.to_square, 2 * C_UNREAD) if p.whole else
+                        g.file_costs(p.fch, p.rch is None).get(f, C_UNREAD)
+                        + g.rank_costs(p.rch, p.fch is None).get(r, C_UNREAD))
+                c = sq_c + min(self.piece_costs(p.prefix)[pt], 4.0) + (C_BANG if p.bang else 0.0)
                 if (p.cap is True) != board.is_capture(m):
                     c += 0.8
                 if c < best:
@@ -1165,7 +1211,7 @@ def _shape(w: str) -> Optional[str]:
     if core in _STOP_WORDS or core.lower() in _STOP_WORDS and core[1:].islower():
         return None
     parses = _parse_raw(w).parses
-    if not parses or (core.isalpha() and all(p.rch is None for p in parses)):
+    if not parses or (core.isalpha() and all(p.rch is None and not p.whole for p in parses)):
         return None          # a word whose only reading lacks a rank ("Or", "and")
     m = _STRONG_RE.search(core)
     if m:
