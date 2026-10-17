@@ -39,10 +39,13 @@ _D = r"(?-i:[0-9lISB])"
 NUM = rf"(?=[^\s]*\d|[lI]$){_D}{{1,3}}(?:[.\-]{_D}{{1,3}})?[a-d]?"
 # A diagram label standing on its own line: a bare number ("14", "14a",
 # "3.12") or a number after a caption word, in several languages and with
-# common OCR misspellings ("Dlagram", "Diagrarn").
+# common OCR misspellings ("Dlagram", "Diagrarn"), the words of exercise
+# books ("Day 62", "Exercise 7") among them. The side to move may follow in
+# brackets ("Diagram 12 (W)", OCR's "{B)" too): group 2.
 CAPTION = (r"(?:[DO][il1]a?gr[ae](?:m|rn|in)(?:m|a|e)?|Diag\.|Dia\.|Fig(?:ure|\.)?|"
-           r"Pos(?:ition|\.)|No\.|Nr\.|#)")
-LABEL_RE = re.compile(rf"^(?:{CAPTION}\s*)?({NUM})$", re.I)
+           r"Pos(?:ition|\.)|No\.|Nr\.|#|Day|Exercise|Problem|Puzzle)")
+SIDE = r"[({]\s*((?-i:[WB]))\s*[)}]"
+LABEL_RE = re.compile(rf"^(?:{CAPTION}\s*)?({NUM})(?:\s*{SIDE})?$", re.I)
 # "Diagram 14" or "see Diagram 14" anywhere in the running text.
 REF_RE = re.compile(rf"\b[DO][il1]a?gr[ae](?:m|rn|in)(?:m|a|e|s)?\s+({NUM})\b", re.I)
 # A circled number beside a board: real circled digits, digits in brackets,
@@ -225,6 +228,28 @@ def follows(prev, cur):
     return (c[0] == p[0] and c[1] - p[1] <= 12) or (c[0] == p[0] + 1 and c[1] <= 2)
 
 
+def read_s_by_sequence(numbers, diagrams):
+    """OCR reads a 5 as S as well as an 8 (DIGIT_FIX makes it 8). A label
+    with an S takes the reading that comes next after the labels before it
+    in reading order: "Day 20S" after "Day 204" is 205. The diagrams with
+    that label on its page follow (numbers and diagrams are changed in place)."""
+    prev, fixed = None, {}
+    for x in numbers:
+        raw = x.get("raw") or ""
+        if "S" in raw and re.fullmatch(r"\d+", x["label"]):
+            reads = [int(raw.replace("S", d).translate(DIGIT_FIX)) for d in "58"]
+            after = [v for v in reads if prev is not None and v > prev]
+            v = min(after, key=lambda v: v - prev) if after else reads[-1]
+            fixed[(x["page"], raw)] = x["label"] = str(v)
+        if re.fullmatch(r"\d+", x["label"]):
+            prev = int(x["label"])
+    for d in diagrams:
+        for b in [d] + d.get("boards", []):
+            lab = fixed.get((d["page"], b.get("label_raw")))
+            if lab:
+                b["label"] = lab
+
+
 def main_series(numbers):
     """Indices of the labels that belong to the book's main numbered series.
 
@@ -337,7 +362,7 @@ def inspect_page(doc, i):
     head = page.rect.height * 0.06  # running head with the page number
     # OCR sometimes splits a number with a space ("1 15" for 115). Lines that
     # touch a picture are its rank and file letters, so they are left out.
-    labels = []
+    labels, sides = [], {}
     for t, r in lines:
         m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
         if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head
@@ -345,14 +370,16 @@ def inspect_page(doc, i):
                             for p, _, _ in pics)
                 and not continues_as_move(r, lines)):
             labels.append((m.group(1), r))
+            sides[len(labels) - 1] = (m.group(2) or "").lower() or None
     for raw, r in labels:
-        numbers.append({"page": i + 1, "label": raw.translate(DIGIT_FIX),
+        numbers.append({"page": i + 1, "label": raw.translate(DIGIT_FIX), "raw": raw,
                         "repaired": raw != raw.translate(DIGIT_FIX),
                         "rect": [round(v, 1) for v in r]})
     used = set()
     for pic, w, h, xref in xpics:
         k = label_for(pic, labels, used)
         raw = labels[k][0] if k is not None else None
+        side = sides.get(k)
         if k is not None:
             used.add(k)
         if isinstance(xref, tuple):
@@ -360,8 +387,9 @@ def inspect_page(doc, i):
             ink = textdiagram.ink_rect(page, pic)
             diagrams.append({
                 "page": i + 1, "rect": [round(v, 1) for v in ink], "pixels": [0, 0],
-                "label": raw.translate(DIGIT_FIX) if raw else None,
+                "label": raw.translate(DIGIT_FIX) if raw else None, "label_raw": raw,
                 "label_repaired": bool(raw) and raw != raw.translate(DIGIT_FIX),
+                "side": side,
                 "circled": False, "partial": False, "tall": False, "coords": [0, 0],
                 "text": True, "fen": fen, "encoding": td.encoding})
             continue
@@ -369,14 +397,16 @@ def inspect_page(doc, i):
         sub = []
         for j, br in enumerate(stack):
             if j == 0:
-                lab = raw
+                lab, lside = raw, side
             else:
                 kk = label_for(br, labels, used)
                 lab = labels[kk][0] if kk is not None else None
+                lside = sides.get(kk)
                 if kk is not None:
                     used.add(kk)
             sub.append({"rect": [round(v, 1) for v in br],
-                        "label": lab.translate(DIGIT_FIX) if lab else None,
+                        "label": lab.translate(DIGIT_FIX) if lab else None, "label_raw": lab,
+                        "side": lside,
                         "partial": abs(br.width / br.height - 1) > 0.12,
                         "coords": list(board_coords(br, lines))})
         circled = raw is None and any(
@@ -388,8 +418,9 @@ def inspect_page(doc, i):
             "page": i + 1,
             "rect": [round(v, 1) for v in pic],
             "pixels": [w, h],
-            "label": raw.translate(DIGIT_FIX) if raw else None,
+            "label": raw.translate(DIGIT_FIX) if raw else None, "label_raw": raw,
             "label_repaired": bool(raw) and raw != raw.translate(DIGIT_FIX),
+            "side": side,
             "circled": circled,
             "partial": abs(pic.width / pic.height - 1) > 0.12,
             "tall": pic.height > 1.3 * pic.width,
@@ -420,6 +451,7 @@ def finish(out_dir, found):
         diagrams.extend(ds)
         numbers.extend(ns)
         refs.update(rs)
+    read_s_by_sequence(numbers, diagrams)
     main_ids = main_series(numbers)
     for k, x in enumerate(numbers):
         x["series"] = "main" if k in main_ids else "other"

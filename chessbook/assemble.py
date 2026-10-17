@@ -119,7 +119,13 @@ diagram the sentence names, or else the diagram printed before it (but see
 diagram's position is read by Stage 3, so until then the line has status
 "waiting" and keeps its raw move text. A numbered solution ("5. S. Loyd,
 1878: 1.Qa1!!", "20. 2...Rh3+!") is matched to the diagram with the same
-number among the exercises before it.
+number among the exercises before it. A number with no dot, larger than the
+text, that stands in the margin beside the first line of its paragraph
+("62", OCR's "1 2 3") is a solution number when a diagram before it is
+labelled so ("Day 62"), and its solution runs on over the paragraphs after
+it up to the next number; a label that names one diagram of the book is found also before the
+diagram of the previous solution (books that print the solutions of several
+days in turn: 1, 62, 123, ..., 2, 63, ...).
 
 A line that stopped resumes where the text takes it up again: a main run
 that continues the numbering of a line closed earlier in the chapter (after
@@ -940,6 +946,7 @@ class _Stream:
         self.lines: list[_TextLine] = []
         self.starts: list[int] = []
         self.events = []        # (offset, order, kind, payload)
+        self.margins = {}       # offset -> solution number printed in the margin
 
     def event(self, kind, payload=None, at=None):
         self.events.append((self.pos if at is None else at, len(self.events), kind, payload))
@@ -1500,6 +1507,11 @@ class _Builder:
                     if not rest.strip() or _MOVE_ONE_RE.match(rest) or worded:
                         mask = m.end()
                         st.event("exercise", m.group(1))
+                lab = None if m else self.margin_number(st, p, lines, k)
+                if lab is not None:
+                    mask = len(text)
+                    st.margins[st.pos] = lab
+                    st.event("exercise", lab)
                 if _BARE_NUMBER_RE.match(text) and self.centred(p, ln):
                     st.event("number", int(text.translate(pt.DIGIT_FIX).replace("O", "0")))
                 st.add(p, ln, classes, mask, para)
@@ -1556,6 +1568,32 @@ class _Builder:
             if not (_shape(w) or _DOTS_RE.match(w)):
                 break
             classes[k] = "m"
+
+    def margin_number(self, st, p, lines, k):
+        """The solution number that line k of page p prints in the margin, in
+        a size larger than the text's and well apart from the first line of
+        its paragraph beside it ("62", OCR's "1 2 3"), when a diagram up to
+        page p is labelled with it, else None.
+        An S that OCR made of a 5 or an 8 is the reading that comes next after
+        a number found before it (st.margins)."""
+        ln = lines[k]
+        raw = ln["text"].replace(" ", "")
+        if ln["role"] != "text" or not re.fullmatch(r"[0-9lIOS]{1,3}", raw) \
+                or not re.search(r"\d", raw) or k + 1 >= len(lines) \
+                or max((s.get("size") or 0 for s in ln.get("spans", [])), default=0) \
+                < 1.05 * self.bs:
+            return None             # (the numbers of a score set as a table: "30" "Ra6!")
+        nxt = lines[k + 1]["bbox"]
+        b = ln["bbox"]
+        if nxt[0] - b[2] < 1.5 * self.bs \
+                or min(b[3], nxt[3]) - max(b[1], nxt[1]) < 0.5 * (b[3] - b[1]):
+            return None             # a move number that OCR split from its move ("39" "...e6!")
+        reads = [raw.replace("S", d).translate(pt.DIGIT_FIX).replace("O", "0").lstrip("0")
+                 for d in ("58" if "S" in raw else "8")]
+        reads = [r for r in reads if any(d.get("label") == r and d["page"] <= p
+                                         for d in self.diag_info.values())]
+        seen = set(st.margins.values())
+        return next((r for r in reads if str(int(r) - 1) in seen), reads[0] if reads else None)
 
     def centred(self, page, ln):
         edges = self.column_edges(page, ln["col"])
@@ -1815,8 +1853,10 @@ class _Builder:
                     self.structural = off
             elif kind == "para":
                 # a new paragraph that does not open with a solution number ends
-                # the solution's context (its line stays open for notes)
-                if self.exercise is not None and off > self.exercise[2]:
+                # the solution's context (its line stays open for notes), but
+                # for a number in the margin, whose solution runs on to the next
+                if self.exercise is not None and off > self.exercise[2] \
+                        and self.exercise[2] not in getattr(self.st, "margins", {}):
                     self.exercise = None
             elif kind == "number":
                 self.pending_number = (x, off)
@@ -1966,6 +2006,12 @@ class _Builder:
                 if d.get("label") == label and (main_ok or d.get("series") != "main"):
                     self.ex_pointer = i
                     return did
+        # a label that names one diagram of the book: the solutions of several
+        # exercises printed in turn (1, 62, 123, ..., 2, 63, ...)
+        found = [(i, did) for i, (doff, did) in enumerate(self.diagram_events)
+                 if doff <= off and self.diag_info[did].get("label") == label]
+        if len(found) == 1 and sum(d.get("label") == label for d in self.diag_info.values()) == 1:
+            return found[0][1]
         if n is None:
             return None
         groups, cur = [], None
@@ -2032,9 +2078,17 @@ class _Builder:
 
     def referenced_diagram(self, run):
         """(label, diagram id or None) when the sentence before the run names a
-        diagram ("To return to Diagram 430, ... 1.Rg4+"), else None."""
-        hits = list(_DIAGRAM_REF_RE.finditer(self.lead_text(run.start, 300)))
+        diagram ("To return to Diagram 430, ... 1.Rg4+"), else None. A name in
+        brackets right after a move ("10 exd6 Qxd6 (Diagram 28) is best: 11
+        b3", OCR's "{Diagram 30)") shows the position of that move, and the run
+        goes on from it."""
+        lead = self.lead_text(run.start, 300)
+        hits = list(_DIAGRAM_REF_RE.finditer(lead))
         if not hits:
+            return None
+        before = lead[:hits[-1].start()].rstrip()
+        if before.endswith(("(", "{")) and lead[hits[-1].end():].lstrip().startswith((")", "}")) \
+                and _shape((before[:-1].split() or [""])[-1]) == "strong":
             return None
         lab = hits[-1].group(1).translate(pt.DIGIT_FIX).replace("O", "0")
         for _, did in reversed(self.diagram_events):
@@ -2603,7 +2657,8 @@ class _Builder:
         if not fen:
             return None
         b = chess.Board(fen)
-        want = chess.BLACK if (run.ply or 0) % 2 else chess.WHITE
+        side = self.diag_info.get(did, {}).get("side") if run.ply is None else None
+        want = chess.BLACK if (run.ply or 0) % 2 or side == "b" else chess.WHITE
         if b.turn != want:
             b.turn = want
             b.ep_square = None

@@ -351,6 +351,74 @@ def test_solutions_find_their_exercise_diagrams(little):
     assert nodes[nodes[by_diagram["p6-2"]["root"]]["children"][0]]["raw"] == "Nf6+"
 
 
+def make_day_book(path):
+    """An exercise book in the manner of a daily puzzle book, as OCR read it:
+    boards captioned "Day 14" and "Day 1S" (OCR's S for 5), one captioned
+    "Diagram 3 (B)" with the side to move, and the solutions later with the
+    number in the margin beside the paragraph, no dot after it and spaced by
+    OCR ("1 4"), printed in another order than the boards (15, then 14)."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "Daily Exercises", fontname="tiro", fontsize=26)
+    w.page()
+    w.picture("Day 14", caption="")
+    w.prose(until=H - 60)
+    w.col(1)
+    w.picture("Day 1S", caption="")
+    w.prose(until=H - 60)
+    w.page()
+    w.picture("Diagram 3 (B)", caption="")
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.page()
+    for num, moves in (("1S", "1.Nf6+ Kh8 2.Qh7#"), ("1 4", "1.Rd8+ Kh7 2.Rd7")):
+        w.y += 8
+        w.pg.insert_text((COLS[0], w.y), num, fontname="tibo", fontsize=11)
+        w.x0 = COLS[0] + 34
+        w.line("A quick blow decides,")
+        w.line("as the king has no air:")
+        w.line(moves, bold=True, indent=8)
+        w.line("And Black is lost.")
+        w.line("1.Qa1 Kb8 is no better.", indent=8)
+    w.x0 = COLS[0]
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    for _ in range(2):
+        w.page()
+        w.prose(n=10)
+        w.line("1.d4 d5 2.c4 e6 3.Nc3 Nf6", bold=True)
+        w.prose(until=H - 60)
+        w.col(1)
+        w.prose(until=H - 60)
+    w.doc.set_metadata({"producer": OCR_PRODUCER})
+    w.save(path)
+    return path
+
+
+def test_solutions_numbered_in_the_margin(tmp_path):
+    """A solution number in the margin with no dot ("1 4") ties the solution
+    to the board labelled with it ("Day 14"), whatever the order the
+    solutions are printed in; OCR's S in a label is the 5 that the labels'
+    sequence wants ("Day 1S" after "Day 14"); the solution's later paragraph
+    stays with it; the side in a caption ("(B)") is kept with the label."""
+    import stage1_inspect as s1
+    pdf = make_day_book(tmp_path / "days.pdf")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    diagrams = json.loads((tmp_path / "output" / "days" / "stage1" / "diagrams.json").read_text())
+    assert [(d["page"], d["label"], d["side"]) for d in diagrams] == [
+        (2, "14", None), (2, "15", None), (3, "3", "b")]
+    assert s1.LABEL_RE.match("Diagram 12 {W)").groups() == ("12", "W")
+    by_diagram = {x["diagram"]: x for x in book["lines"] if x["page"] == 4}
+    assert set(by_diagram) == {"p2-1", "p2-2"}
+    nodes = book["nodes"]
+    first = {d: nodes[nodes[x["root"]]["children"][0]]["raw"] for d, x in by_diagram.items()}
+    assert first == {"p2-1": "Rd8+", "p2-2": "Nf6+"}
+    qa1 = [n for n in nodes.values() if n.get("raw") == "Qa1"]
+    assert len(qa1) == 2 and {n["line"] for n in qa1} == {x["id"] for x in by_diagram.values()}
+
+
 def test_note_after_the_result_stays_with_its_game(tmp_path):
     """A note printed after a game's result, before the next game begins
     (here with no header the program finds), discusses the game that ended:
