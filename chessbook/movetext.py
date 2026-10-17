@@ -1650,13 +1650,25 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
         return j
 
     def split_rank(i, w):
-        """A rank digit split from a move that lacks one: "i.xd 1" for Bxd1."""
-        if not re.fullmatch(r"[1-8]", w) or toks[-1].kind != "move":
+        """A rank digit split from a move that lacks one: "i.xd 1" for Bxd1.
+        In a text OCR read (not exact), also with the move's sign ("Qh5-e 3+"),
+        as OCR prints the digit ("Kf2-e l", "hS-g 8") or with the rest of a
+        long move after it ("Ng 3-h5#"); a move that names its from-square
+        and the file it goes to lacks the rank whatever its from-square holds."""
+        if toks[-1].kind != "move":
             return False
         prev = toks[-1].raw
         core = _strip_suffix(prev)[0]
-        if not re.search(r"[a-h£]$", core) or any(p.rch is not None
-                                                  for p in _parse_raw(prev).parses):
+        if not re.search(r"[a-h£]$", core):
+            return False
+        if not re.fullmatch(r"[1-8]", w):
+            if exact or not re.fullmatch(r"[1-8lSB](?:[-–x:][a-h£].*|[+#!?]*)", w):
+                return False
+            if len(w) > 1 and w[1] not in "+#!?":
+                # "Ng 3-h5#": the from-square is split, in a move that names no square yet
+                return not re.search(r"[a-h£][1-8lSB]", core)
+        if not re.search(r"[-–x:][a-h£]$", core) \
+                and any(p.rch is not None for p in _parse_raw(prev).parses):
             return False
         if i + 1 < len(pieces):
             nxt = text[pieces[i + 1][0]:pieces[i + 1][1]]

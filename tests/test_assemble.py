@@ -554,6 +554,20 @@ def test_bang_read_as_1_after_a_square_is_the_annotation(tmp_path):
     assert all(book["nodes"][i]["status"] == "ok" for i in ids[18:])
 
 
+def test_square_split_by_an_ocr_space_is_one_move(tmp_path):
+    """OCR sets a space inside a square of a long-notation move ("Qd1-f 3+",
+    "Nf3-g S" with its S for 5, "Nb8-c 6"): each is one move, read as
+    printed, and no phantom move is made of the rank after the space."""
+    game = ["1.e4 e5 2.Nf3 Nb8-c 6 3.Bf1-c4 Nf6", "4.Nf3-g S d5 5.exd5 Nxd5",
+            "6.Nxf7 Kxf7 7.Qd1-f 3+ Ke6", "8.Nb1-c 3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
 CHAPTER_GAMES = [GAME_EN,
                  ["1.d4 d5 2.c4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 c6",
                   "8.Bd3"],
@@ -908,6 +922,12 @@ def test_tokenizer_fixes():
     assert ("number", "68.") not in kinds("as in Position 68. 1he stalemate")
     # a glyph split from its square
     assert ("move", "ttl d4") in kinds("9.i.xf3 ttl d4 10.cxd4")
+    # a square split by OCR's space, with a sign, OCR's digit or the rest of a
+    # long move after the rank; never in a text set in type
+    assert kinds("1...Ng4-e 3+ 2.Kg2xh 3")[1] == ("move", "Ng4-e 3+")
+    assert ("move", "Kf2-e l") in kinds("3.Kf2-e l Rh3-h1#")
+    assert ("move", "ttlg 3-h5#") in kinds("3.ttlg 3-h5#", lenient=True)
+    assert [x.raw for x in tokenize("1.Qh5-e 3+ Kd8", exact=True)][:2] == ["1.", "Qh5-e"]
 
 
 def test_readable_comment_moves():
