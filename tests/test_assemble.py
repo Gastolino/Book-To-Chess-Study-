@@ -738,6 +738,47 @@ def test_notes_after_a_diagram_at_the_end_of_a_chapter(tmp_path):
     assert all(m["status"] == "ok" and m["node"] for m in marks)
 
 
+# the position after 1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5, White to move
+GIUOCO_FEN = "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+
+
+def test_notes_after_a_diagram_wait_for_the_move_it_leads_to(tmp_path):
+    """A game whose text lacks Black's third move goes on from the diagram
+    printed after 3.Bc4 (the picture shows 3...Bc5). The notes printed
+    between the diagram and 4.c3 are numbered for White's fourth move, which
+    the game reaches only after the diagram: they are alternatives to 4.c3,
+    from the diagram's position, not moves the game before the diagram
+    "does not reach"."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4", bold=True)
+    w.line("Both sides develop their pieces.", indent=8)
+    w.picture("12")
+    w.line("Instead 4.b4 Bxb4 5.c3 is the Evans", indent=8)
+    w.line("Gambit, and 4.d3 d6 is a slow game.")
+    w.line("4.c3 Nf6 5.d4 exd4 6.cxd4 Bb4+", bold=True)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": GIUOCO_FEN})
+    nodes = book["nodes"]
+    frag = [x for x in book["lines"] if x["start_fen"] == GIUOCO_FEN]
+    assert frag, [(x["title"], x["start_fen"]) for x in book["lines"]]
+    root = nodes[frag[0]["root"]]
+    assert [nodes[c]["san"] for c in root["children"]] == ["c3", "b4", "d3"]
+    marks = {m["raw"]: m for m in book["pages"][1]["marks"]}
+    for raw in ("b4", "Bxb4", "d3", "d6"):
+        assert marks[raw]["status"] == "ok" and marks[raw]["node"], marks[raw]
+    assert not [u for u in book["unattached"] if "does not reach" in (u["reason"] or "")]
+
+
 # a game with Black's sixth move missing from the text ("6.Nb3 7.Qe2")
 LOST_REPLY = ["1.e4 c5 2.Nf3 e6 3.d4 cxd4", "4.Nxd4 a6 5.Bd3 Bc5", "6.Nb3 7.Qe2 d6 8.Be3 Nf6",
               "9.Bxa7 Rxa7"]
