@@ -779,6 +779,80 @@ def test_notes_after_a_diagram_wait_for_the_move_it_leads_to(tmp_path):
     assert not [u for u in book["unattached"] if "does not reach" in (u["reason"] or "")]
 
 
+def test_game_goes_on_from_the_diagram_after_a_box(tmp_path):
+    """A game whose text lacks Black's third move goes on from the diagram
+    printed after 3.Bc4 (the picture shows 3...Bc5), even when a box that
+    reads as a heading ("QUESTION", as a scanned book's shaded box of a
+    question reads) stands between the diagram and the game's next move:
+    the print's rule is that the game goes on from the diagram printed
+    before its next move. 4.c3 finds its start there, and the notes
+    hanging from it are read."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4", bold=True)
+    w.line("Both sides develop their pieces.", indent=8)
+    w.picture("12")
+    w.line("The bishops face each other on the long diagonals.", indent=8)
+    w.line("QUESTION", bold=True, size=11, x=COLS[0] + 40)
+    w.line("Why did Black not play the sharper knight move?", indent=8)
+    w.line("4.c3 Nf6 5.d4 exd4 6.cxd4 Bb4+", bold=True)
+    w.line("Or 5.d3 d6 with a slow game.", indent=8)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": GIUOCO_FEN})
+    nodes = book["nodes"]
+    marks = {m["raw"]: m for m in book["pages"][1]["marks"]}
+    for raw in ("c3", "d4", "exd4", "cxd4", "Bb4+", "d3", "d6"):
+        m = marks[raw]
+        assert m["status"] == "ok" and m["node"], (m, book["unattached"])
+    frag = [x for x in book["lines"] if x["start_fen"] == GIUOCO_FEN]
+    assert frag, [(x["title"], x["start_fen"]) for x in book["lines"]]
+    ids = main_line(book, frag[0])
+    assert sans(book, ids) == ["c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+"]
+    assert nodes[marks["d3"]["node"]]["parent"] == ids[1]
+
+
+def test_game_does_not_skip_its_unread_moves_after_a_diagram(tmp_path):
+    """When the game's first moves after the diagram find no place (here
+    "4.Qxh7", which cannot be played there, as a badly read move would), its
+    later moves do not go on from the diagram: they would skip the moves
+    between it and them and read from a position the book does not show."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4", bold=True)
+    w.line("Both sides develop their pieces.", indent=8)
+    w.picture("12")
+    w.line("The bishops face each other on the long diagonals.", indent=8)
+    w.line("QUESTION", bold=True, size=11, x=COLS[0] + 40)
+    w.line("Why did Black not play the sharper knight move?", indent=8)
+    w.line("4.Qxh7", bold=True)
+    w.line("A surprising idea that the reader should look at closely.", indent=8)
+    w.line("5.d3 a6 6.O-O d6 7.a4", bold=True)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": GIUOCO_FEN})
+    marks = {m["raw"]: m for m in book["pages"][1]["marks"]}
+    for raw in ("d3", "a6", "O-O", "d6"):
+        assert marks[raw]["status"] != "ok", (marks[raw], [x["title"] for x in book["lines"]])
+    assert not [x for x in book["lines"] if x["start_fen"] == GIUOCO_FEN]
+
+
 # a game with Black's sixth move missing from the text ("6.Nb3 7.Qe2")
 LOST_REPLY = ["1.e4 c5 2.Nf3 e6 3.d4 cxd4", "4.Nxd4 a6 5.Bd3 Bc5", "6.Nb3 7.Qe2 d6 8.Be3 Nf6",
               "9.Bxa7 Rxa7"]

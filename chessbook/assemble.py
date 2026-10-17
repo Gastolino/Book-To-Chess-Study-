@@ -2220,6 +2220,54 @@ class _Builder:
             return did
         return None
 
+    def diagram_across(self, run):
+        """The diagram a run of the game's own moves goes on from when notes
+        or a box stand between them (usable_diagram refuses it): the last
+        diagram printed before the run, provided no game header, no break
+        and no main move of a line stand between them, no line reached it at
+        another move, and the run's moves read cleanly from it. The print's
+        rule: the game goes on from the diagram printed before its next
+        move. None otherwise."""
+        if run.ply is None or self.pending_header is not None \
+                or self.exercise is not None or run.depth > 0:
+            return None
+        did = self.last_diagram(run.start)
+        if did is None or not self.diagram_selected(did) or self.ply_conflict(did, run.ply):
+            return None
+        doff = self.diagram_offset(did)
+        if any(ci == self.ci and doff < at < run.start for ci, at in self.header_at):
+            return None
+        for M in self.lines:
+            if M.chapter == self.ci and M.born == "main" and any(
+                    doff < s < run.start for s, _, _ in M.main_tok) and not (
+                    run.ply <= 1 and M.diagram == did and M.start_fen
+                    and _board_ply(M.start_fen) <= 1):
+                # (another solution numbered afresh from the same diagram,
+                # "Alternatively White has: 1.g5", is no game going on)
+                return None
+        if any(r.kind == "main" and e["chapter"] == self.ci and doff < r.start < run.start
+               for e, r in self.unplaced_runs):
+            # the game's moves printed after the diagram that found no place
+            # ("9 c3!" read badly): the run does not go on from the diagram
+            return None
+        fen = self.diagram_fen(did, run)
+        if not fen:
+            return None
+        nid = self.after_node.get(did)
+        reached = self.nodes[nid]["fen"] if nid is not None else None
+        if reached and reached.split(" ")[0] == fen.split(" ")[0]:
+            # a line reached the position it shows: at the run's move, or
+            # with the side to move agreeing for analysis numbered afresh
+            q = _board_ply(reached)
+            if q % 2 != run.ply % 2 or (q != run.ply and run.ply > 1):
+                return None
+        toks = self.lookahead(run)
+        n = sum(1 for t in toks if t.kind == "move")
+        (_, failed, mean), decs = self.start_score(fen, toks)
+        if n < 2 or failed or mean > 1.0 or any(d.cost > 1.5 or _vanished(d) for d in decs):
+            return None
+        return did
+
     def last_diagram(self, off):
         """The last diagram before off in reading order in this chapter, if any."""
         for doff, did in reversed(self.diagram_events):
@@ -2413,6 +2461,8 @@ class _Builder:
             if ref and ref[1]:
                 did = ref[1]
         did = did or self.usable_diagram(run.start)
+        if did is None and born == "main":
+            did = self.diagram_across(run)
         pick = self.choose_start(run, did)
         if pick is not None and pick.get("skip"):
             # the position before these moves is unknown; the moves after them
@@ -3293,7 +3343,8 @@ class _Builder:
         position when it reads as play from there, otherwise from its diagram."""
         header = self.pending_header
         accept, decs, did = self.initial_accept(run)
-        if not accept and (did is not None or self.referenced_diagram(run)):
+        if not accept and (did is not None or self.referenced_diagram(run) or (
+                born == "main" and self.diagram_across(run) is not None)):
             L = self.from_diagram(run, born)
             if L is not None:
                 self.active = L
