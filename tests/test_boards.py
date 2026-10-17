@@ -171,6 +171,34 @@ def test_partial_picture_is_skipped(tmp_path):
     assert res["p1-1"]["status"] == "partial" and res["p1-1"]["fen"] is None
 
 
+def test_wide_picture_of_a_whole_board_is_a_board(tmp_path):
+    """ClearScan keeps a board with a white margin and its rank digits on the
+    left as one picture wider than tall (The Art of Planning p32: 161.7 x
+    119 pt). The 8 x 8 grid inside it is whole, so it is a board; a strip of
+    three ranks and two boards side by side are not."""
+    import stage1_inspect
+    from chessbook import selection
+    img = draw_board("r1qn1k2/2p2pp1/p2p3p/1p1P2b1/3P2N1/P6P/1P3PP1/R1B1Q1K1")
+    wide = np.full((img.shape[0], img.shape[1] * 136 // 100), 255, np.uint8)
+    wide[:, -img.shape[1]:] = img
+    for k in range(8):
+        cv2.putText(wide, str(8 - k), (wide.shape[1] - img.shape[1] - 30, 36 + SQ * k),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, 0, 2)
+    pair = np.hstack([img, np.full((img.shape[0], 20), 255, np.uint8), img])
+    doc = pymupdf.open()
+    page = doc.new_page(width=420, height=640)
+    for k, (pic, w) in enumerate([(img, 120), (wide, 163), (img[:3 * SQ + 6], 120), (pair, 245)]):
+        ok, png = cv2.imencode(".png", pic)
+        page.insert_image(pymupdf.Rect(40, 20 + 150 * k, 40 + w, 20 + 150 * k + w * pic.shape[0]
+                                       / pic.shape[1]), stream=png.tobytes())
+    pdf = tmp_path / "wide.pdf"
+    doc.save(pdf)
+    _, diagrams, _, _ = stage1_inspect.inspect_page(pymupdf.open(pdf), 0)
+    assert list(selection.picture_kinds(diagrams).values()) == [
+        "board", "board_plus", "partial", "partial"]
+    assert [d.get("whole") for d in diagrams] == [False, True, False, False]
+
+
 def test_grid_located_inside_a_margin():
     img = draw_board("8/8/8/4k3/8/8/4K3/8")
     big = np.full((img.shape[0] + 90, img.shape[1] + 30), 255, np.uint8)

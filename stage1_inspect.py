@@ -132,6 +132,20 @@ def stacked_boards(doc, xref, rect):
     return [pymupdf.Rect(rect.x0, rect.y0 + a * k, rect.x1, rect.y0 + b * k) for a, b in bands]
 
 
+def whole_inside(doc, xref, rect):
+    """True when a picture that is no square holds a whole board all the
+    same (boards.whole_board): ClearScan keeps a board with its margin and
+    rank digits as one picture wider than tall. A part of a board, or two
+    of them side by side, is not whole; a square picture is not looked at."""
+    if abs(rect.width / rect.height - 1) <= 0.12:
+        return False
+    from chessbook import boards
+    try:
+        return boards.whole_board(boards.picture_gray(doc, xref))
+    except (RuntimeError, ValueError):
+        return False
+
+
 def page_kind(chars, cover, boards, invisible):
     if cover:
         return "scan"
@@ -432,6 +446,7 @@ def inspect_page(doc, i):
             "side": side,
             "circled": circled,
             "partial": abs(pic.width / pic.height - 1) > 0.12,
+            "whole": whole_inside(doc, xref, pic),
             "tall": pic.height > 1.3 * pic.width,
             "coords": list(board_coords(pic, lines)),
         })
