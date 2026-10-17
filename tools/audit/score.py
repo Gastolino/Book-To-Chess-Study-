@@ -14,7 +14,8 @@ such as "ANSWER:" that are not moves), the token counts as READ when
     (a move that only looks right in a line gone wrong does not count).
 
 OCR's slips of shape that change no move ("cs" for c5, "Khl" for Kh1,
-"£4" for f4, "o-o" for castling) read as the square they show. The
+"£4" for f4, "o-o" for castling, a space inside a square: "Ng4-e 3+") read
+as the square they show. The
 success rate of a book is READ / TOKENS. It also prints the moves shown
 green against the print (WRONG), the measure of the silent errors. The
 check compares squares and piece letters with the text layer, so in a
@@ -46,6 +47,11 @@ def _norm(s):
     return (s or "").replace("–", "-")
 
 
+def _joined(raw):
+    """raw without the spaces OCR set inside a move ("Ng4-e 3+", "Kf2-e l")."""
+    return (raw or "").replace(" ", "")
+
+
 def squares(raw):
     """Every square the printed token raw may show, OCR's slips of shape read."""
     out = []
@@ -62,7 +68,7 @@ def squares(raw):
 
 def agrees(raw, san):
     """The move san agrees with the printed token raw."""
-    raw, san = _norm(raw), _norm(san)
+    raw, san = _joined(_norm(raw)), _norm(san)
     if not san:
         return False
     if san.startswith("O-O"):
@@ -103,7 +109,7 @@ def score(book):
     for pg in book["pages"]:
         for m in pg["marks"]:
             raw = m.get("raw") or ""
-            if m["status"] == "unattached" and not (squares(raw) or CASTLE.search(raw)):
+            if m["status"] == "unattached" and not (squares(_joined(raw)) or CASTLE.search(raw)):
                 continue
             tokens += 1
             n = nodes.get(m.get("node")) if m.get("node") else None
