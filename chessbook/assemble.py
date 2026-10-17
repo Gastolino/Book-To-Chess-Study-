@@ -1522,6 +1522,12 @@ class _Builder:
                     and (self.starts_main(nxt) or _numbering_goes_on(words, out, i))):
                 out[i:j] = ["m"] * (j - i)
             i = j
+        # and a move number that starts the printed line in the body font
+        # goes with the move after it in the move font ("7 C3", kia p100)
+        j = next((k for k, c in enumerate(out) if c != "n"), len(out))
+        if 0 < j < len(out) and _shape(words[j]) and re.fullmatch(r"\d{1,3}[.…•·]*", words[0]) \
+                and all(_DOTS_RE.match(w) for w in words[1:j]):
+            out[:j] = ["m"] * j
         return out
 
     @staticmethod

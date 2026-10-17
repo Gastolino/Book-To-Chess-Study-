@@ -629,6 +629,19 @@ def test_moves_that_ocr_set_in_the_body_font_at_a_line_end(tmp_path):
     assert any(n.get("san") == "Bb5+" and not n.get("main") for n in book["nodes"].values())
 
 
+def test_a_move_number_that_ocr_set_in_the_body_font_at_a_line_start(tmp_path):
+    """OCR sets a move number that starts a printed line in the body font
+    now and then, its move in the move font ("1." plain, "e4 e5 2.Nf3" bold;
+    kia p100 "7 C3"): the number goes with its move into the main line."""
+    game = [[("1. ", False), ("e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", True)]] + GAME_EN[1:]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
 CHAPTER_GAMES = [GAME_EN,
                  ["1.d4 d5 2.c4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 c6",
                   "8.Bd3"],
