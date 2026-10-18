@@ -936,6 +936,58 @@ def test_game_does_not_skip_its_unread_moves_after_a_diagram(tmp_path):
     assert not [x for x in book["lines"] if x["start_fen"] == GIUOCO_FEN]
 
 
+# the position after 4.c3 Nf6 5.d3 a6 6.O-O from GIUOCO_FEN, as a board
+# reading gives it: the side to move is not printed, and White is the default
+CASTLED_FEN = "r1bqk2r/1ppp1ppp/p1n2n2/2b1p3/2B1P3/2PP1N2/PP3PPP/RNBQ1RK1 w kq - 0 1"
+
+
+def test_game_goes_on_from_a_diagram_among_its_unplaced_moves(tmp_path):
+    """The game's moves after a diagram whose earlier moves found no place
+    are not lost with them. Here the text lacks White's fourth move (4.c3,
+    as a badly read move would be), so the run from 4...Nf6 has no position
+    to start from: the diagram before it shows the position after 3...Bc5.
+    A second diagram printed among its moves, after 6.O-O, shows the
+    position, and the moves after it ("6...d6 7.a4") go on from there. The side to move is the one their
+    number gives (6...d6: Black), not the board reading's default; the notes
+    to them are read as well."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5", bold=True)
+    w.line("Both sides develop their pieces.", indent=8)
+    w.picture("12")
+    w.line("The bishops face each other on the long diagonals.", indent=8)
+    w.line("4...Nf6 5.d3 a6 6.O-O", bold=True)
+    w.picture("", caption="")
+    w.line("6...d6 7.a4 Ba7 8.h3", bold=True)
+    w.line("Or 7...Bg4 8.Nbd2 with a quiet game.", indent=8)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books",
+                      diagram_fens={"p2-1": GIUOCO_FEN, "p2-2": CASTLED_FEN})
+    nodes = book["nodes"]
+    marks = {}
+    for m in book["pages"][1]["marks"]:
+        marks.setdefault(m["raw"], m)
+    for raw in ("Nf6", "d3", "a6"):
+        assert marks[raw]["status"] != "ok", marks[raw]
+    frag = [x for x in book["lines"] if x["start_fen"].split(" ")[:2] == CASTLED_FEN.split(" ")[:1] + ["b"]]
+    assert frag, [(x["title"], x["start_fen"]) for x in book["lines"]]
+    ids = main_line(book, frag[0])
+    assert sans(book, ids) == ["d6", "a4", "Ba7", "h3"]
+    for raw in ("d6", "a4", "Ba7", "h3", "Bg4", "Nbd2"):
+        m = marks[raw]
+        assert m["status"] == "ok" and m["node"], (m, book["unattached"])
+    assert nodes[marks["Bg4"]["node"]]["parent"] == ids[1]
+
+
 ADAMS_GAME = ["1.e4 c5 2.Nf3 d6 3.d4 cxd4 4.Nxd4 Nf6", "5.Nc3 a6 6.Be3 e6 7.Be2 Qc7",
               "8.Qd2 b5 9.a3 Bb7 10.f3 Nc6", "11.O-O-O b4 12.axb4 Nxb4 13.g4 Be7",
               "14.g5 Nd7 15.h4 Nc5 16.Kb1 Rb8", "17.h5 O-O 18.g6 Bf6 19.Rdg1 Na8",

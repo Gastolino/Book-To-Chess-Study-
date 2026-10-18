@@ -2540,7 +2540,7 @@ class _Builder:
         if pick is not None and pick.get("skip"):
             # the position before these moves is unknown; the moves after them
             # start from the diagram (on_main reaches it with the next run)
-            self.unplaced(run, pick.get("reason") or (
+            self.unplaced_start(run, born, pick.get("reason") or (
                 f"{self.diagram_name(did)} shows the position these moves reach, and the "
                 "position they start from is unknown"))
             return None
@@ -2571,11 +2571,11 @@ class _Builder:
                 # the line's own moves, after moves the text lacks: the notes
                 # printed after them are still the line's (see on_note)
                 prev.tail_end = max(prev.tail_end, run.end)
-            self.unplaced(run, self.no_start_reason(run))
+            self.unplaced_start(run, born, self.no_start_reason(run))
             return None
         if not self.diagram_selected(did):
-            self.unplaced(run, f"it starts from {self.diagram_name(did)}, which the selection "
-                               "leaves out")
+            self.unplaced_start(run, born, f"it starts from {self.diagram_name(did)}, which the "
+                                           "selection leaves out")
             return None
         header = self.pending_header
         kind = kind or ("game" if header else "fragment")
@@ -2600,6 +2600,42 @@ class _Builder:
             self.waiting.append({"page": L.page, "chapter": self.ci, "text": self.run_text(run),
                                  "reason": WAIT_REASON, "line": L.id, "diagram": did})
         return L
+
+    def unplaced_start(self, run, born, reason):
+        """A run of the game's moves that found no position to start from is
+        placed in no line, but for its moves after a diagram printed among
+        them: the diagram shows their position (the moves before it may have
+        been read badly, or the text lacks a move before them), and they are
+        taken up there, with the side to move that their number gives
+        (chapter loop, deferred), provided they read cleanly from it: a
+        diagram that the text layer places before the last moves it shows
+        (its number read from the move number printed above it) is no start
+        for them."""
+        cut = (self.diagram_cut(run) if born == "main" and self.deferred is None
+               and not self.replaying else None)
+        if cut is not None and not self.reads_from_diagram(cut[1], cut[2]):
+            cut = None
+        if cut is None:
+            self.unplaced(run, reason)
+            return
+        head, tail, off = cut
+        self.unplaced(head, reason)
+        self.deferred = (off, tail)
+
+    def reads_from_diagram(self, run, off):
+        """True when the first two moves of the run (and of the runs that
+        continue its numbering) read cleanly, with one reading, from the
+        selected diagram printed at off, with the side to move that the
+        run's number gives. (A move read badly further on is no reason to
+        doubt the start.)"""
+        did = next((d for o, _, kind, d in self.st.events if kind == "diagram" and o == off
+                    and self.diagram_selected(d)), None)
+        fen = self.diagram_fen(did, run) if did is not None else None
+        if not fen:
+            return False
+        decs = self.dec.run(fen, self.lookahead(run))[:2]
+        return len(decs) == 2 and all(d.status == "ok" and d.cost <= 1.0 and not _vanished(d)
+                                      for d in decs)
 
     def unread_numbers(self, run):
         """The number of White's move that stands, with unreadable moves after
