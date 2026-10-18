@@ -657,6 +657,22 @@ def test_a_black_move_that_ocr_set_in_the_body_font_after_its_number(tmp_path):
     assert all(book["nodes"][i]["status"] == "ok" for i in ids)
 
 
+def test_a_black_move_printed_without_its_number_after_a_heading(tmp_path):
+    """A book of questions and answers resumes the game after the answer with
+    Black's move alone, in the move font, its number left out ("QUESTION:
+    ... / ANSWER: / 1. ... / b6 Intending ...c5. 6.d4", alekhine p126; "Rac8
+    20.Rec1", p23): the move is Black's before the next number and goes into
+    the main line, which would else break there and lose the rest of the game."""
+    game = ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5", "Nxd5 6.Nxf7 Kxf7 7.Qf3+ Ke6",
+            "8.Nc3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, note5="ANSWER:")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
 CHAPTER_GAMES = [GAME_EN,
                  ["1.d4 d5 2.c4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 c6",
                   "8.Bd3"],

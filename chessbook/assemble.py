@@ -949,6 +949,37 @@ def book_chapters(structure, page_count):
     return out
 
 
+def _numberless_head(chunk, orig, seqs):
+    """The main-font text of a block that starts with Black's move printed
+    without its number, the next move number of the main line after it:
+    "QUESTION: ... ANSWER: 1. ... 2. ..." / "b6 Intending ...c5. 6.d4" (the
+    move after a question, a list or a heading that ends the block before it,
+    where the book resumes the game without "5..."). The tokenizer makes no
+    move of a word outside a numbered run; here the word stands where the
+    numbering puts Black's move before the number, in the move font, and
+    shows a square, so it is that move, read in the run of the number. It
+    must start its printed line: a word of the move font inside a sentence
+    is the prose's ("to defend this pawn with ...f5.", primer p60).
+    orig is the block's text in all its fonts."""
+    m = re.match(r"\s*(\S+)", chunk)
+    if not m or not seqs:
+        return seqs
+    s, e = m.span(1)
+    if orig[:s].rstrip(" ") and not orig[:s].rstrip(" ").endswith("\n"):
+        return seqs
+    first = seqs[0]
+    t0 = first.tokens[0]
+    if (first.depth or first.start < e or chunk[e:first.start].strip()
+            or t0.kind != "number" or t0.number is None or t0.number < 2 or t0.black
+            or not t0.side_known or t0.dotless or _shape(m.group(1)) != "strong"):
+        return seqs
+    head = Token("move", m.group(1), s, e, t0.number - 1, True)
+    seqs = list(seqs)
+    seqs[0] = replace(first, tokens=[head] + first.tokens, start=s,
+                      first_number=t0.number - 1, black_first=True)
+    return seqs
+
+
 def _split_at_diagrams(toks, diagrams):
     """Split a run of tokens where a diagram stands between two of its moves
     and the move number after the diagram does not continue the numbering
@@ -1828,8 +1859,11 @@ class _Builder:
                     continue
                 # the main-font text holds moves only, so junk standing where
                 # the numbering expects a move is kept as an unreadable move
-                for s in find_sequences(chunk, lenient=kind == "main" and self.moves_font,
-                                        dotless=self.dotless, exact=self.dec.glyphs.exact):
+                seqs = find_sequences(chunk, lenient=kind == "main" and self.moves_font,
+                                      dotless=self.dotless, exact=self.dec.glyphs.exact)
+                if kind == "main" and self.moves_font:
+                    seqs = _numberless_head(chunk, st.orig_text[a:b], seqs)
+                for s in seqs:
                     toks = [replace(t, start=t.start + a, end=t.end + a) for t in s.tokens]
                     parts = [q for part in _split_at_diagrams(toks, diagrams)
                              for q in _split_at_gaps(part)]
