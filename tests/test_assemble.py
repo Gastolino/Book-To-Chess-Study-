@@ -725,6 +725,68 @@ def test_a_black_move_number_whose_dots_the_text_layer_sets_apart(tmp_path):
     assert all(book["nodes"][i]["status"] == "ok" for i in ids)
 
 
+def test_a_threat_is_a_variation_of_the_move_it_threatens(tmp_path):
+    """A numbered threat after a move ("22...Qd2! Threatening 23...Rxg2+",
+    primer p182; "11...Nb4 with the threat of 12...Nxc2", kia p125) is the
+    moving side's next move: a variation of the line's move with its number,
+    from the position after the reply the line gives, when the moves read
+    the same with the reply passed over. A later move of the same side
+    ("and 9.d4") skips the reply between and stays in no line."""
+    pdf = make_book(tmp_path / "little.pdf", note5="Black threatens 6...Nf4.",
+                    note7="White plans 8.Qe4 and 9.d4.")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    nodes = book["nodes"]
+    nf4 = [i for i, n in nodes.items() if n.get("san") == "Nf4"]
+    assert len(nf4) == 1 and nodes[nf4[0]]["status"] == "ok"
+    assert nodes[nf4[0]]["parent"] == ids[10]          # after 6.Nxf7, beside 6...Kxf7
+    qe4 = [i for i, n in nodes.items() if n.get("san") == "Qe4"]
+    assert len(qe4) == 1 and nodes[qe4[0]]["parent"] == ids[13]  # beside 8.Nc3
+    assert any("9.d4" in u["text"] and "threat" in u["reason"] for u in book["unattached"])
+
+
+def test_a_plan_of_piece_routes_stays_in_no_line(tmp_path):
+    """A plan printed as piece routes, the other side's moves left out ("with
+    the idea Nf3-d2-c4"), is no line any board can show: it stays text, in
+    no line, while a numbered threat beside it ("Black threatens 6...Nf4")
+    is shown as a variation of the move it threatens."""
+    pdf = make_book(tmp_path / "little.pdf", note5="Black threatens 6...Nf4.",
+                    note7="White plans Nb1-c3-e4.")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    nodes = book["nodes"]
+    nf4 = [i for i, n in nodes.items() if n.get("san") == "Nf4"]
+    assert len(nf4) == 1 and nodes[nf4[0]]["parent"] == ids[10]
+    sans_all = [n.get("san") for n in nodes.values()]
+    assert not [s for s in sans_all if s and s.startswith("Ne4")]
+
+
+def test_a_threat_that_no_longer_reads_stays_in_no_line(tmp_path):
+    """A threat whose moves no longer read after the reply the line gives
+    ("threatens 6...Qxg5", but 6.Nxf7 took the knight away) is not placed
+    there; nor is a threat the text says was made before the move it follows
+    ("7...Ke6 White was threatening 8.Qf7+", when the king stood on f7),
+    which a threat named after that move ("White threatens 8.Qf7+") is."""
+    pdf = make_book(tmp_path / "little.pdf", note5="Black threatens 6...Qxg5.",
+                    note7="White was threatening 8.Qf7+.")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    assert sans(book, main_line(book, g)) == MAIN_SAN
+    sans_all = [n.get("san") for n in book["nodes"].values()]
+    assert "Qxg5" not in sans_all and "Qg5" not in sans_all and "Qf7+" not in sans_all
+    reasons = {u["text"]: u["reason"] for u in book["unattached"]}
+    assert "threat" in reasons["6...Qxg5"] and "threat" in reasons["8.Qf7+"]
+    pdf = make_book(tmp_path / "now.pdf", note7="White threatens 8.Qf7+.")
+    book = build_book(pdf, output_dir=tmp_path / "output2", books_dir=tmp_path / "books2")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    qf7 = [i for i, n in book["nodes"].items() if n.get("san") == "Qf7+"]
+    assert len(qf7) == 1 and book["nodes"][qf7[0]]["parent"] == ids[13]
+
+
 CHAPTER_GAMES = [GAME_EN,
                  ["1.d4 d5 2.c4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 c6",
                   "8.Bd3"],
