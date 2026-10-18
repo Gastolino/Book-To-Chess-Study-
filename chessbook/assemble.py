@@ -1710,6 +1710,11 @@ class _Builder:
                 # sentence runs on to, not a solution number
                 if m and prev is not None and _REF_TAIL_RE.search(prev["text"]):
                     m = None
+                # "41." / "• • gg8": Black's move number, whose dots OCR set in
+                # a font of their own that the text layer holds as a line apart
+                # on the same row (primer p271, p316), not an exercise number
+                if m and k + 1 < len(lines) and self.dots_apart(ln, lines[k + 1]):
+                    m = None
                 if m:
                     rest = text[m.end() + 1:]
                     nxt = rest.split(" ")[0]
@@ -1751,6 +1756,17 @@ class _Builder:
                 st.event("diagram", did)
         st.finish()
         return st
+
+    @staticmethod
+    def dots_apart(ln, nxt):
+        """True when line ln is a move number alone ("41.") and the next line
+        starts on the same row, right after it, with the dots of a Black
+        move ("• • gg8")."""
+        if not re.fullmatch(r"\d{1,3}\.", ln["text"].strip()) or not _DOTS_RE.match(
+                (nxt["text"].split(" ") or [""])[0]):
+            return False
+        a, b = ln["bbox"], nxt["bbox"]
+        return min(a[3], b[3]) - max(a[1], b[1]) > 0.5 * (a[3] - a[1]) and -6 <= b[0] - a[2] <= 6
 
     def not_a_board(self, did):
         """True for a picture the selection leaves out that is no board at all:
