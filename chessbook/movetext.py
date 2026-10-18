@@ -1166,7 +1166,8 @@ _REF_WORD_RE = re.compile(r"^(?:[DO][il1]a?gr[ae](?:m|rn|in)s?|Diag\.?|Positions
 _CHECK_SIGN_RE = re.compile(r"^(?:tt?|[+#†‡])$")
 _ANNOT_RE = re.compile(r"^(?:[!?]{1,2}|\([!?]{1,2}\)|[+#†‡]|tt?|=|±|∓|\+-|-\+|=\+|\+=)$")
 _LAYOUT_RE = re.compile(r"^(?:\d{1,3}[a-d]?|[a-h]|[A-H])$")
-_PIECE_WORD_RE = re.compile(r"^[A-Z][a-z]?[a-h1-8]?[x:]?[a-h£tqo][lIiSsBbGZz]$")
+# (a rank OCR read as a letter may carry a "!" read as "l": "Wbsl" for Qb5!)
+_PIECE_WORD_RE = re.compile(r"^[A-Z][a-z]?[a-h1-8]?[x:]?[a-h£tqo](?:[lIiSsBbGZz]|[SsBGZz][lI])$")
 _STRONG_RE = re.compile(r"([a-h£tqo]|(?<![a-z])k)['`’]?([1-8])(?:=\S{0,4}|[^\d\s]{1,3})?$")
 _DIGIT_MAP = str.maketrans({"l": "1", "I": "1", "|": "1", "O": "0", "o": "0",
                             "S": "8", "s": "8", "B": "8"})
@@ -1927,6 +1928,17 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
                 i = after_number(pieces[i + 1][0], pieces[i + 1][1], i + 2)
                 continue
         mg = (None if exact else _OCR_GLUED_RE.match(w)) or _DOTLESS_RE.match(w)
+        md = _DOTLESS_RE.match(w)
+        if mg and md and mg is not md and not mg.group(1).isdigit() and _shape(md.group(2)):
+            # a number glued to a glyph's junk that starts with a letter read
+            # as a digit ("16lL'lf6+!", the knight's "lL'l"): the digits alone
+            # where the run expects them or where the letter makes no number
+            # of a game (161)
+            exp_n, _ = st.expect()
+            vd, vg = int(md.group(1)), _read_number(mg.group(1))
+            if (st.in_seq and exp_n is not None and exp_n in (vd, vd - 1)) or not vg \
+                    or vg[0] >= 100:
+                mg = md
         if mg:                                   # dotless number glued to a move: "4JWxd8t"
             val, rest_w = _read_number(mg.group(1))[0] if mg.group(1)[0] != "0" else 0, mg.group(2)
             exp_n, exp_b = st.expect()

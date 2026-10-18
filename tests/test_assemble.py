@@ -642,6 +642,21 @@ def test_a_move_number_that_ocr_set_in_the_body_font_at_a_line_start(tmp_path):
     assert all(book["nodes"][i]["status"] == "ok" for i in ids)
 
 
+def test_a_black_move_that_ocr_set_in_the_body_font_after_its_number(tmp_path):
+    """OCR sets a Black move of the main line in the body font now and then,
+    its number and dots, printed apart ("7 . . . Bc5", kia p246; "s . . .
+    Bxf3", p143), in the move font: the move goes with its number into the
+    main line, which would else break there and lose the moves after it."""
+    game = ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5",
+            [("5 . . . ", True), ("Nxd5", False)], "6.Nxf7 Kxf7 7.Qf3+ Ke6 8.Nc3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
 CHAPTER_GAMES = [GAME_EN,
                  ["1.d4 d5 2.c4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 c6",
                   "8.Bd3"],

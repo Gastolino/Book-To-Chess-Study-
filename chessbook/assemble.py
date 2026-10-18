@@ -1146,6 +1146,7 @@ class _Line:
     broken: bool = False        # a gap in the text ended the decoded part of the line
     hold: Optional[int] = None  # a diagram that may end the line (see _Builder.hold)
     hold_inside: bool = False   # that diagram stands among the moves of the line's last run
+    hold_did: Optional[str] = None  # the id of that diagram
     ended_at_hold: bool = False  # the line ended at that diagram (see _Builder.close)
     tail_end: int = 0           # end of its main runs left unread after it ended (from_diagram)
     hand_on: Optional[int] = None   # a diagram after which its notes may wait for the next line
@@ -1225,6 +1226,21 @@ _SQUARE_IN_WORD_RE = re.compile(r"[a-h][1-8]")
 _SQUARE_END_RE = re.compile(r"^[^(\[]*(?:[a-h][1-8lISsBGZ]|[0Oo]-[0Oo])[+#!?.lt]*$")
 # a move number, and the move printed against its dots ("20", "19...", "2.Nf3")
 _NUMBER_WORD_RE = re.compile(r"^([0-9lIO]{1,3})(?:([.…•·]+)(.*))?$")
+
+
+_DOTTED_NUMBER_HEAD_RE = re.compile(r"^(?:\d{1,3}|[sS]|\d[0-9lIOSs]{1,2})[.…•·]*$")
+
+
+def _after_number_dots(words, classes, i):
+    """True when the main-font words before word i are a move number and the
+    dots of a Black move ("7 . . .", "s . . .", OCR's 5), so that word i is
+    the move they number."""
+    k = i - 1
+    if k < 1 or not _DOTS_RE.match(words[k]):
+        return False
+    while k >= 0 and classes[k] == "m" and _DOTS_RE.match(words[k]):
+        k -= 1
+    return k >= 0 and classes[k] == "m" and bool(_DOTTED_NUMBER_HEAD_RE.match(words[k]))
 
 
 def _numbering_goes_on(words, classes, i):
@@ -1515,13 +1531,17 @@ class _Builder:
             j = i
             while j < len(out) and out[j] == "n":
                 j += 1
+            # (the main-font word before may be the dots of a Black move's
+            # number: "7 . . . ècs", whose junk glyph OCR set in the body font)
+            dots = _after_number_dots(words, out, i)
             if all(_shape(w) or _BARE_NUMBER_RE.match(w) or _DOTS_RE.match(w)
-                   for w in words[i:j]) and any(ch.isalnum() for ch in words[i - 1]) and (
+                   for w in words[i:j]) and (any(ch.isalnum() for ch in words[i - 1]) or dots) and (
                     any(ch.isalnum() for ch in words[j]) if j < len(out)
                     else _SQUARE_END_RE.search(words[j - 1])
                     and all(_SQUARE_END_RE.search(w) or _BARE_NUMBER_RE.match(w) or _DOTS_RE.match(w)
                             for w in words[i:j])
-                    and (self.starts_main(nxt) or _numbering_goes_on(words, out, i))):
+                    and (self.starts_main(nxt) or _numbering_goes_on(words, out, i)
+                         or (dots and j - i == 1))):
                 out[i:j] = ["m"] * (j - i)
             i = j
         # and a move number that starts the printed line in the body font
@@ -4455,6 +4475,7 @@ class _Builder:
         elif a.hold is None:
             a.hold = max(off, a.busy_until)     # a run may go on across the diagram
             a.hold_inside = off < a.busy_until
+            a.hold_did = did
 
     def continues_held(self, L, run):
         """The run read as the continuation of the held line L, or None."""
@@ -4466,7 +4487,31 @@ class _Builder:
             return None
         if _fit(self.dec.run(L.last_fen, _first_moves(run.tokens, 4)))[0] != 0:
             return None
+        if self.diagram_overrules(L, run):
+            return None
         return run
+
+    def diagram_overrules(self, L, run):
+        """True when the diagram that holds L shows another position than the
+        one L has reached, its board read surely, while L holds a doubtful
+        move (failed, guessed or ambiguous) and the run reads as legal play
+        from the diagram as well: the line went wrong before the diagram,
+        which the run goes on from (kia p274-279: a line that misread
+        14...dxc4 would else carry on over three diagrams)."""
+        did = L.hold_did
+        fen = self.diagram_fens.get(did) if did else None
+        if not fen or fen.split(" ")[0] == L.last_fen.split(" ")[0]:
+            return False
+        reading = self.readings.get(did) or {}
+        if reading.get("doubtful") or (reading.get("confidence") or 0) < 0.6:
+            return False
+        if not any(self.nodes[n]["status"] in ("failed", "guessed", "ambiguous")
+                   for n in L.main_nodes):
+            return False
+        b = chess.Board(fen)
+        b.turn = chess.BLACK if (run.ply or 0) % 2 else chess.WHITE
+        b.ep_square = None
+        return _fit(self.dec.run(b.fen(), _first_moves(run.tokens, 4)))[0] == 0
 
     def close(self, off):
         self.close_suspended()
