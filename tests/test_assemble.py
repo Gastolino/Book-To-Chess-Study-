@@ -1722,3 +1722,79 @@ def test_alekhine_page_13_bare_replies(tmp_path):
     joined = next(n for n in nodes.values() if n.get("key") == u["key"])
     assert joined["corrected"] == "connected" and nodes[joined["parent"]].get("key") == target["key"]
     assert not [x for x in book["unattached"] if x["key"] == u["key"]]
+
+
+def _long_note_book(path, tail):
+    """A game with a long bracketed note: its variation 4.d3 Nf6 5.O-O, many
+    lines of prose, and then tail, the moves that go on from the variation,
+    printed so far from the bracket that the reader of the text no longer
+    counts it open (Alekhine p55: "61.Kc4 ( ... ) 61...d1Q 62.b8Q+ Kh7")."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=2)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.c3 Nf6", bold=True)
+    w.line("[ Quieter is 4.d3 Nf6 5.O-O when", indent=8)
+    w.prose(n=26)
+    w.line(tail, indent=8)
+    w.line("with a slow game. ]")
+    w.line("5.d4 exd4 6.cxd4 Bb4+ 7.Bd2", bold=True)
+    w.line("1-0", bold=True)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(path)
+    return path
+
+
+def test_a_run_goes_on_from_the_variation_before_it_after_a_long_note(tmp_path):
+    """A run that goes on from the variation printed just before it in the
+    same note ("5...d6 6.c3 a6" after "4.d3 Nf6 5.O-O" and a page of prose)
+    is placed after that variation, though the bracket the variation stands
+    in is no longer counted open where the run is printed."""
+    pdf = _long_note_book(tmp_path / "little.pdf", "5...d6 6.c3 a6")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    nodes = book["nodes"]
+    marks = {}
+    for pg in book["pages"]:
+        for m in pg["marks"]:
+            marks.setdefault(m["raw"], m)
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids)[:9] == ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4"]
+    for raw in ("d6", "a6"):
+        m = marks[raw]
+        assert m["status"] == "ok" and m["node"], (m, book["unattached"])
+    castle = nodes[nodes[marks["d6"]["node"]]["parent"]]
+    assert castle["san"] == "O-O" and nodes[castle["parent"]]["san"] == "Nf6"
+
+
+def test_a_run_that_reads_after_two_variations_is_not_placed(tmp_path):
+    """When the run reads as well after two variations printed before it, at
+    different positions, the program does not choose between them."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=2)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.c3 Nf6", bold=True)
+    w.line("[ Quieter is 4.d3 Nf6 5.O-O when", indent=8)
+    w.prose(n=12)
+    w.line("( or 4.d3 Nf6 5.h3 )", indent=8)
+    w.prose(n=12)
+    w.line("5...d6 6.c3 a6", indent=8)
+    w.line("with a slow game. ]")
+    w.line("5.d4 exd4 6.cxd4 Bb4+ 7.Bd2", bold=True)
+    w.line("1-0", bold=True)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "two.pdf")
+    book = build_book(tmp_path / "two.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books")
+    marks = {}
+    for pg in book["pages"]:
+        for m in pg["marks"]:
+            marks.setdefault(m["raw"], m)
+    assert marks["d6"]["status"] != "ok" or not marks["d6"]["node"], marks["d6"]

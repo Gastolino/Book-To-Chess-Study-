@@ -4351,8 +4351,10 @@ class _Builder:
         L.end_offset = run.end
         self.finish_line(L)
 
-    def candidates(self, L, run, block, vars_):
-        """Places a note run can go, best first: (parent node, kind)."""
+    def candidates(self, L, run, block, vars_, deeper=False):
+        """Places a note run can go, best first: (parent node, kind). With
+        deeper, the ends of deeper variations before it come last (see
+        place)."""
         P = run.ply
         plies = [P] if P is not None else []
         if P is None:
@@ -4401,6 +4403,15 @@ class _Builder:
                 add(L.ply_node[ply - 1], "main")
             if ply == L.next_ply and not L.broken:
                 add(L.main_nodes[-1], "end")
+        if deeper:
+            # a variation printed before the run in a deeper bracket that ends
+            # where the run begins: the run goes on from it when no place
+            # above reads (a long note whose bracket the text no longer counts
+            # open, "61.Kc4 ( ... 61.Kc2 ... ) 61...d1Q 62.b8Q+"); nearest first
+            for ply in plies:
+                for v in reversed(vars_):
+                    if v["next"] == ply and v["depth"] > run.depth:
+                        add(v["last"], "deeper")
         return out
 
     def node_ply(self, nid):
@@ -4421,17 +4432,17 @@ class _Builder:
             if not cands:
                 return False, None
         else:
-            cands = self.candidates(L, run, block, vars_)
+            cands = self.candidates(L, run, block, vars_, deeper=not L.waiting)
         if not cands:
             return None
         if L.waiting:
             parent, how = cands[0]
             nodes = self.insert_waiting(L, parent, run)
         else:
-            best, tried = None, None
+            best, tried, deep = None, None, []
             for parent, how in cands:
                 fen = self.nodes[parent]["fen"]
-                if fen is None or (how == "resume" and best is not None):
+                if fen is None or (how in ("resume", "deeper") and best is not None):
                     continue            # an older variation only when nothing nearer reads
                 decs = self.dec.run(fen, run.tokens)
                 f = _fit(decs)
@@ -4439,11 +4450,19 @@ class _Builder:
                     f = (2,) + f[1:]        # a printed capture read as a quiet move
                 if tried is None:
                     tried = decs
+                if how == "deeper":
+                    # every move reads, and from one position only
+                    if f[0] == 0 and all(d.status == "ok" for d in decs):
+                        deep.append((f, parent, decs))
+                    continue
                 if f[0] == 0:
                     best = (f, parent, decs)
                     break
                 if f[0] == 1 and (best is None or f < best[0]):
                     best = (f, parent, decs)
+            if best is None and deep and len({_position(self.nodes[p]["fen"])
+                                              for _, p, _ in deep}) == 1:
+                best = deep[0]
             if best is None:
                 return False, self.unread_reason(L, run, tried)
             _, parent, decs = best
