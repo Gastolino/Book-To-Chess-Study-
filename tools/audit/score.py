@@ -20,7 +20,11 @@ read as the square they show, and so does "C4" for c4 (the gpa and KIA
 text layers). In the scanned books (Planning, KIA, the Primer), a letter
 that OCR confuses with another (b and h, c and e, "t" for f) reads as its
 twin only where the print, read literally, is no legal move in the position
-and the twin leaves the program's move as the one legal move it shows. The
+and the twin leaves the program's move as the one legal move it shows; a
+rank printed with no file before it (the Primer's OCR loses the f-file
+letter: "\\x185" for Nf5, "5" for f5, "\\x186" for Nf3) reads so as the f-file
+square, and the figurine's junk before a square counts as the piece the
+book's glyph table gives it, where it gives one piece. The
 success rate of a book is READ / TOKENS. It also prints the moves shown
 green against the print (WRONG), the measure of the silent errors. The
 check compares squares and piece letters with the text layer, so in a
@@ -121,7 +125,7 @@ TWIN_BOOKS = {"planning", "kia", "primer"}
 # print may show either square, so it counts as the program's move only where
 # the print read literally is no legal move in the position and the slip
 # leaves the program's move as the one legal move it can show.
-FILE_TWIN = {"C": "c", "t": "f", "H": "f", "k": "c", "r": "f", "£": "f",
+FILE_TWIN = {"C": "c", "t": "f", "H": "f", "U": "f", "k": "c", "r": "f", "£": "f",
              "b": "bh", "h": "bh", "c": "ce", "e": "ce"}
 RANK_TWIN = {"l": "127", "i": "17", "I": "17", "t": "17", "!": "1", "|": "1",
              "s": "58", "S": "58", "B": "8", "Z": "2", "z": "2"}
@@ -136,11 +140,42 @@ def twin_squares(raw):
         found = {f + x for f in files for x in ranks}
         if found:
             out.append((i, found))
+    # The Primer's OCR loses the f-file letter ("N5" for Nf5, "\x185", "ex5")
+    # and prints f3 as "6" ("\x186" for Nf3): a rank with no file before it
+    # may show the f-file square of that rank (f3 as well, for a "6").
+    have = {i for i, _ in out} | {i + 1 for i, _ in out}
+    for i, r in enumerate(raw):
+        if r not in "12345678" or i in have:
+            continue
+        if i and (raw[i - 1] in "abcdefgh" or raw[i - 1] in FILE_TWIN):
+            continue
+        out.append((i, {"f" + r} | ({"f3"} if r == "6" else set())))
+    out.sort(key=lambda t: t[0])
     return out
 
 
-def twin_agrees(raw, san):
+def glyph_pieces(book):
+    """The piece each figurine's junk stands for, where the book's glyph table
+    (learnt from the tokens only one reading fitted) gives it one piece."""
+    by = {}
+    for g in book.get("glyphs") or []:
+        c = by.setdefault(g["junk"], {})
+        c[g["piece"]] = c.get(g["piece"], 0) + g["count"]
+    out = {}
+    for junk, c in by.items():
+        top = max(c, key=c.get)
+        if c[top] >= 3 and c[top] >= 0.9 * sum(c.values()):
+            out[junk] = top
+    return out
+
+
+def twin_agrees(raw, san, glyphs=None):
     raw = _joined(_norm(raw)).replace("'", "")
+    # a check's "t" and the marks after it ("i.xflt!") are no square, where
+    # the print shows a square before them
+    bare = re.sub(r"[t!?+#]+$", "", raw)
+    if bare != raw and twin_squares(bare):
+        raw = bare
     ss = SQ.findall(_norm(san).split("=")[0])
     sq = twin_squares(raw)
     if not ss or not sq or ss[-1] not in sq[-1][1]:
@@ -150,14 +185,27 @@ def twin_agrees(raw, san):
         return False
     if re.match(r"[KQRBN][a-hx]", raw) and raw[:1] != (san[:1] if san[:1] in "KQRBN" else ""):
         return False
+    piece = san[:1] if san[:1] in "KQRBN" else "P"
+    core = raw.rstrip("!?+#t ")
+    if not squares(core) and re.search(r"[1-8]$", core):
+        # a lost f-file letter: a bare rank ("5", "ex5") is a pawn's move,
+        # a rank after a figurine's junk a piece's
+        if bool(re.fullmatch(r"([a-h]x)?[tHU]?[1-8]", core)) != (piece == "P"):
+            return False
     pos = sq[-1][0]
+    # the figurine's junk before the square names its piece
+    pre = raw[:pos].rstrip("x")
+    want = (glyphs or {}).get(pre)
+    if want and not (pre in "abcdefgh" and san[:2] == pre + "x") and want != piece:
+        return False
     return not ("x" in raw[max(0, pos - 2):pos] and "x" not in san)
 
 
-def agrees_here(raw, san, fen):
+def agrees_here(raw, san, fen, glyphs=None):
     """The move san agrees with raw, read literally or, where the literal
     reading is no legal move in the position fen, read with a twin slip that
-    leaves san the one legal move it shows."""
+    leaves san the one legal move it shows (of the piece the book's glyph
+    table gives the figurine's junk, where it gives one)."""
     if agrees(raw, san):
         return True
     if not fen or not san or san.startswith("O-O"):
@@ -168,14 +216,20 @@ def agrees_here(raw, san, fen):
         legal = [board.san(m) for m in board.legal_moves]
     except ValueError:
         return False
-    if any(agrees(raw, m) for m in legal):
+    # a move the print shows literally blocks the twin readings, unless the
+    # figurine's junk names another piece ("i.h6t", a bishop's, is no pawn's h6)
+    sq = squares(_joined(_norm(raw)).replace("'", ""))
+    want = (glyphs or {}).get(_joined(_norm(raw)).replace("'", "")[:sq[-1][0]].rstrip("x")) if sq else None
+    if any(agrees(raw, m) and (not want or (m[:1] if m[:1] in "KQRBN" else "P") == want)
+           for m in legal):
         return False
-    return [m for m in legal if twin_agrees(raw, m)] == [san]
+    return [m for m in legal if twin_agrees(raw, m, glyphs)] == [san]
 
 
 def score(book, twins=False):
     nodes = book["nodes"]
     good = {}
+    glyphs = glyph_pieces(book) if twins else {}
 
     def fen_before(nid):
         p = nodes[nid].get("parent")
@@ -185,7 +239,7 @@ def score(book, twins=False):
         n = nodes[nid]
         if not twins:
             return agrees(raw, n.get("san"))
-        return agrees_here(raw, n.get("san"), fen_before(nid))
+        return agrees_here(raw, n.get("san"), fen_before(nid), glyphs)
 
     def path_ok(nid):
         if nid in good:
