@@ -1251,8 +1251,33 @@ def _read_number(digits: str) -> list[int]:
     return vals
 
 
+def _unbang(w: str) -> str:
+    """The word with the 1, l or I after its whole square read as the "!" it
+    was (_BANG_RE: "exdsl" for exd5!, "hsl" for h5!, "lbd21" for Nd2!), so
+    that the tokenizer judges the move's shape and not that of a word ending
+    in "sl"; the word itself where it has no such ending."""
+    core, _, ann = _strip_suffix(w)
+    return core[:-1] + "!" + ann if _BANG_RE.search(core) else w
+
+
+_SHAPE_RANK = {None: 0, "weak": 1, "strong": 2}
+
+
 @lru_cache(maxsize=100000)
 def _shape(w: str) -> Optional[str]:
+    """'strong', 'weak' or None: how much a word looks like a move (or the
+    word read with its trailing 1, l or I as a "!", _unbang())."""
+    shp = _shape_of(w)
+    if shp != "strong":
+        u = _unbang(w)
+        if u != w:
+            alt = _shape_of(u)
+            if _SHAPE_RANK[alt] > _SHAPE_RANK[shp]:
+                return alt
+    return shp
+
+
+def _shape_of(w: str) -> Optional[str]:
     """'strong', 'weak' or None: how much a word looks like a move.
 
     Strong: a real digit for the rank with a file letter (or a usual OCR
@@ -1451,15 +1476,15 @@ def _prose_word(w: str) -> bool:
 
 
 def _square_word(w: str) -> bool:
-    """A short word that reads as a square ("es" for e5, "as" for a5)."""
-    core = _strip_suffix(w)[0]
+    """A short word that reads as a square ("es" for e5, "as" for a5, "hsl" for h5!)."""
+    core = _strip_suffix(_unbang(w))[0]
     return bool(re.fullmatch(r"[a-h][1-8lIiSsBbGZz]", core))
 
 
 def _move_like(w: str) -> bool:
     """A weakly shaped word that still has a move's build: a piece letter before
-    a file letter ("Bbs", "Raes") or a capture between two files ("gxfs")."""
-    core = _strip_suffix(w)[0]
+    a file letter ("Bbs", "Raes") or a capture between two files ("gxfs", "exdsl")."""
+    core = _strip_suffix(_unbang(w))[0]
     return bool(re.match(r"^(?:[KQRBN][a-h1-8]?x?|[a-h]x)[a-h£][1-8lIiSsBbGZz]$", core))
 
 
@@ -1909,11 +1934,13 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
         if shp != "weak":
             # a word that is also a square ("es" for e5) only with a move's
             # annotation or between moves
-            return _square_word(w2) and (_strip_suffix(w2)[2] != "" or next_is_boundary(j)
+            return _square_word(w2) and (_strip_suffix(_unbang(w2))[2] != "" or next_is_boundary(j)
                                          or next_is_strong(j))
         core = _strip_suffix(w2)[0]
         if not core.isalpha() or _move_like(w2):
             return True              # junk glyph, piece letter or capture: "dxeS", "Bbs"
+        if _square_word(w2) and _strip_suffix(_unbang(w2))[2] != "":
+            return True              # a square with a move's annotation: "hs!", "hsl" (h5!)
         return (next_is_boundary(j) or next_is_strong(j) or text[pieces[j][0]] == "("
                 or _move_like(text[pieces[j][0]:pieces[j][1]]))
 

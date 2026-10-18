@@ -268,6 +268,24 @@ def test_bang_read_as_1_after_a_square():
     assert "c1" in {s for q in parse_move_text("Rc1") for s in q["squares"]}
 
 
+def test_bang_read_as_l_after_a_rank_read_as_a_letter_is_a_move():
+    # KIA p156 "6 exdsl" (6 exd5!) and p37 "Answer: 14 hsl" (14 h5!): the "!"
+    # read as "l" after the 5 read as "s" made a word of prose of the move
+    # ("exdsl" ends in no square), and the main move was lost
+    b = chess.Board("rnbqk1nr/pp4pp/2pb4/3ppp2/4P3/3P1NP1/PPPN1P1P/R1BQKB1R w KQkq - 0 6")
+    seqs = find_sequences("6 exdsl \nIf instead 6 Bg2 Nf6", dotless=True)
+    assert [t.raw for t in seqs[0].tokens] == ["6", "exdsl"]
+    (d,) = decode(b, seqs[0].tokens)
+    assert (d.san, d.status, d.annotation) == ("exd5", "ok", "!")
+    b = chess.Board("r1bq1rk1/p2nbpp1/4p2p/1pppP3/7P/3P1NP1/PPPN1PB1/R1BQR1K1 w - - 0 14")
+    seqs = find_sequences("Answer: 14 hsl We have already seen", dotless=True)
+    assert [t.raw for t in seqs[0].tokens] == ["14", "hsl"]
+    (d,) = decode(b, seqs[0].tokens)
+    assert (d.san, d.status, d.annotation) == ("h5", "ok", "!")
+    # words of prose that end in a letter and an l stay prose
+    assert not find_sequences("6 dell If instead", dotless=True)
+
+
 def test_check_sign_before_annotation_is_not_a_rank():
     # "t!" after a rank digit is a check and an annotation; "Nt!" is Nf1 ("t" = f, "!" = 1)
     p = parse_move_text("Vlxh5t!")
