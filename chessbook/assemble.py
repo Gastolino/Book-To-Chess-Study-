@@ -146,7 +146,12 @@ A line whose main line stopped reading (a gap, or its last two moves
 failed: _Builder.lost) does not take the moves printed after a diagram as
 more unread moves: a run that continues its numbering after a diagram, or
 the part after a diagram of a run that goes on past one (split_lost), starts
-from the diagram instead (on_main, "resync").
+from the diagram instead (on_main, "resync"). So does a line that only seems
+to read: when a diagram read surely shows another position than the line
+reaches, and the moves printed after it read cleanly from the diagram but
+clearly worse from the line (diagram_resync), the line went wrong before
+the diagram, and its moves back to its last doubtful move or to the last
+diagram it reached are shown as guessed (doubt_resynced).
 
 Moves in long notation ("e2-e4", "Ng1-f3", "d2xd3") name the square the
 piece leaves, and only a move from that square reads them. Such a move
@@ -288,7 +293,7 @@ from .movetext import DOTLESS_MIN, DOTLESS_SHARE, tokenize
 from .movetext import LETTER_SETS, FIGURINES, _strip_suffix, _number_values, _relabel, _shape
 from .movetext import CAPTURE_CHARS, _ocr_digit_slip, junk_prefix, letter_symbol, symbol_span
 from .movetext import _resolve_letters, SHAPE_KNOWN, _RESULT_RE, _CASTLE_RE
-from .movetext import FILE_READ, RANK_READ, _Scorer, _parse_raw
+from .movetext import FILE_READ, RANK_READ, _Scorer, _parse_raw, C_FAIL
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -311,6 +316,10 @@ MISREAD_COST = 2.5              # how much dearer than the move read another rea
                                 # text may be for a diagram after it to decide it (a lost figurine)
 UNREACHED_DOUBT = 0             # doubtful squares of a diagram whose moves it may doubt ...
 UNREACHED_SQUARES = 8           # ... and the squares on which it differs from its line, at most
+RESYNC_MOVES = 8                # printed moves after a diagram read from it and from the line ...
+RESYNC_MARGIN = 2.0             # ... the line's reading of them dearer by this much at least ...
+RESYNC_STRETCH = 1.5            # ... with a move it fails or reads at this cost or more (diagram_resync)
+RESYNC_CONFIDENCE = 0.6         # the confidence of a diagram's reading that may overrule its line
 TWIN_MIN = 3                    # moves that read a glyph as another letter (square_twins) ...
 TWIN_SHARE = 2 / 3              # ... and their share of the glyph's moves that tell
 SUGGEST_GAP = 4                 # plies a run's number may lie ahead of the line it follows (suggest)
@@ -1381,6 +1390,7 @@ class _Builder:
         self.base = None                # the lines as assembled, before corrections
         self.misread = {}               # token key -> (move, text's move): misread_squares
         self.unreached = {}             # diagram id -> (placement, doubtful squares): misread_squares
+        self.resynced = {}              # diagram id -> key of the last move of the line it overruled
 
     def __getstate__(self):
         # (the caches of suggest and read_on are not part of a stored reading)
@@ -3136,6 +3146,13 @@ class _Builder:
         resync = (L is not None and P is not None and P == L.next_ply and not L.waiting
                   and self.lost(L)
                   and any(L.last_token_end <= off <= run.start for off, _ in self.diagram_events))
+        if L is not None and P is not None and P == L.next_ply and not L.waiting and not resync:
+            # (or a line that went wrong unseen: a diagram read surely shows
+            # the position the run reads from, which the line does not reach)
+            did = self.diagram_resync(L, run)
+            if did is not None:
+                resync = True
+                self.resynced[did] = self.nodes[L.main_nodes[-1]].get("key")
         if L is not None and P == L.next_ply and not resync:
             if self.pending_header and L.header is None:
                 L.header, L.kind, L.title = self.pending_header, "game", self.pending_header["text"]
@@ -3276,6 +3293,75 @@ class _Builder:
                 return None
         return cut
 
+    def resync_cut(self, L, run):
+        """The run cut at the first diagram printed among its moves, as
+        split_lost cuts it, when the line would go on wrong there: the diagram,
+        read surely, shows another position than the moves before it reach,
+        and the moves after it read from it, not from that position
+        (diagram_reads_better). The rest is taken up at the diagram (on_main,
+        resync). None otherwise."""
+        if L.waiting or L.broken or not L.last_fen:
+            return None
+        return self.resync_cut_at(L.last_fen, run)
+
+    def resync_cut_at(self, fen, run):
+        """resync_cut for a run read from fen."""
+        if self.replaying or self.deferred is not None:
+            return None
+        cut = self.diagram_cut(run)
+        if cut is None:
+            return None
+        head, tail, off = cut
+        did = next((d for o, _, kind, d in self.st.events if kind == "diagram" and o == off
+                    and self.diagram_selected(d)), None)
+        decs = self.dec.run(fen, head.tokens)
+        if did is None or not decs or not decs[-1].fen:
+            return None
+        return cut if self.diagram_reads_better(did, decs[-1].fen, tail) else None
+
+    def diagram_resync(self, L, run):
+        """The diagram printed between the line's last move and the run that
+        the run goes on from instead of the line (diagram_reads_better), or
+        None."""
+        if L.broken or not L.last_fen or not L.main_nodes or self.replaying:
+            return None
+        dids = [did for off, did in self.diagram_events
+                if L.last_token_end <= off <= run.start and self.diagram_selected(did)]
+        if dids and self.diagram_reads_better(dids[-1], L.last_fen, run):
+            return dids[-1]
+        return None
+
+    def diagram_reads_better(self, did, fen, run):
+        """True when the diagram, read surely, shows another position than fen
+        (the position a line reaches before the run), and the run's moves
+        read cleanly from it (with the side to move their numbering gives)
+        but clearly worse from fen: dearer by RESYNC_MARGIN or more, with a
+        move failed or read at RESYNC_STRETCH or more. The line then went
+        wrong before the diagram, which shows the true position (kia p117:
+        a line that misread 18 c4 and 23 Nxd4 reads 28 bxc5 as Rxc5 and 29
+        c6 as Rc6, which the diagram after 25 Rbc1 reads as printed)."""
+        shown = self.diagram_fens.get(did)
+        if not shown or not fen or shown.split(" ")[0] == fen.split(" ")[0]:
+            return False
+        reading = self.readings.get(did) or {}
+        if reading.get("doubtful") or (reading.get("confidence") or 0) < RESYNC_CONFIDENCE:
+            return False
+        toks = _first_moves(run.tokens, RESYNC_MOVES)
+        if sum(t.kind == "move" for t in toks) < 2:
+            return False
+        b = chess.Board(shown)
+        b.turn = chess.BLACK if (run.ply or 0) % 2 else chess.WHITE
+        b.ep_square = None
+        there = self.dec.run(b.fen(), toks)
+        if _fit(there)[0] != 0:
+            return False
+        here = self.dec.run(fen, toks)
+
+        def cost(decs):
+            return sum(C_FAIL if d.status == "failed" else d.cost for d in decs)
+        return (len(here) == len(there) and cost(here) - cost(there) >= RESYNC_MARGIN
+                and any(d.status == "failed" or d.cost >= RESYNC_STRETCH for d in here))
+
     def diagram_cut(self, run):
         """(head, tail, offset): the run cut at the first diagram of the
         selection printed among its moves, when moves stand on both sides and
@@ -3299,7 +3385,7 @@ class _Builder:
         """Extend L with the run, or with its moves up to a diagram printed
         among them when the line is lost there (split_lost): the rest of the
         run is taken up once the diagram is reached (chapter, "diagram")."""
-        cut = self.split_lost(L, run)
+        cut = self.split_lost(L, run) or self.resync_cut(L, run)
         if cut is None:
             self.extend(L, run)
             return
@@ -3483,7 +3569,13 @@ class _Builder:
             L = self.start_line(run, kind, title, False, None, born, header, chess.STARTING_FEN)
             self.pending_header = None
             self.active = L
-            self.extend(L, run, decs)
+            cut = self.resync_cut_at(chess.STARTING_FEN, run) if born == "main" else None
+            if cut is not None:
+                # (the moves after a diagram among them that they do not reach)
+                self.extend(L, cut[0])
+                self.deferred = (cut[2], cut[1])
+            else:
+                self.extend(L, run, decs)
             if did is not None and (born == "note" or self.exercise is not None):
                 # "This position arises after the opening moves 1.e4 e5 ...", or
                 # the solution of "how did this position arise?": the diagram
@@ -4669,8 +4761,11 @@ class _Builder:
         if not fen or fen.split(" ")[0] == L.last_fen.split(" ")[0]:
             return False
         reading = self.readings.get(did) or {}
-        if reading.get("doubtful") or (reading.get("confidence") or 0) < 0.6:
+        if reading.get("doubtful") or (reading.get("confidence") or 0) < RESYNC_CONFIDENCE:
             return False
+        if self.diagram_reads_better(did, L.last_fen, run):
+            self.resynced[did] = self.nodes[L.main_nodes[-1]].get("key")
+            return True
         if not any(self.nodes[n]["status"] in ("failed", "guessed", "ambiguous")
                    for n in L.main_nodes):
             return False
@@ -5021,6 +5116,50 @@ class _Builder:
                 n["status"] = "guessed"
                 for mk in self.marks.get(n["page"], ()):
                     if mk["node"] == j:
+                        mk["status"] = "guessed"
+                L = self.line_by_id.get(n["line"])
+                if L is not None and L.status == "ok":
+                    L.status = "guessed"
+                pages.add(n["page"])
+        return pages
+
+    def doubt_resynced(self):
+        """The moves of a line that a diagram overruled (on_main, resync by
+        diagram_resync): the line went wrong before the diagram, somewhere
+        after its last doubtful move or the last diagram it reached, and its
+        moves since are shown as "guessed" where the line reads them as "ok"
+        (from the first of them that leaves or reaches a square on which the
+        diagram differs, when one does: the diagram contradicts none before).
+        A move the reader gave stays as it is and ends the moves doubted, and
+        none is doubted once the line reaches the diagram. Returns the pages
+        whose marks changed."""
+        pages = set()
+        checked = set(self.checked.values())
+        for did, key in getattr(self, "resynced", {}).items():
+            nid = self.node_by_key.get(key) if key else None
+            node = self.nodes.get(nid)
+            shown = (self.fix_diagrams.get(did) or self.diagram_fens.get(did) or "").split(" ")[0]
+            differ = _unlike(shown, chess.Board(node["fen"])) \
+                if node is not None and node["fen"] and shown else None
+            if not differ:
+                continue
+            chain = []
+            while nid is not None and nid not in checked:
+                n = self.nodes[nid]
+                if n["parent"] is None or n["status"] != "ok" or n.get("corrected"):
+                    break
+                chain.append(nid)
+                nid = n["parent"]
+            # (the moves before the first that leaves or reaches a square the
+            # diagram shows otherwise are none of its business)
+            touch = [k for k, j in enumerate(chain) if self.nodes[j]["uci"] and {
+                chess.Move.from_uci(self.nodes[j]["uci"]).from_square,
+                chess.Move.from_uci(self.nodes[j]["uci"]).to_square} & differ]
+            for nid in chain[:touch[-1] + 1] if touch else chain:
+                n = self.nodes[nid]
+                n["status"] = "guessed"
+                for mk in self.marks.get(n["page"], ()):
+                    if mk["node"] == nid:
                         mk["status"] = "guessed"
                 L = self.line_by_id.get(n["line"])
                 if L is not None and L.status == "ok":
@@ -6123,6 +6262,7 @@ class _Builder:
             else:
                 self.checked = out
         pages |= self.doubt_unreached()
+        pages |= self.doubt_resynced()
         self.derived = sigs
         return {"lines": [L.id for L in todo], "removed": removed, "pages": sorted(pages),
                 "pending": sorted(pending)}

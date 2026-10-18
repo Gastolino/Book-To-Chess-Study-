@@ -988,6 +988,84 @@ def test_game_goes_on_from_a_diagram_among_its_unplaced_moves(tmp_path):
     assert nodes[marks["Bg4"]["node"]]["parent"] == ids[1]
 
 
+
+# the Ruy Lopez after 3...a6 (the book printed 3.Bc4 for 3.Bb5), as a board
+# reading gives it (White to move by default)
+RUY_FEN = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1"
+
+
+def _sure(*fens):
+    return {did: {"fen": fen, "confidence": 0.95, "doubtful": [], "turn": "w",
+                  "turn_from": "default", "flipped": False} for did, fen in fens}
+
+
+def _misprinted_game(tmp_path, after):
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 a6", bold=True)
+    w.line("Black asks the bishop at once where it is going.", indent=8)
+    w.picture("12")
+    w.line("The bishop keeps its diagonal.", indent=8)
+    w.line(after, bold=True)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+
+
+def test_game_goes_on_from_a_sure_diagram_it_does_not_reach(tmp_path):
+    """A line that reads but has gone wrong (here the book misprints 3.Bb5 as
+    3.Bc4, which is legal) runs on past the diagram that shows the true
+    position: the diagram, read surely, shows the bishop on b5, and the moves
+    printed after it ("4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 d6") read cleanly
+    from it but not from the line (no bishop of c4 reaches a4). The game goes
+    on from the diagram, and the line's moves before it, which no diagram
+    confirms, are doubtful (not green): one of them is wrong."""
+    _misprinted_game(tmp_path, "4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 d6")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": RUY_FEN},
+                      readings=_sure(("p2-1", RUY_FEN)))
+    marks = {}
+    for m in book["pages"][1]["marks"]:
+        marks.setdefault(m["raw"], m)
+    frag = [x for x in book["lines"] if x["start_fen"].split(" ")[0] == RUY_FEN.split(" ")[0]]
+    assert frag, [(x["title"], x["start_fen"]) for x in book["lines"]]
+    assert sans(book, main_line(book, frag[0])) == ["Ba4", "Nf6", "O-O", "Be7", "Re1", "b5",
+                                                    "Bb3", "d6"]
+    for raw in ("Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6"):
+        assert marks[raw]["status"] == "ok" and marks[raw]["node"], marks[raw]
+    for raw in ("Bc4", "a6"):
+        assert marks[raw]["status"] != "ok", marks[raw]
+    # (the diagram contradicts no move before the first that moves to c4 or b5)
+    for raw in ("e4", "e5", "Nf3"):
+        assert marks[raw]["status"] == "ok", marks[raw]
+
+
+def test_line_ignores_a_sure_diagram_its_moves_do_not_read_from(tmp_path):
+    """A diagram read surely that shows another position than the line (here
+    the Ruy Lopez after a game that does reach 3.Bc4 a6) does not overrule
+    the line when the moves printed after it do not read from it ("4.Bxf7+"
+    needs the bishop of c4): the line goes on, green, and stays whole."""
+    _misprinted_game(tmp_path, "4.Bxf7+ Kxf7 5.Nxe5+ Nxe5 6.d4 Nc6")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": RUY_FEN},
+                      readings=_sure(("p2-1", RUY_FEN)))
+    marks = {}
+    for m in book["pages"][1]["marks"]:
+        marks.setdefault(m["raw"], m)
+    assert not [x for x in book["lines"] if x["start_fen"].split(" ")[0] == RUY_FEN.split(" ")[0]]
+    game = [x for x in book["lines"] if x["kind"] == "game"]
+    assert sans(book, main_line(book, game[0]))[4:] == ["Bc4", "a6", "Bxf7+", "Kxf7", "Nxe5+",
+                                                        "Nxe5", "d4", "Nc6"]
+    for raw in ("Nc6", "a6", "Bxf7+", "Kxf7", "Nxe5+", "d4"):
+        assert marks[raw]["status"] == "ok" and marks[raw]["node"], marks[raw]
+
+
 ADAMS_GAME = ["1.e4 c5 2.Nf3 d6 3.d4 cxd4 4.Nxd4 Nf6", "5.Nc3 a6 6.Be3 e6 7.Be2 Qc7",
               "8.Qd2 b5 9.a3 Bb7 10.f3 Nc6", "11.O-O-O b4 12.axb4 Nxb4 13.g4 Be7",
               "14.g5 Nd7 15.h4 Nc5 16.Kb1 Rb8", "17.h5 O-O 18.g6 Bf6 19.Rdg1 Na8",
