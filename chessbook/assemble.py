@@ -1582,6 +1582,20 @@ class _Builder:
         for i, c in enumerate(out):
             if c is None and len(words[i]) >= 2 and words[i].isalpha() and not _shape(words[i]):
                 out[i] = "n"
+        # A move number and its dots in neither font go with the move they
+        # number when it stands in the move font ("However, the reply 2 ...
+        # ds!", gpa p8, whose numbers and dots are set in fonts of their own),
+        # not where the words before them stand in neither font too (OCR set
+        # a note in a third font with a move's glyph in the move font:
+        # "If now 1 6 ... Zxfl 17 .i.e ! Zb5", planning p38)
+        for i, c in enumerate(out):
+            if c is None and (i == 0 or out[i - 1] is not None) and (
+                    _BARE_NUMBER_RE.match(words[i]) or _NOTE_NUMBER_RE.match(words[i])):
+                j = i + 1
+                while j < len(out) and out[j] is None and _DOTS_RE.match(words[j]):
+                    j += 1
+                if j < len(out) and out[j] == "m" and _shape(words[j]):
+                    out[i:j] = ["m"] * (j - i)
         for i, c in enumerate(out):
             if c is None:
                 before = next((out[j] for j in range(i - 1, -1, -1) if out[j]), None)
@@ -3572,14 +3586,32 @@ class _Builder:
         n, black = L.next_ply // 2 + 1, bool(L.next_ply % 2)
         if first.side_known and bool(first.black) != black:
             return None
-        if not _ocr_digit_slip(first.raw, n):
-            return None
         toks = list(run.tokens)
-        _relabel(toks, n, black)
+        after = _relabel(toks, n, black)
+        if not _ocr_digit_slip(first.raw, n) and not (
+                abs(first.number - n) == 1 and self.numbered_on(run, after)):
+            return None
         if _fit(self.dec.run(L.last_fen, toks))[0] != 0:
             return None
         moves = [t for t in toks if t.kind == "move"]
         return replace(run, tokens=toks, moves=moves, ply=_ply(moves[0]))
+
+    def numbered_on(self, run, slot):
+        """True when the main run printed right after run, with nothing but
+        spaces between them, opens with the number of slot ((number, black),
+        the move that would follow run read from the line's next move): a
+        number one move off that its own printed line contradicts is the
+        book's misprint ("20...Nxe3+ 20.Qxe3" for 19...Nxe3+, "40.Ke1 Bh4+
+        40.Kf1" for 39.Ke1)."""
+        if run.ci != self.ci or not self.all_runs:
+            return False
+        k = bisect.bisect_right(self.run_starts, run.start)
+        nxt = next((r for r in self.all_runs[k:] if r.start >= run.end and r is not run), None)
+        if nxt is None or nxt.kind != "main" or self.st.orig_text[run.end:nxt.start].strip():
+            return False
+        t = nxt.tokens[0]
+        return (t.kind == "number" and t.number == slot[0]
+                and (bool(t.black) == slot[1] or not t.side_known))
 
     def gap(self, L, run, P, follow=True):
         """The numbering skips moves that the text does not show (P is the ply

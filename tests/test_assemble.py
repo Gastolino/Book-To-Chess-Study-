@@ -78,7 +78,8 @@ class _Writer:
     def mixed(self, parts, indent=0):
         x = self.x0 + indent
         for text, bold in parts:
-            font = "tibo" if bold else "tiro"
+            # (bold may name a font of its own: "helv" for a number set apart)
+            font = bold if isinstance(bold, str) else "tibo" if bold else "tiro"
             self.pg.insert_text((x, self.y), text, fontname=font, fontsize=10)
             x += pymupdf.get_text_length(text, font, 10)
         self.y += 13
@@ -615,6 +616,39 @@ def test_bang_read_as_1_after_a_square_is_the_annotation(tmp_path):
     ids = main_line(book, g)
     assert sans(book, ids)[18:] == ["c4", "b4", "h4", "a5"]
     assert all(book["nodes"][i]["status"] == "ok" for i in ids[18:])
+
+
+@pytest.mark.parametrize("tail", [["6.Nxf7 Kxf7 7.Qf3+", "8...Ke6 8.Nc3"],
+                                  ["6.Nxf7 Kxf7", "8.Qf3+ Ke6 8.Nc3"]])
+def test_move_number_misprinted_one_ahead_is_read_where_the_next_number_puts_it(tmp_path, tail):
+    """A typeset book misprints the number of the move that resumes the game
+    after a note one move ahead, and the next number of the same printed line
+    is right (Tangborn p110 "20...Nxe3+ 20.Qxe3" for 19...Nxe3+, p34 "40.Ke1
+    Bh4+ 40.Kf1" for 39.Ke1): the moves are the line's next ones, and the
+    game goes on, not broken at a gap that the text does not have."""
+    pdf = make_book(tmp_path / "little.pdf", game=[*GAME_EN[:2], *tail])
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_move_number_in_a_font_of_its_own_numbers_the_move_after_it(tmp_path):
+    """The book sets move numbers and their dots in a font of their own,
+    neither the notes' nor the moves' ("However, the reply 2 ... ds!", gpa
+    p8): after a word of the notes, the number still goes with the move it
+    numbers, so that the move is read where the number puts it, and the game
+    goes on after it instead of stopping short."""
+    game = [GAME_EN[0], "4.Ng5 d5 5.exd5",
+            [("The usual reply is ", False), ("5", "helv"), (" ... ", "helv"), ("Nxd5", True)],
+            "6.Nxf7 Kxf7 7.Qf3+ Ke6 8.Nc3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
 
 
 def test_square_split_by_an_ocr_space_is_one_move(tmp_path):
