@@ -652,3 +652,22 @@ def test_a_queen_move_with_its_mark_read_as_l():
     toks = tokenize("24 h4 1Le7 25 lZlce3 .iLcs 26 Wbsl\n\n  ", dotless=True, lenient=True)
     assert [(t.kind, t.raw) for t in toks[-3:]] == [("move", ".iLcs"), ("number", "26"),
                                                     ("move", "Wbsl")]
+
+
+def test_long_notation_names_both_squares():
+    """Brunthaler prints long notation, which its OCR reads with an "l" for
+    a 3 (and a 1, 2 or 7): p147 "l:tf5xfl" is Rf5xf3, the rook on f5 taking
+    on f3, not the quiet Rf7 that a plain "fl" would give; the queen then
+    takes back on f3 ("fi'g3xfl", Qg3xf3), not Qf2."""
+    board = chess.Board("r5k1/4q1p1/2b1p1P1/1p1pPr1p/p1pP1N1P/P1P2RQ1/2PK4/5R2 w - - 0 1")
+    assert sans("1.tLlf4xe6 l:tf5xfl 2.fi'g3xfl fi'e7xe6", board) == [
+        "Nxe6", "Rxf3", "Qxf3", "Qxe6"]
+
+
+def test_long_notation_with_the_rank_left_split_off():
+    """Brunthaler p146 prints "1...Qb1-b8", which its text splits into
+    "'iVb I -b8": one move, not Qb6 and two more."""
+    assert moves("l ... 'iVb I -b8 In a certain sense") == ["'iVb I -b8"]
+    board = chess.Board("4B1k1/5p1p/5pp1/p2Pn3/3QP3/7P/5PPK/1q6 b - - 0 1")
+    assert sans("1 ... 'iVb I -b8 2.ie8-a4 tZle5-f3+ 3.'1iih2-hl 'ilfb8-h2#", board) == [
+        "Qb8", "Ba4", "Nf3+", "Kh1", "Qh2#"]

@@ -636,6 +636,7 @@ class _Parse:
     bang: bool = False         # the token's last 1, l or I read as "!" (_BANG_RE)
     whole: Optional[str] = None  # a sign for the whole square (SQUARE_FORMS), dest its square
     nocheck: bool = False      # the final "t" read as that sign's rank 1, not as a check sign
+    long: bool = False         # long notation: dfile and drank name the square the piece leaves
 
 
 @dataclass
@@ -710,12 +711,44 @@ def _capture_opts(rest: str):
 
 _DIS_RANK = {c: RANK_READ[c] for c in "12345678lI"}
 _DIS_FILE = {c: v for c, v in FILE_READ.items() if c in "abcdefgh£"}
+# Long notation ("Rf5xf3") prints the square the piece leaves as well as the
+# square it goes to; a piece must stand on the first, and only that piece's
+# moves to a square that fits the second are readings. That leaves so few
+# moves that OCR's looser slips of a rank may be read there, which a short
+# move cannot afford: in a scan read by ClearScan (Brunthaler) an "l" stands
+# for a 3 as well as a 1 or 7 ("l:tf5xfl" for Rf5xf3, "'iVdlxe4+" for
+# Qd3xe4+), in the square left also for a 2 ("'iVclxg6+" for Qc2xg6+), "S",
+# "s" and "B" there for 5 or 8 ("eSxd4"), and an "H" in the square reached
+# for a digit with the check sign merged into it ("/bf4-hH" for Nf4-h3+,
+# "ie4-dH" for Be4-d5+, "l:tg8-gH" for Rg8-g2+). The readings below are
+# added to the usual ones, in a long move only (LONG_FROM_EXTRA in the
+# square left, LONG_RANK_EXTRA in the square reached).
+LONG_RANK_EXTRA: dict[str, dict[int, float]] = {
+    "l": {2: 0.9}, "fl": {2: 0.9}, "I": {2: 1.0}, "i": {2: 1.0},
+    "H": {1: 0.9, 2: 0.9, 4: 0.9},
+}
+LONG_FROM_EXTRA: dict[str, dict[int, float]] = {
+    "l": {1: 1.1, 2: 0.9}, "I": {1: 1.1, 2: 1.0},
+}
+_LONG_DIS_RANK = {c: {**LONG_FROM_EXTRA.get(c, {}), **RANK_READ[c]} for c in "12345678lISsB"}
 
 
-def _disamb_opts(rest: str):
+def long_rank_costs(costs: dict, rch: Optional[str]) -> dict:
+    """costs (a rank character's readings) with the readings long notation adds."""
+    extra = LONG_RANK_EXTRA.get(rch or "")
+    if not extra:
+        return costs
+    out = dict(costs)
+    for k, v in extra.items():
+        out[k] = min(out.get(k, math.inf), v)
+    return out
+
+
+def _disamb_opts(rest: str, long: bool = False):
     opts = [(None, None, rest)]
-    if rest and rest[-1] in _DIS_RANK:
-        dr = _DIS_RANK[rest[-1]]
+    ranks = _LONG_DIS_RANK if long else _DIS_RANK
+    if rest and rest[-1] in ranks:
+        dr = ranks[rest[-1]]
         opts.append((None, dr, rest[:-1]))
         if len(rest) >= 2 and rest[-2] in _DIS_FILE:
             opts.append((_DIS_FILE[rest[-2]], dr, rest[:-2]))
@@ -733,6 +766,7 @@ def _dest_costs(fread: Optional[dict], rread: Optional[dict]) -> dict:
 def _enumerate_parses(core: str) -> list:
     out = []
     n = len(core)
+    is_long = bool(_LONG_CORE_RE.search(core))
     heads = []
     eq = core.rfind("=")
     if eq > 0:
@@ -750,6 +784,8 @@ def _enumerate_parses(core: str) -> list:
         rank_opts = []
         if head[-1] in RANK_READ:
             rank_opts.append((RANK_READ[head[-1]], head[-1], head[:-1]))
+        elif is_long and head[-1] in LONG_RANK_EXTRA:
+            rank_opts.append((LONG_RANK_EXTRA[head[-1]], head[-1], head[:-1]))
         elif head[-1] in FILE_READ and not head[-1].isupper():
             rank_opts.append((None, None, head))          # rank missing
         for rread, rch, before in rank_opts:
@@ -767,18 +803,19 @@ def _enumerate_parses(core: str) -> list:
                     rread, rch = RANK_READ["fl"], "fl"      # the "fl" ligature
                 dest = _dest_costs(fread, rread)
                 for cap, rest2 in _capture_opts(rest):
-                    for dfile, drank, prefix in _disamb_opts(rest2):
+                    for dfile, drank, prefix in _disamb_opts(rest2, is_long):
                         if cap == "-" and dfile is None:
                             continue
                         out.append(_Parse(_strip_spaces(prefix), dfile, drank, cap, dest, promo,
-                                          fch, rch))
+                                          fch, rch, long=is_long and dfile is not None
+                                          and drank is not None))
     for form, dest in SQUARE_FORMS.items():
         if _square_form(core, form):
             for cap, rest in _capture_opts(core[:-len(form)].rstrip(NOISE_CHARS)):
                 for dfile, drank, prefix in _disamb_opts(rest):
                     out.append(_Parse(_strip_spaces(prefix), dfile, drank, cap, dest, None,
                                       whole=form))
-    if _LONG_CORE_RE.search(core):
+    if is_long:
         # long notation ("Ng1-f3", "e2-e4", "d2xd3"): the square the piece leaves is
         # printed, so only readings that take it as that square count
         out = [q for q in out if q.dfile is not None and q.drank is not None] or out
@@ -803,7 +840,7 @@ def _square_form(core: str, form: str) -> bool:
             or pre.rstrip("x") in _LOWER_JUNK)
 
 
-_LONG_CORE_RE = re.compile(r"[a-h£][1-8lI]\s?[-–—x:×]\s?[a-h£][1-8lIBS]")
+_LONG_CORE_RE = re.compile(r"[a-h£][1-8lISsB]\s?[-–—x:×]\s?[a-h£][1-8lIiBSsH]")
 # A whole square and a 1, l or I after it: OCR's reading of a "!" ("c41?" for
 # c4!?, "d3l" for d3!, "hSI" for h5!). Read as the rank, it would leave the
 # square as junk.
@@ -820,6 +857,8 @@ def _parse_raw(raw: str) -> _Parsed:
         zeros = sum(ch in "0Oo°" for ch in cc)
         castle = "Q" if zeros >= 3 else "K"
     parses = [] if castle else _enumerate_parses(core)
+    if not castle and not check and core.endswith("H") and any(q.long for q in parses):
+        check = 1               # "/bf4-hH": the H is a digit and the check sign (LONG_RANK_EXTRA)
     if not castle and _BANG_RE.search(core):
         parses += [replace(q, bang=True) for q in _enumerate_parses(core[:-1])]
     if not parses and not castle and check and text.endswith("t"):
@@ -980,6 +1019,8 @@ class _Scorer:
                 continue        # the book's piece letter ("C3" in French) is no file
             fc = g.file_costs(p.fch, p.rch is None)
             rc = g.rank_costs(p.rch, p.fch is None)
+            if p.long and not g.exact:
+                rc = long_rank_costs(rc, p.rch)
             for f, a in fc.items():
                 for r, b_ in rc.items():
                     sq = chess.square(f, r)
@@ -1775,6 +1816,17 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
                     return False
         return True
 
+    def split_from_rank(i, w):
+        """True when w is the lone rank of a long move's square left, between
+        the move's glyph and file ("'iVb") and the rest ("-b8", "xb8")."""
+        if len(w) != 1 or w not in "12345678lI" or i + 1 >= len(pieces) \
+                or pieces[i + 1][0] - pieces[i][1] > 2:
+            return False
+        core = _strip_suffix(toks[-1].raw)[0]
+        nxt = text[pieces[i + 1][0]:pieces[i + 1][1]]
+        return (bool(re.search(r"[a-h£]$", core)) and not re.search(r"[a-h£]['`]?[1-8lIBSs]", core)
+                and bool(re.match(r"[-–x:][a-h£]\s?[1-8lIBSs]", nxt)))
+
     def slot_before_number(j):
         """True when piece j is the move number that follows exactly one more move
         (also a number glued to its move without a dot: "14J\x1dhcl")."""
@@ -1845,6 +1897,15 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
     while i < len(pieces):
         s, e = pieces[i]
         w = text[s:e]
+        if not exact and toks and toks[-1].kind == "move" and s - toks[-1].end <= 2 \
+                and split_from_rank(i, w):
+            # "'iVb I -b8" for Qb1-b8: the rank of the square left, split off
+            # on both sides, and the rest of the long move after it
+            t = toks[-1]
+            e = pieces[i + 1][1]
+            toks[-1] = replace(t, raw=text[t.start:e], end=e)
+            i += 2
+            continue
         if toks and toks[-1].kind == "move" and s - toks[-1].end <= 2 and (
                 _ANNOT_RE.match(w)                                   # "e4 !"
                 or (_LONG_TAIL_RE.match(w) and _LONG_HEAD_RE.search(toks[-1].raw))  # "e7 -e5"
