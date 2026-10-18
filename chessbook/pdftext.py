@@ -49,6 +49,13 @@ is made of control characters that Python treats as white space ("\x1d",
 are built from character boxes and split on real spaces only. line["text"] is
 the words joined by single spaces: use line["text"].split(" "), never
 str.split().
+
+The text layer names each glyph by the letter OCR read. A font that OCR
+traced from the scan (ClearScan) draws one letter with several glyphs, and
+names some by the letter's twin (an "h" named "b"); set_letter_map reads
+the glyphs that the book's moves showed to be another letter as that letter
+where they stand as the file of a square (square_glyphs gives the glyph of
+each letter).
 """
 from __future__ import annotations
 
@@ -94,6 +101,8 @@ _FLAGS = pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES
 SPACES = " \xa0\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u202f\u205f\u3000"
 _SPACE_SET = frozenset(SPACES)
 COORD_CHARS = frozenset("abcdefgh12345678")
+_FILE_SET = frozenset("abcdefgh")
+_RANK_CHARS = frozenset("12345678lISsB")     # a rank, and what OCR prints for some
 SIZE_TOL = 0.04          # sizes of one font within 4 % are one size
 HEAD_ZONE = 0.13         # running heads and page numbers lie in the top or bottom 13 %
 
@@ -226,6 +235,62 @@ def figurine_map(doc):
     return dict(_cache(_as_doc(doc)).get("figmap") or {})
 
 
+def set_letter_map(doc, mapping):
+    """Read the file letter of a square as the letter its glyph was traced from.
+
+    A font that OCR traced from the scan (ClearScan) draws one letter with
+    several glyphs, one for each shape it found on the pages, and the text
+    layer names each glyph by the letter OCR took it for: a glyph traced
+    from an h may be named b wherever it stands. mapping: {(font name, glyph
+    id): letter} (see assemble.square_twins). Every later page_lines call on
+    doc gives that letter in place of the text's where the glyph stands as
+    the file of a square: a rank follows it, and no letter after that. Only
+    the pages' lines are read again; the fonts and chapters stay as learnt."""
+    doc = _as_doc(doc)
+    c = _cache(doc)
+    mapping = dict(mapping or {})
+    if c.get("lettermap", {}) == mapping:
+        return
+    c["raw"] = {}
+    c["lettermap"] = mapping
+
+
+def letter_map(doc):
+    """The mapping set by set_letter_map ({} when none)."""
+    return dict(_cache(_as_doc(doc)).get("lettermap") or {})
+
+
+def square_glyphs(doc, i):
+    """The letters a-h of page i (0-based) as the text layer names them, with
+    the glyph that draws each: [(letter, font name, glyph id, bbox)]."""
+    doc = _as_doc(doc)
+    cache = _cache(doc).setdefault("glyphs", {})
+    if i not in cache:
+        cache[i] = [(chr(ch[0]), s["font"], ch[1], tuple(ch[3]))
+                    for s in doc[i].get_texttrace() for ch in s["chars"]
+                    if ch[1] >= 0 and chr(ch[0]) in _FILE_SET]
+    return cache[i]
+
+
+def _letter_swaps(doc, i, chars, origins, mapping):
+    """The letters of chars (one line of page i) that set_letter_map reads
+    otherwise: {index: letter}. origins holds each character's (font, x, y)."""
+    out = {}
+    for j, (ch, *_rest) in enumerate(chars):
+        if ch not in _FILE_SET or j + 1 >= len(chars) or chars[j + 1][0] not in _RANK_CHARS \
+                or (j + 2 < len(chars) and chars[j + 2][0].islower() and chars[j + 2][0] != "x"):
+            continue
+        drawn = _cache(doc).setdefault("drawn", {})
+        if i not in drawn:
+            drawn[i] = {(s["font"], round(c[2][0], 1), round(c[2][1], 1), chr(c[0])): c[1]
+                        for s in doc[i].get_texttrace() for c in s["chars"]}
+        font, x, y = origins[j]
+        letter = mapping.get((font, drawn[i].get((font, round(x, 1), round(y, 1), ch))))
+        if letter:
+            out[j] = letter
+    return out
+
+
 # ---------------------------------------------------------------- raw pages
 
 def _pictures(page, text_diagrams=()):
@@ -299,13 +364,14 @@ def _raw_page(doc, i):
     inject = injected_strings(doc)
     d = page.get_text("rawdict", flags=_FLAGS)
     fig = _cache(doc).get("figmap")
+    letters = _cache(doc).get("lettermap")
     lines, whole = [], []
     for b in d["blocks"]:
         if b.get("type", 0) != 0:
             continue
         for ln in b["lines"]:
             whole.append(("".join(c["c"] for s in ln["spans"] for c in s["chars"]), ln["bbox"]))
-            spans, chars = [], []
+            spans, chars, origins = [], [], []
             for s in ln["spans"]:
                 size, base = s["size"], s["origin"][1]
                 # ClearScan fonts can claim absurd ascenders (3.3 em), which
@@ -322,6 +388,10 @@ def _raw_page(doc, i):
                 for c in s["chars"]:
                     ch = fig.get((s["font"], c["c"]), c["c"]) if fig else c["c"]
                     chars.append((ch, c["bbox"][0], c["bbox"][2], si))
+                    origins.append((s["font"], *c["origin"]))
+            if letters:
+                for j, letter in _letter_swaps(doc, i, chars, origins, letters).items():
+                    chars[j] = (letter, *chars[j][1:])
             bridges = []
             if inject:
                 cut = drop_injected("".join(ch[0] for ch in chars), inject)
@@ -478,6 +548,27 @@ def _pic_zone_index(bbox, pics, margin):
     return None if best is None else best[1]
 
 
+# A line that starts as a line of moves does: a move number (OCR's "1o" for
+# 10, "4S" for 45) or the dots of Black's move ("... bs", "• • • bs?").
+_MOVE_LINE_RE = re.compile(r"^(?:\d{1,3}|[1-9][oOSs]|[1l][0-9oOS])(?:\.|\s|$)|^(?:[.•·]\s?){3,}")
+
+
+def _move_line(t):
+    """Whether a line starts as a line of moves: a number or dots, then a word
+    with a Latin letter (OCR's "1o" alone is 10)."""
+    m = _MOVE_LINE_RE.match(t)
+    if not m:
+        return False
+    rest = t[m.end():].lstrip(" .•·").split(" ")[0]
+    return bool(re.search(r"[A-Za-z]", rest or m.group(0)))
+
+
+def _squarish(r):
+    """Whether a picture has a board's shape (no more than half again as wide
+    as it is tall, or as tall as it is wide)."""
+    return r.width <= 1.5 * r.height and r.height <= 1.5 * r.width
+
+
 def _bands(raws, body_size):
     """Learn where running heads and page numbers sit: baseline limits for the
     top band and for the bottom band (None where the book has none).
@@ -486,9 +577,15 @@ def _bands(raws, body_size):
     body text, that is a page number or a text recurring on many pages. A
     group of candidates counts only when it keeps one baseline and is the
     outermost line on its pages, which rules out captions such as "White to
-    move" that recur near the foot of a page at varying heights."""
+    move" that recur near the foot of a page at varying heights.
+
+    A text is grouped without the page's own number ("47 Opening Traps" and
+    "48 Opening Traps" are one head) but with every other number, so that
+    chapter titles "Chapter 1" .. "Chapter 10", each at the top of its page,
+    are not taken for one head recurring on ten pages."""
     n = len(raws)
     groups = defaultdict(list)
+    texts = []
     for p, raw in enumerate(raws, 1):
         H, lines = raw["h"], raw["lines"]
         if not lines:
@@ -505,9 +602,7 @@ def _bands(raws, body_size):
             num = _page_number(ln["text"])
             if num is not None:
                 groups[(zone, "num", p - num)].append((p, ln["base"], outer))
-            nt = "".join(ch for ch in ln["text"].lower() if ch.isalpha())
-            if len(nt) >= 4:
-                groups[(zone, "txt", nt)].append((p, ln["base"], outer))
+            texts.append((zone, num, ln["text"], (p, ln["base"], outer)))
     bases = {"top": [], "bot": []}
     # The printed page number is the PDF page minus an offset that most
     # running heads agree on (front matter without folios aside).
@@ -520,6 +615,16 @@ def _bands(raws, body_size):
         off, cnt = offsets.most_common(1)[0]
         if cnt >= max(3, 0.25 * n):
             folio = off
+    for zone, num, text, o in texts:
+        words = text.strip(SPACES).split(" ")
+        if num is not None and folio is not None and o[0] - num == folio and len(words) > 1:
+            # the word _page_number took the number from: the first, else the last
+            first = words[0].translate(DIGIT_FIX)
+            lead = first.isdigit() and int(first) == num and any(c.isdigit() for c in words[0])
+            words = words[1:] if lead else words[:-1]
+        nt = "".join(ch for ch in " ".join(words).lower() if ch.isalnum())
+        if sum(ch.isalpha() for ch in nt) >= 4:
+            groups[(zone, "txt", nt)].append(o)
     for (zone, kind, _), occ in groups.items():
         pages = {o[0] for o in occ}
         if len(pages) < (max(3, 0.1 * n) if kind == "num" else max(4, 0.04 * n)):
@@ -844,6 +949,43 @@ def book_fonts(doc):
     return copy.deepcopy(_fonts_internal(_as_doc(doc)))
 
 
+# Fonts that OCR sets its text in: ClearScan traces fonts from the scan
+# ("Fd123456"), Tesseract draws invisible text in GlyphLessFont.
+_OCR_FONT_RE = re.compile(r"^(?:[A-Z]{6}\+)?(?:Fd\d+|GlyphLessFont)(?:-|$)")
+# Programs that make a PDF's text by OCR, as its producer or creator names them.
+_OCR_PRODUCER_RE = re.compile(r"(?i)paper capture|clearscan|finereader|abbyy|tesseract|"
+                              r"omnipage|readiris|\bocr\b")
+OCR_SHARE = 0.01          # more of a book's characters from OCR than this: no exact text
+
+
+def exact_text(doc):
+    """True when the book's text layer holds the letters it was set in, so that
+    a move reads as printed: "Be4" is a bishop to e4 and nothing else. False
+    when the PDF names an OCR program as its producer or creator, or when more
+    than OCR_SHARE of its characters are not the type's: text drawn invisibly
+    over the picture of a page (an OCR layer), set in a font that OCR traced
+    from the scan (ClearScan), or in a Type3 font, whose letters are pictures
+    the text layer only names. A book with no text at all is no exact text.
+    movetext.GlyphModel(exact=...) reads the moves accordingly."""
+    doc = _as_doc(doc)
+    c = _cache(doc)
+    meta = doc.metadata or {}
+    if _OCR_PRODUCER_RE.search(f"{meta.get('producer') or ''} {meta.get('creator') or ''}"):
+        return False
+    if "exact" not in c:
+        chars = ocr = 0
+        for page in doc:
+            type3 = {f[3].split("+")[-1] for f in page.get_fonts() if f[2] == "Type3"}
+            for s in page.get_texttrace():
+                n = len(s["chars"])
+                chars += n
+                if s["type"] in (3, 7) or _OCR_FONT_RE.match(s["font"]) or \
+                        s["font"] in type3 or s["font"].startswith("Unnamed-T3"):
+                    ocr += n
+        c["exact"] = chars > 0 and ocr <= OCR_SHARE * chars
+    return c["exact"]
+
+
 class _Ctx:
     """Fast lookups built once from a fonts dict."""
 
@@ -1047,7 +1189,7 @@ def page_lines(doc, page_index, fonts=None):
             continue
         t, r = rl["raw_text"], rl["raw_bbox"]
         m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
-        if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head_y
+        if (m and m.group(1) not in RESULTS and head_y < (r.y0 + r.y1) / 2 < H - head_y
                 and not any(r.intersects(pc + (-12, -4, 12, 4)) and not between_boards(r, pc)
                             for pc in pics)
                 and not continues_as_move(r, row_texts)):
@@ -1082,7 +1224,9 @@ def page_lines(doc, page_index, fonts=None):
         if best is not None:
             role[k], diag[k] = "label", f"p{p}-{best[1] + 1}"
 
-    # Coordinates and other marks on or beside a board picture.
+    # Coordinates and other marks on or beside a board picture. A number with
+    # its move or dots beside it ("12" and "d6!" under a board) is a move
+    # number, unless it is a rank digit at the board's edge.
     if pics:
         for k, rl in enumerate(rls):
             if role[k]:
@@ -1092,12 +1236,25 @@ def page_lines(doc, page_index, fonts=None):
             j = _pic_zone_index(rl["bbox"], pics, (2.5 if short else 1.6) * bs)
             if j is None:
                 continue
+            t, r, pic = rl["raw_text"].strip(), rl["raw_bbox"], pics[j]
+            rank = (len(t) == 1 and pic.y0 <= (r.y0 + r.y1) / 2 <= pic.y1
+                    and (abs(r.x1 - pic.x0) <= 16 or abs(r.x0 - pic.x1) <= 16))
+            if LABEL_RE.match(t) and not rank and continues_as_move(r, row_texts):
+                continue
             box = pymupdf.Rect(rl["bbox"])
             inside = abs(box & pics[j]) >= 0.6 * abs(box) if abs(box) else False
             # Text over a picture is OCR junk read from the board, unless it
             # reads as words (a chapter title printed over an ornament).
             vis = [ch for ch in rl["text"] if ch != " "]
             junky = sum(ch.isalnum() for ch in vis) < 0.6 * len(vis)
+            # Coordinates stand beside a board, which is square: a wide
+            # picture (the shaded box of a question set across the page) has
+            # none, and a line of moves printed just above or below it ("11
+            # es", "19 lL!asl" in OCR's letters) is no coordinate.
+            if (not inside and not _squarish(pic) and _move_line(t) and len(rl["words"]) <= 6
+                    and _pic_zone_index(rl["bbox"], [pc for pc in pics if _squarish(pc)],
+                                        (2.5 if short else 1.6) * bs) is None):
+                continue
             if (inside and junky) or all(_coord_token(w["text"]) for w in rl["words"]) or (
                     not f["real"] and not f["kinds"]["move"]):
                 role[k], diag[k] = "coord", f"p{p}-{j + 1}"
@@ -1156,6 +1313,24 @@ def page_lines(doc, page_index, fonts=None):
             role[k] = "text"
         else:
             role[k] = "blank"
+
+    # A game named in a sentence that runs over a line break ("The position
+    # is unclear as in S." over "Lakatos-D.Majer, correspondence 2009" over
+    # "since White ..."): the line set right under a line of the same
+    # paragraph that breaks off (no full stop, or a player's initial) is the
+    # sentence going on, no game header, when the names are in the body font.
+    for k, rl in enumerate(rls):
+        if role[k] != "game_header" or not _names_font_is_body(rl, ctx):
+            continue
+        x0, y0, x1, _ = rl["bbox"]
+        for j, rj in enumerate(rls):
+            bj = rj["bbox"]
+            if (j != k and role[j] in ("text", "moves") and -0.3 * bs <= y0 - bj[3] <= 0.4 * bs
+                    and abs(bj[0] - x0) <= bs and min(x1, bj[2]) - max(x0, bj[0]) > 0
+                    and len(rj["text"]) >= 25
+                    and re.search(r"(?:\b[A-Z][a-z]?\.|[^.!?:;)\]\s])\s*$", rj["text"])):
+                role[k] = "text"
+                break
 
     # Without a moves font, a line that opens with an unnumbered move right
     # under a sentence that breaks off mid-way ("... well placed after 22.Ne2"

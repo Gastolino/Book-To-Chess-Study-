@@ -7,17 +7,18 @@
 // fifth move and White's sixth (tests/test_reader.py builds it, with the patch
 // that chessbook/live.py makes once the reader gives both moves), and checks,
 // with the pencil that comes on with reading mode: outside reading mode a tap on a red move only chooses
-// it; in reading mode a tap on a red move on the page opens its corrector,
-// which says that the position is unknown because the text lacks a move
-// before it and offers the gap's corrector; the board shows the position
-// before the gap; the gap's corrector is titled "Give Black's move 5", lists
+// it; in reading mode a tap on the red move after the gap asks for the move
+// the text lacks, as the thread asks for any box ("Black's 5th move is
+// missing"), with the board, on the position before the gap, taking it; its
+// More opens the gap's corrector, titled "Give Black's move 5", which lists
 // the legal moves, takes a typed move and then the next missing move, and
-// stores them as the "gaps" correction; a tap on the gap or on a red move in
-// the move list opens its corrector; the Review list names the gap; the
+// stores them as the "gaps" correction; a tap on the gap in the move list
+// opens its corrector, and a tap on a red move there its own, which says that
+// the position is unknown because the text lacks a move before it, with the
+// board on the position before the gap; the Review list names the gap; the
 // patch of the browser app turns the gap into the moves given and the moves
-// after it into decoded moves; on a phone the corrector opens as the sheet
-// above the bar. Prints one JSON object; the exit code is 1 when a check
-// fails.
+// after it into decoded moves; on a phone the sheet opens above the bar.
+// Prints one JSON object; the exit code is 1 when a check fails.
 const { chromium } = require("playwright");
 const path = require("path");
 const fs = require("fs");
@@ -74,22 +75,27 @@ function check(name, cond, detail) {
       window.readerState.nodeId === id && document.getElementById("fix").hidden &&
       !document.body.classList.contains("reading"), info.after));
 
-    // in reading mode a tap on the red move after the gap opens its corrector at once
+    // in reading mode a tap on the red move after the gap asks at once for the moves the text lacks,
+    // as the thread asks for any box: the board takes them, from the position before the gap
     await page.click("#showread");
     await page.click(".mark[data-node='" + info.after + "']");
-    await page.waitForSelector("#fix:not([hidden])");
+    await page.waitForSelector("#fix:not([hidden]) .thl");
     let t = await fixText();
-    check("a tap on a red move opens its corrector", /Correct 6…Kxf7/.test(t), t.slice(0, 120));
-    check("the corrector says that the position is unknown", /position before this move is unknown/.test(t), t);
+    check("a tap on a red move after the gap asks for the move the text lacks",
+          /Black's 5th move is missing/.test(t) && /Play it on the board/.test(t), t.slice(0, 120));
     check("the move stays chosen", await page.evaluate((id) => window.readerState.nodeId === id, info.after));
-    const note = await page.evaluate(() => document.getElementById("boardnote").textContent);
-    check("the board shows the position before the gap", /position before the gap, after 5\.exd5/.test(note), note);
-    check("the board is not empty", await page.evaluate(() =>
-      document.querySelectorAll("#board svg use").length > 20));
+    const board = await page.evaluate(() => {
+      const svg = document.querySelector("#board svg.board"), at = (sq) => svg.querySelector("use[data-at='" + sq + "']");
+      return { uses: svg.querySelectorAll("use").length, movable: svg.classList.contains("movable"),
+               mine: svg.querySelectorAll("use[data-mine]").length, d5: !!at("d5") && !at("d5").hasAttribute("data-mine"),
+               f6: !!at("f6") && at("f6").hasAttribute("data-mine") };
+    });
+    check("the board takes Black's move, from the position before the gap, after 5.exd5",
+          board.uses > 20 && board.movable && board.mine > 0 && board.d5 && board.f6, board);
     await shot("gap_move_1280_light.png");
 
-    // the gap's corrector
-    await page.click("#fixgap");
+    // the gap's corrector, under More
+    await page.click("#thmore");
     await page.waitForFunction(() => /Give Black's move 5/.test(document.querySelector("#fix h3").textContent));
     check("the gap's corrector lists the legal moves", await page.evaluate(() =>
       [...document.querySelectorAll("#fixlist button[data-san]")].some(b => b.dataset.san === "Nxd5")));
@@ -115,7 +121,11 @@ function check(name, cond, detail) {
     await page.click("#fixclose");
     await page.click("#tree .mv[data-node='" + info.after + "']");
     await page.waitForSelector("#fix:not([hidden])");
-    check("a tap on a red move in the move list opens its corrector", /Correct 6…Kxf7/.test(await fixText()));
+    t = await fixText();
+    check("a tap on a red move in the move list opens its corrector", /Correct 6…Kxf7/.test(t), t.slice(0, 120));
+    check("the corrector says that the position is unknown", /position before this move is unknown/.test(t), t);
+    const note = await page.evaluate(() => document.getElementById("boardnote").textContent);
+    check("the board shows the position before the gap", /position before the gap, after 5\.exd5/.test(note), note);
     // a move read without doubt only selects
     await page.click("#fixclose");
     const e4 = await page.evaluate(() => Object.keys(READER.nodes).find(k => READER.nodes[k].san === "e4"));
@@ -138,7 +148,7 @@ function check(name, cond, detail) {
     check("the board shows a position", !!res.fen, res);
     await shot("gap_patched_1280_light.png");
 
-    // the phone: the corrector of a red move is the sheet above the bar
+    // the phone: the sheet that asks for the move the text lacks is above the bar
     await page.setViewportSize({ width: 390, height: 844 });
     await page.evaluate(() => localStorage.clear());
     await page.goto(url + "#page=" + info.page);
@@ -148,15 +158,20 @@ function check(name, cond, detail) {
     await page.click("#showread");
     await page.click(".mark[data-node='" + after + "']");
     await page.waitForSelector("#fix:not([hidden])");
+    await page.waitForTimeout(300);
+    await shot("gap_move_390_light.png");
     const phone = await page.evaluate(() => {
       const f = document.getElementById("fix"), bar = document.getElementById("mbar");
-      return { pos: getComputedStyle(f).position, bottom: f.getBoundingClientRect().bottom,
-               barTop: bar.getBoundingClientRect().top, sw: document.documentElement.scrollWidth, w: window.innerWidth };
+      const b = document.getElementById("boardblock").getBoundingClientRect();
+      return { pos: getComputedStyle(f).position, bottom: f.getBoundingClientRect().bottom, boardTop: b.top,
+               boardBottom: b.bottom, barTop: bar.getBoundingClientRect().top, sw: document.documentElement.scrollWidth,
+               w: window.innerWidth };
     });
-    check("on a phone the corrector is the sheet above the bar", phone.pos === "fixed" && Math.abs(phone.bottom - phone.barTop) < 2, phone);
+    // (the thread's board stays at the foot of the window, above the bar, for the move)
+    check("on a phone the sheet is above the board, and the board above the bar", phone.pos === "fixed" &&
+          Math.abs(phone.bottom - phone.boardTop) < 2 && Math.abs(phone.boardBottom - phone.barTop) < 2, phone);
     check("no sideways scroll at 390 px", phone.sw <= phone.w, phone);
-    await shot("gap_move_390_light.png");
-    await page.click("#fixgap");
+    await page.click("#thmore");
     await page.waitForFunction(() => /Give Black's move 5/.test(document.querySelector("#fix h3").textContent));
     await shot("gap_fill_390_light.png");
     check("no console errors", out.errors.length === 0, out.errors);

@@ -407,7 +407,7 @@ def test_pencil_in_chromium(tmp_path):
     (tests/pencil_e2e.js), on the generated book with a garbled game."""
     from chessbook import live
     from test_corrections import GARBLED, NOTE, game_nodes, key_of
-    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE)
+    pdf = make_book(tmp_path / "garbled.pdf", game=GARBLED, note7=NOTE, ocr=True)
     state = {}
     book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
                       state=state)
@@ -471,13 +471,14 @@ def test_gap_in_chromium(tmp_path):
 @pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
 def test_bare_move_join_in_chromium(tmp_path):
     """A move printed without its number after a comment, which the moves
-    after it do not confirm, is an item of the Review list, and the pencil
-    joins it to the line after the move it follows (tests/bare_e2e.js)."""
+    after it do not confirm (Black's ninth move is printed as a move that is
+    not legal), is an item of the Review list, and the pencil joins it to
+    the line after the move it follows (tests/bare_e2e.js)."""
     from chessbook import live
     from test_lines import _bare_book
     pdf = _bare_book([
         "A good alternative is 7.Nf3 Every swap helps Black, so White",
-        "retreats. Nbd7 8.Qc2 Re8 9.Bd3 10.O-O Nf8 and so on."]).save(tmp_path / "bare.pdf")
+        "retreats. Nbd7 8.Qc2 Re8 9.Bd3 Qb2 10.O-O Nf8 and so on."]).save(tmp_path / "bare.pdf")
     state = {}
     book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
                       state=state)

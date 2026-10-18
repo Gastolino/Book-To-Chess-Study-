@@ -18,6 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from chessbook import pdftext as pt  # noqa: E402
 from chessbook import pgnout  # noqa: E402
 from chessbook.assemble import WAIT_REASON, build_book, display_title, parse_game_header  # noqa: E402
 
@@ -39,6 +40,7 @@ GAME_DE = ["1.e4 e5 2.Sf3 Sc6 3.Lc4 Sf6", "4.Sg5 d5 5.exd5 Sxd5", "6.Sxf7 Kxf7 7
 MAIN_SAN = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "Ng5", "d5", "exd5", "Nxd5", "Nxf7", "Kxf7",
             "Qf3+", "Ke6", "Nc3"]
 ENDING_FEN = "6k1/5pp1/7p/8/8/8/5PPP/3R2K1 w - - 0 1"
+OCR_PRODUCER = "Adobe Acrobat 9.0 Paper Capture Plug-in with ClearScan"
 
 
 class _Writer:
@@ -73,12 +75,26 @@ class _Writer:
                             fontname="tibo" if bold else "tiro", fontsize=size)
         self.y += 13
 
-    def mixed(self, parts):
-        x = self.x0
+    def mixed(self, parts, indent=0):
+        x = self.x0 + indent
         for text, bold in parts:
-            font = "tibo" if bold else "tiro"
+            # (bold may name a font of its own: "helv" for a number set apart)
+            font = bold if isinstance(bold, str) else "tibo" if bold else "tiro"
             self.pg.insert_text((x, self.y), text, fontname=font, fontsize=10)
             x += pymupdf.get_text_length(text, font, 10)
+        self.y += 13
+
+    def number_apart(self, number, rest):
+        """A move number and the rest of its printed line ("5." / ". . . Nxd5")
+        that the text layer holds as two lines: OCR set the dots in a font of
+        their own, under the number's trailing space (primer p271 "41. ••
+        gg8"). The rest is written first, so that the number, written after
+        it and to its left, starts a line of its own."""
+        x = self.x0 + pymupdf.get_text_length(number + " ", "tibo", 10) - 2
+        self.pg.insert_text((x, self.y), "\u2022 \u2022 ", fontname="helv", fontsize=4)
+        x += pymupdf.get_text_length("\u2022 \u2022 ", "helv", 4)
+        self.pg.insert_text((x, self.y), rest, fontname="tibo", fontsize=10)
+        self.pg.insert_text((self.x0, self.y), number + " ", fontname="tibo", fontsize=10)
         self.y += 13
 
     def prose(self, n=None, until=None):
@@ -113,10 +129,27 @@ class _Writer:
         self.doc.save(path)
 
 
-def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False):
+def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False,
+              ocr=False, tail=(), note5="Safer is 5...Na5 6.Bb5+ c6", box=False):
     """The little test book: one chapter, or with second a second chapter
-    after it (pages 10 and 11) that holds another game."""
+    after it (pages 10 and 11) that holds another game. Set in type, its text
+    is exact (pdftext.exact_text); with ocr, its producer is an OCR program,
+    for a game printed as OCR's junk (test_corrections.GARBLED). tail: lines
+    (text, bold) printed right after the result of the first game. A line of
+    the game or note5 may be a list of (text, bold) parts, for a line set in
+    both fonts. note7 may be a list of lines. box: a shaded box across the
+    column (a picture, as a scan prints a question's background) right under
+    the last line of the game's moves."""
     w = _Writer()
+
+    def put(text, bold, indent=0):
+        if isinstance(text, str):
+            w.line(text, bold=bold, indent=indent)
+        elif isinstance(text, tuple):
+            w.number_apart(*text)
+        else:
+            w.mixed(text, indent)
+
     w.page(head=False)
     w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
     w.page(head=False)
@@ -138,18 +171,26 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
     w.prose(until=H - 60 - 8 * 13)
     w.line("SHORT GAMES", bold=True, size=11, x=COLS[0] + 40)
     w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
-    w.line(game[0], bold=True)
+    put(game[0], True)
     w.line("Better is 3...Bc5 4.c3 Nf6 with a", indent=8)
     w.line("quiet game.")
-    w.line(game[1], bold=True)
-    w.line("Safer is 5...Na5 6.Bb5+ c6", indent=8)
+    put(game[1], True)
+    put(note5, False, indent=8)
     w.line("7.dxc6 bxc6.")
     w.col(1)
-    w.line(game[2], bold=True)
-    w.line(note7, indent=8)
-    w.line(game[3], bold=True)
+    put(game[2], True)
+    for text in [note7] if isinstance(note7, str) else note7:
+        w.line(text, indent=8)
+    put(game[3], True)
+    if box:
+        rect = pymupdf.Rect(w.x0, w.y - 4, w.x0 + COL_W, w.y + 36)
+        w.pg.insert_image(rect, pixmap=pymupdf.Pixmap(pymupdf.csGRAY, pymupdf.IRect(0, 0, 64, 16),
+                                                      False))
+        w.y += 50
     w.line("White has a strong attack.", indent=8)
     w.line("1-0", bold=True)
+    for text, bold in tail:
+        w.line(text, bold=bold, indent=0 if bold else 8)
     w.prose(until=H - 60)
     # page 5: a position from a diagram
     w.page()
@@ -204,6 +245,8 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
         w.prose(until=H - 60)
         w.col(1)
         w.prose(until=H - 60)
+    if ocr:
+        w.doc.set_metadata({"producer": OCR_PRODUCER})
     w.save(path)
     return path
 
@@ -341,6 +384,141 @@ def test_solutions_find_their_exercise_diagrams(little):
     assert nodes[nodes[by_diagram["p6-2"]["root"]]["children"][0]]["raw"] == "Nf6+"
 
 
+def make_day_book(path, plain=False):
+    """An exercise book in the manner of a daily puzzle book, as OCR read it:
+    boards captioned "Day 14" and "Day 1S" (OCR's S for 5), one captioned
+    "Diagram 3 (B)" with the side to move, and the solutions later with the
+    number in the margin beside the paragraph, no dot after it and spaced by
+    OCR ("1 4"), printed in another order than the boards (15, then 14).
+    The solutions' main lines are bold, a variation in brackets between
+    them; with plain, OCR set the solutions' page all in the body font."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "Daily Exercises", fontname="tiro", fontsize=26)
+    w.page()
+    w.picture("Day 14", caption="")
+    w.prose(until=H - 60)
+    w.col(1)
+    w.picture("Day 1S", caption="")
+    w.prose(until=H - 60)
+    w.page()
+    w.picture("Diagram 3 (B)", caption="")
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.page()
+    for num, first, then in (("1S", "1.Nf6+ Kh8", "2.Qh7#"), ("1 4", "1.Rd8+ Kh7", "2.Rd7")):
+        w.y += 8
+        w.pg.insert_text((COLS[0], w.y), num, fontname="tiro" if plain else "tibo", fontsize=11)
+        w.x0 = COLS[0] + 34
+        w.line("A quick blow decides,")
+        w.line("as the king has no air:")
+        w.line(first, bold=not plain, indent=8)
+        w.line("[1...Kg7 2.Qf7#]", indent=8)
+        w.line(then, bold=not plain, indent=8)
+        w.line("And Black is lost.")
+        w.line("1.Qa1 Kb8 is no better.", indent=8)
+    w.x0 = COLS[0]
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    for _ in range(2):
+        w.page()
+        w.prose(n=10)
+        w.line("1.d4 d5 2.c4 e6 3.Nc3 Nf6", bold=True)
+        w.prose(until=H - 60)
+        w.col(1)
+        w.prose(until=H - 60)
+    w.doc.set_metadata({"producer": OCR_PRODUCER})
+    w.save(path)
+    return path
+
+
+def test_solutions_numbered_in_the_margin(tmp_path):
+    """A solution number in the margin with no dot ("1 4") ties the solution
+    to the board labelled with it ("Day 14"), whatever the order the
+    solutions are printed in; OCR's S in a label is the 5 that the labels'
+    sequence wants ("Day 1S" after "Day 14"); the solution's later paragraph
+    stays with it; the side in a caption ("(B)") is kept with the label."""
+    import stage1_inspect as s1
+    pdf = make_day_book(tmp_path / "days.pdf")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    diagrams = json.loads((tmp_path / "output" / "days" / "stage1" / "diagrams.json").read_text())
+    assert [(d["page"], d["label"], d["side"]) for d in diagrams] == [
+        (2, "14", None), (2, "15", None), (3, "3", "b")]
+    assert s1.LABEL_RE.match("Diagram 12 {W)").groups() == ("12", "W")
+    by_diagram = {x["diagram"]: x for x in book["lines"] if x["page"] == 4}
+    assert set(by_diagram) == {"p2-1", "p2-2"}
+    nodes = book["nodes"]
+    first = {d: nodes[nodes[x["root"]]["children"][0]]["raw"] for d, x in by_diagram.items()}
+    assert first == {"p2-1": "Rd8+", "p2-2": "Nf6+"}
+    qa1 = [n for n in nodes.values() if n.get("raw") == "Qa1"]
+    assert len(qa1) == 2 and {n["line"] for n in qa1} == {x["id"] for x in by_diagram.values()}
+
+
+def test_main_lines_that_ocr_set_in_the_body_font(tmp_path):
+    """On a page where OCR set the bold main lines in the body font (no word
+    of the page in the move font), a line of moves alone is a main line where
+    it starts at move 1 or goes on with one: the solution reads 1.Nf6+ Kh8
+    2.Qh7#, and the bracketed moves between are its variation."""
+    pdf = make_day_book(tmp_path / "days.pdf", plain=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    line = next(x for x in book["lines"] if x["diagram"] == "p2-2")
+    assert [book["nodes"][i]["raw"] for i in main_line(book, line)] == ["Nf6+", "Kh8", "Qh7#"]
+    nodes = book["nodes"]
+    kg7 = next(n for n in nodes.values() if n.get("raw") == "Kg7" and n["line"] == line["id"])
+    assert not kg7["main"] and nodes[kg7["parent"]]["raw"] == "Nf6+"
+
+
+def test_note_after_the_result_stays_with_its_game(tmp_path):
+    """A note printed after a game's result, before the next game begins
+    (here with no header the program finds), discusses the game that ended:
+    its moves are a variation of that game, never of the next one."""
+    pdf = make_book(tmp_path / "little.pdf", tail=[
+        ("White's attack is too strong: after 8...h6", False),
+        ("9.d3 Black cannot hold the centre.", False),
+        ("1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6", True),
+        ("5.O-O Be7 6.Re1 b5 7.Bb3 d6 8.c3 O-O", True),
+        ("9.h3 Na5 1/2-1/2", True)])
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    nodes = book["nodes"]
+    assert sans(book, [i for i in main_line(book, g) if nodes[i]["main"]]) == MAIN_SAN
+    second = next(x for x in book["lines"] if x["page"] == 4 and x["id"] != g["id"])
+    assert sans(book, main_line(book, second))[:4] == ["e4", "e5", "Nf3", "Nc6"]
+    h6 = [n for n in nodes.values() if n["raw"] == "h6" and n["page"] == 4]
+    assert len(h6) == 1 and h6[0]["line"] == g["id"] and not h6[0]["main"]
+    assert nodes[h6[0]["parent"]]["san"] == "Nc3" and nodes[h6[0]["parent"]]["main"]
+    assert [nodes[c]["san"] for c in h6[0]["children"]] == ["d3"]
+    assert not any(n["line"] == second["id"] and not n["main"] for n in nodes.values()
+                   if n["parent"] is not None)
+
+
+def test_note_after_moves_left_out_comes_with_the_join(tmp_path):
+    """After the result, the game goes on with "9.d4 c6 10.Bg5": Black's
+    eighth move is missing, so the run stands in no line, and so does the
+    note after it ("Instead 10.Bd2"), which is still the game's. When the
+    reader joins the run to the game, the note comes with it as a variation
+    of 10.Bg5."""
+    from chessbook import live
+    pdf = make_book(tmp_path / "little.pdf", tail=[
+        ("9.d4 c6 10.Bg5", True),
+        ("Instead 10.Bd2 is quieter.", False)])
+    state = {}
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
+                      state=state)
+    g = line_titled(book, "Smith - Jones")
+    marks = {m["raw"]: m for m in book["pages"][3]["marks"]}
+    assert marks["d4"]["node"] is None and marks["Bd2"]["node"] is None
+    nc3 = next(n for n in book["nodes"].values() if n["line"] == g["id"] and n["san"] == "Nc3")
+    live.apply(state, book, {"connect": {marks["d4"]["key"]: {"after": nc3["key"],
+                                                              "before": ["Nce7"]}}})
+    nodes = book["nodes"]
+    bd2 = next(n for n in nodes.values() if n.get("key") == marks["Bd2"]["key"])
+    assert bd2["line"] == g["id"] and bd2["san"] == "Bd2" and not bd2["main"]
+    assert [nodes[c]["san"] for c in nodes[bd2["parent"]]["children"]] == ["Bg5", "Bd2"]
+
+
 def test_decoded_once_the_diagram_is_read(tmp_path):
     pdf = make_book(tmp_path / "little.pdf")
     book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
@@ -357,12 +535,816 @@ def test_decoded_once_the_diagram_is_read(tmp_path):
     assert not any(x["line"] == w["id"] for x in book["waiting"])
 
 
+def test_type_set_book_keeps_its_printed_squares(tmp_path):
+    # A misprint, or a line gone wrong before it: "3.Be4" where only a bishop
+    # to c4 can go. The generated book is set in type, its text layer holds
+    # the letters as printed: the move fails, and is not read as Bc4 (OCR's
+    # e for a c) and shown as certain.
+    pdf = make_book(tmp_path / "little.pdf", game=["1.e4 e5 2.Nf3 Nc6 3.Be4 Nf6", *GAME_EN[1:]])
+    assert pt.exact_text(pdf)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    marks = [m for p in book["pages"] for m in p["marks"] if m["raw"] == "Be4"]
+    assert marks and all(m["status"] == "failed" for m in marks)
+    assert not any(n.get("raw") == "Be4" and n.get("status") in ("ok", "guessed")
+                   for n in book["nodes"].values())
+
+
+def test_misread_square_after_a_doubtful_move_is_not_certain(tmp_path):
+    """OCR's slip of a square ("Qf8+" read as Qf3+, the 8 for a 3) or of a
+    capture mark is a reading of the move, but where the line went doubtful
+    a few moves before it ("xd5", Nxd5 guessed), the move the print names
+    may be the line's, and the line may have gone wrong: the move is shown
+    guessed, not ok. The same slip in a line read without doubt stays ok."""
+    def statuses(tmp, fifth):
+        tmp.mkdir()
+        game = [GAME_EN[0], "4.Ng5 d5 5.exd5 " + fifth, "6.Nxf7 Kxf7 7.Qf8+ Ke6", GAME_EN[3]]
+        pdf = make_book(tmp / "little.pdf", game=game, ocr=True)
+        book = build_book(pdf, output_dir=tmp / "output", books_dir=tmp / "books")
+        ids = main_line(book, line_titled(book, "Smith - Jones"))
+        assert sans(book, ids) == MAIN_SAN
+        return [book["nodes"][i]["status"] for i in ids]
+    doubted = statuses(tmp_path / "a", "xd5")
+    assert doubted[9] == "guessed" and doubted[12] == "guessed"
+    assert doubted[10] == doubted[11] == doubted[13] == "ok"
+    clear = statuses(tmp_path / "b", "Nxd5")
+    assert clear[12] == "ok" and all(st == "ok" for st in clear)
+
+
+def test_misread_square_where_a_note_leaves_the_line_is_not_certain(tmp_path):
+    """A note's first move off the line read through a slip of its square
+    ("5...Na6", where the knight reaches a5, not a6) may stand at another move
+    than the one the note means (kia p141 "19...Bc6 and 20...Bb5", read as
+    20...Bh8 after the game's 20.Nxc6): it is shown guessed, not ok. The
+    note's moves after it, and the game, read as before."""
+    pdf = make_book(tmp_path / "little.pdf", ocr=True, note5="Safer is 5...Na6 6.Bb5+ c6")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+    na5 = [n for n in book["nodes"].values() if n.get("san") == "Na5" and not n.get("main")]
+    assert len(na5) == 1 and na5[0]["status"] == "guessed"
+    bb5 = [n for n in book["nodes"].values() if n.get("san") == "Bb5+" and not n.get("main")]
+    assert len(bb5) == 1 and bb5[0]["status"] == "ok"
+
+
+def test_piece_letter_read_as_another_piece_is_not_certain(tmp_path):
+    """A piece letter of the notation read as another piece ("7.Bf3+", where
+    no bishop reaches f3, read as Qf3+) is the print taken for another move:
+    where the line went wrong before it (gpa p32 "8 Ba4" made 8.a4, p94
+    "Bxf8" made Qxf8), the move the print names is not this one. It is shown
+    guessed, never ok; the moves after it read as before."""
+    game = [GAME_EN[0], GAME_EN[1], "6.Nxf7 Kxf7 7.Bf3+ Ke6", GAME_EN[3]]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN
+    st = [book["nodes"][i]["status"] for i in ids]
+    assert st[12] == "guessed"
+    assert all(s == "ok" for k, s in enumerate(st) if k != 12)
+
+
+def test_move_over_a_shaded_box_is_no_coordinate(tmp_path):
+    """A scan prints a question on a shaded box across the column, which the
+    text layer holds as a picture (kia p48: "11 es" over the box of the
+    question under it). The moves printed just above it are moves, not the
+    coordinates of a board: a coordinate stands beside a board, and a board
+    is square. The game reads on to its last move."""
+    game = [GAME_EN[0], GAME_EN[1], GAME_EN[2], "8.C3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True, box=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN[:-1] + ["c3"]
+
+
+def test_text_drawn_by_ocr_is_not_exact(tmp_path):
+    # an OCR layer: the text is drawn invisibly over the picture of the page
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((40, 60), "1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 " * 3, fontname="tiro", fontsize=10,
+                     render_mode=3)
+    w.save(tmp_path / "scan.pdf")
+    assert not pt.exact_text(tmp_path / "scan.pdf")
+    # a PDF whose producer is an OCR program
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((40, 60), "1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", fontname="tiro", fontsize=10)
+    w.doc.set_metadata({"producer": OCR_PRODUCER})
+    w.save(tmp_path / "clearscan.pdf")
+    assert not pt.exact_text(tmp_path / "clearscan.pdf")
+
+
 def test_german_letters(tmp_path):
     pdf = make_book(tmp_path / "klein.pdf", game=GAME_DE)
     book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
                       letters="German")
     g = line_titled(book, "Smith - Jones")
     assert sans(book, main_line(book, g)) == MAIN_SAN and g["status"] == "ok"
+
+
+def test_capital_c_of_a_pawn_move_is_the_c_file(tmp_path):
+    """OCR (and some text layers) set the c of a pawn move as a capital:
+    "2.C4" is 2.c4, read without doubt, not a piece move to the fourth rank,
+    and the line goes on from the right board. The capital is OCR's, so the
+    book is one an OCR program made (a typeset book is read as printed)."""
+    game = ["1.d4 d5 2.C4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 C6",
+            "8.Bd3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O",
+                               "Nf3", "Nbd7", "Rc1", "c6", "Bd3"]
+    assert book["nodes"][ids[2]]["status"] == "ok" and book["nodes"][ids[13]]["status"] == "ok"
+
+
+def test_bang_read_as_1_after_a_square_is_the_annotation(tmp_path):
+    """OCR reads the "!" printed after a move as 1, l or I ("10 c4!?" as
+    "c41?", "11 h4!" as "h4l"): the move is the square before it, read
+    without doubt, not a move to the first rank (10.Kh1), and the game goes
+    on from the right board."""
+    game = ["1.Nf3 d5 2.g3 Nf6 3.Bg2 e6", "4.O-O Be7 5.d3 O-O 6.Nbd2 c5",
+            "7.e4 Nc6 8.Re1 b5 9.e5 Nd7", "10.c41? b4 11.h4l a5"]
+    pdf = make_book(tmp_path / "little.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids)[18:] == ["c4", "b4", "h4", "a5"]
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids[18:])
+
+
+@pytest.mark.parametrize("tail", [["6.Nxf7 Kxf7 7.Qf3+", "8...Ke6 8.Nc3"],
+                                  ["6.Nxf7 Kxf7", "8.Qf3+ Ke6 8.Nc3"]])
+def test_move_number_misprinted_one_ahead_is_read_where_the_next_number_puts_it(tmp_path, tail):
+    """A typeset book misprints the number of the move that resumes the game
+    after a note one move ahead, and the next number of the same printed line
+    is right (Tangborn p110 "20...Nxe3+ 20.Qxe3" for 19...Nxe3+, p34 "40.Ke1
+    Bh4+ 40.Kf1" for 39.Ke1): the moves are the line's next ones, and the
+    game goes on, not broken at a gap that the text does not have."""
+    pdf = make_book(tmp_path / "little.pdf", game=[*GAME_EN[:2], *tail])
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_move_number_in_a_font_of_its_own_numbers_the_move_after_it(tmp_path):
+    """The book sets move numbers and their dots in a font of their own,
+    neither the notes' nor the moves' ("However, the reply 2 ... ds!", gpa
+    p8): after a word of the notes, the number still goes with the move it
+    numbers, so that the move is read where the number puts it, and the game
+    goes on after it instead of stopping short."""
+    game = [GAME_EN[0], "4.Ng5 d5 5.exd5",
+            [("The usual reply is ", False), ("5", "helv"), (" ... ", "helv"), ("Nxd5", True)],
+            "6.Nxf7 Kxf7 7.Qf3+ Ke6 8.Nc3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_square_split_by_an_ocr_space_is_one_move(tmp_path):
+    """OCR sets a space inside a square of a long-notation move ("Qd1-f 3+",
+    "Nf3-g S" with its S for 5, "Nb8-c 6"): each is one move, read as
+    printed, and no phantom move is made of the rank after the space."""
+    game = ["1.e4 e5 2.Nf3 Nb8-c 6 3.Bf1-c4 Nf6", "4.Nf3-g S d5 5.exd5 Nxd5",
+            "6.Nxf7 Kxf7 7.Qd1-f 3+ Ke6", "8.Nb1-c 3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_two_squares_glued_by_ocr_are_two_moves(tmp_path):
+    """OCR loses the space between two pawn moves ("1 e4 e6" as "1.e4e6"):
+    the word is two moves, not one in long notation (nothing stands on e4 at
+    move 1), and the game is read from its first move."""
+    game = ["1.e4e6 2.d4 d5 3.Nc3 Bb4", "4.e5 c5 5.a3 Bxc3+", "6.bxc3 Ne7 7.Qg4 Qc7",
+            "8.Qxg7"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+",
+                               "bxc3", "Ne7", "Qg4", "Qc7", "Qxg7"]
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_moves_that_ocr_set_in_the_body_font_at_a_line_end(tmp_path):
+    """OCR sets the last moves of a line of the game in the body font now and
+    then ("3.Bc4 Nf6" with Nf6 in the body font, "8. Nc3"): they are the
+    moves the numbering expects, and belong to the main line. In a note, a
+    move whose number and signs OCR set in the move font ("6.Bb5+!" with the
+    square b5 in the body font) is a move of the note: its square decides."""
+    game = [[("1.e4 e5 2.Nf3 Nc6 3.Bc4 ", True), ("Nf6", False)], "4.Ng5 d5 5.exd5 Nxd5",
+            [("6.Nxf7 Kxf7 7.Qf3+ ", True), ("Ke6", False)], [("8. ", True), ("Nc3", False)]]
+    note5 = [("Safer is 5...Na5 ", False), ("6.B", True), ("b5", False), ("+!", True),
+             (" c6", False)]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True, note5=note5)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+    assert any(n.get("san") == "Bb5+" and not n.get("main") for n in book["nodes"].values())
+
+
+def test_a_move_number_that_ocr_set_in_the_body_font_at_a_line_start(tmp_path):
+    """OCR sets a move number that starts a printed line in the body font
+    now and then, its move in the move font ("1." plain, "e4 e5 2.Nf3" bold;
+    kia p100 "7 C3"): the number goes with its move into the main line."""
+    game = [[("1. ", False), ("e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", True)]] + GAME_EN[1:]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_a_black_move_that_ocr_set_in_the_body_font_after_its_number(tmp_path):
+    """OCR sets a Black move of the main line in the body font now and then,
+    its number and dots, printed apart ("7 . . . Bc5", kia p246; "s . . .
+    Bxf3", p143), in the move font: the move goes with its number into the
+    main line, which would else break there and lose the moves after it."""
+    game = ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5",
+            [("5 . . . ", True), ("Nxd5", False)], "6.Nxf7 Kxf7 7.Qf3+ Ke6 8.Nc3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_a_black_move_printed_without_its_number_after_a_heading(tmp_path):
+    """A book of questions and answers resumes the game after the answer with
+    Black's move alone, in the move font, its number left out ("QUESTION:
+    ... / ANSWER: / 1. ... / b6 Intending ...c5. 6.d4", alekhine p126; "Rac8
+    20.Rec1", p23): the move is Black's before the next number and goes into
+    the main line, which would else break there and lose the rest of the game."""
+    game = ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5", "Nxd5 6.Nxf7 Kxf7 7.Qf3+ Ke6",
+            "8.Nc3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, note5="ANSWER:")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_a_black_move_number_whose_dots_the_text_layer_sets_apart(tmp_path):
+    """OCR sets the dots of Black's move number in a font of their own, which
+    the text layer holds as a line apart from the number ("41." / "• • gg8
+    42.ge6", primer p271; "21." / "• • £5", p316): the number alone on its
+    line is a move number, not the number of an exercise, and the move after
+    the dots goes into the main line, which would else break there."""
+    game = ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5",
+            ("5.", "Nxd5 6.Nxf7 Kxf7 7.Qf3+ Ke6"), "8.Nc3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_a_threat_is_a_variation_of_the_move_it_threatens(tmp_path):
+    """A numbered threat after a move ("22...Qd2! Threatening 23...Rxg2+",
+    primer p182; "11...Nb4 with the threat of 12...Nxc2", kia p125) is the
+    moving side's next move: a variation of the line's move with its number,
+    from the position after the reply the line gives, when the moves read
+    the same with the reply passed over. A later move of the same side
+    ("and 9.d4") skips the reply between and stays in no line."""
+    pdf = make_book(tmp_path / "little.pdf", note5="Black threatens 6...Nf4.",
+                    note7="White plans 8.Qe4 and 9.d4.")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    nodes = book["nodes"]
+    nf4 = [i for i, n in nodes.items() if n.get("san") == "Nf4"]
+    assert len(nf4) == 1 and nodes[nf4[0]]["status"] == "ok"
+    assert nodes[nf4[0]]["parent"] == ids[10]          # after 6.Nxf7, beside 6...Kxf7
+    qe4 = [i for i, n in nodes.items() if n.get("san") == "Qe4"]
+    assert len(qe4) == 1 and nodes[qe4[0]]["parent"] == ids[13]  # beside 8.Nc3
+    assert any("9.d4" in u["text"] and "threat" in u["reason"] for u in book["unattached"])
+
+
+def test_a_plan_of_piece_routes_stays_in_no_line(tmp_path):
+    """A plan printed as piece routes, the other side's moves left out ("with
+    the idea Nf3-d2-c4"), is no line any board can show: it stays text, in
+    no line, while a numbered threat beside it ("Black threatens 6...Nf4")
+    is shown as a variation of the move it threatens."""
+    pdf = make_book(tmp_path / "little.pdf", note5="Black threatens 6...Nf4.",
+                    note7="White plans Nb1-c3-e4.")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    nodes = book["nodes"]
+    nf4 = [i for i, n in nodes.items() if n.get("san") == "Nf4"]
+    assert len(nf4) == 1 and nodes[nf4[0]]["parent"] == ids[10]
+    sans_all = [n.get("san") for n in nodes.values()]
+    assert not [s for s in sans_all if s and s.startswith("Ne4")]
+
+
+def test_a_threat_that_no_longer_reads_stays_in_no_line(tmp_path):
+    """A threat whose moves no longer read after the reply the line gives
+    ("threatens 6...Qxg5", but 6.Nxf7 took the knight away) is not placed
+    there; nor is a threat the text says was made before the move it follows
+    ("7...Ke6 White was threatening 8.Qf7+", when the king stood on f7),
+    which a threat named after that move ("White threatens 8.Qf7+") is."""
+    pdf = make_book(tmp_path / "little.pdf", note5="Black threatens 6...Qxg5.",
+                    note7="White was threatening 8.Qf7+.")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    assert sans(book, main_line(book, g)) == MAIN_SAN
+    sans_all = [n.get("san") for n in book["nodes"].values()]
+    assert "Qxg5" not in sans_all and "Qg5" not in sans_all and "Qf7+" not in sans_all
+    reasons = {u["text"]: u["reason"] for u in book["unattached"]}
+    assert "threat" in reasons["6...Qxg5"] and "threat" in reasons["8.Qf7+"]
+    pdf = make_book(tmp_path / "now.pdf", note7="White threatens 8.Qf7+.")
+    book = build_book(pdf, output_dir=tmp_path / "output2", books_dir=tmp_path / "books2")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    qf7 = [i for i, n in book["nodes"].items() if n.get("san") == "Qf7+"]
+    assert len(qf7) == 1 and book["nodes"][qf7[0]]["parent"] == ids[13]
+
+
+def test_game_named_in_a_note_across_a_line_break_is_no_header(tmp_path):
+    # Alekhine p103: "The position is unclear as in S." over "Lakatos-D.Majer,
+    # correspondence 2009" over "since White ...": the sentence names a game
+    # and runs on; its second line is no game header, and the game's moves
+    # after the note stay in the game.
+    pdf = make_book(tmp_path / "cite.pdf", note7=[
+        "The king walks out, as in S.", "Lakatos-D.Majer, correspondence 2009",
+        "where White won quickly."])
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    assert not any("Lakatos" in (ln.get("title") or "") for ln in book["lines"])
+    g = line_titled(book, "Smith - Jones")
+    assert sans(book, main_line(book, g)) == MAIN_SAN
+
+
+def _variation_after(book, parent, want):
+    """The moves of want (SAN) as a chain of nodes from parent, or None."""
+    nodes, cur = book["nodes"], parent
+    for san in want:
+        kids = [k for k in nodes[cur]["children"] if nodes[k].get("san") == san]
+        if len(kids) != 1 or nodes[kids[0]]["status"] != "ok":
+            return None
+        cur = kids[0]
+    return cur
+
+
+@pytest.mark.parametrize("note5", [
+    # alekhine p27 "13.dxc5!? : Nxc3! The knight addresses ... 14.bxc3"
+    "Safer is 5...Na5 6.Bb5+ : c6 and Black holds.",
+    # alekhine p10 "69.Ra1! and Black can't make progress. If Ke2 White can play 70.Kxc4!"
+    "Safer is 5...Na5 6.Bb5+ and the bishop pins. If c6 White can play",
+    # gpa p45 "11...0-0 ... falls in with White's plans: 12 Qh4 f6"
+    "Safer is 5...Na5, which falls in with White's plans: 6.Bb5+ c6",
+])
+def test_an_unnumbered_reply_or_a_plan_goes_on_with_its_variation(tmp_path, note5):
+    """A reply printed without its number, set after a colon ("6.Bb5+ : c6")
+    or after "if" with the side that answers it ("If c6 White can play
+    7.dxc6"), is the variation's next move, so that the numbered moves after
+    it go on from it; and numbered moves right after the noun "plans" are
+    the line the plan is, not a threat that stays in no line."""
+    pdf = make_book(tmp_path / "little.pdf", note5=note5)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN
+    assert _variation_after(book, ids[8], ["Na5", "Bb5+", "c6", "dxc6", "bxc6"]), \
+        [(u["text"], u["reason"]) for u in book["unattached"]]
+
+
+def test_moves_a_player_intended_are_a_variation_and_a_plan_stays_out(tmp_path):
+    """Moves the text says a player intended ("Fischer probably intended
+    29.hxg6 hxg6", tangborn p17) are a variation from where they would have
+    been played, while a plan that skips the replies ("White's plan is 9.d4
+    and 10.Bf4") stays in no line."""
+    pdf = make_book(tmp_path / "little.pdf", note7="Black probably intended 7...Kg8 8.Qxd5+.")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN
+    assert _variation_after(book, ids[12], ["Kg8", "Qxd5+"])
+    pdf = make_book(tmp_path / "plan.pdf", note7="White's plan is 9.d4 and 10.Bf4.")
+    book = build_book(pdf, output_dir=tmp_path / "output2", books_dir=tmp_path / "books2")
+    assert sans(book, main_line(book, line_titled(book, "Smith - Jones"))) == MAIN_SAN
+    sans_all = [n.get("san") for n in book["nodes"].values()]
+    assert "Bf4" not in sans_all
+    reasons = {u["text"]: u["reason"] for u in book["unattached"]}
+    assert any("10.Bf4" in t and "plan" in r for t, r in reasons.items()), reasons
+
+
+CHAPTER_GAMES = [GAME_EN,
+                 ["1.d4 d5 2.c4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 c6",
+                  "8.Bd3"],
+                 ["1.e4 c5 2.Nf3 d6 3.d4 cxd4", "4.Nxd4 Nf6 5.Nc3 a6", "6.Be3 e5 7.Nb3 Be6",
+                  "8.f3"],
+                 ["1.Nf3 d5 2.g3 Nf6 3.Bg2 e6", "4.O-O Be7 5.d3 O-O", "6.Nbd2 c5 7.e4 Nc6",
+                  "8.Re1"],
+                 ["1.e4 e6 2.d4 d5 3.Nc3 Bb4", "4.e5 c5 5.a3 Bxc3+", "6.bxc3 Ne7 7.Qg4 Qc7",
+                  "8.Qxg7"]]
+
+
+def make_chapter_book(path):
+    """A book as a converter sets it, with no running heads: each chapter
+    opens with "Chapter N" in the move font at the top of its page, and its
+    game goes on at the top of the next page, at the same height."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Book of Games", fontname="tiro", fontsize=26)
+    for n, game in enumerate(CHAPTER_GAMES, 1):
+        w.page(head=False)
+        w.y = 36
+        w.line(f"Chapter {n}", bold=True)
+        w.y = 64
+        w.prose(n=8)
+        w.mixed([("Smith - Jones, ", True), (f"London {1900 + n}", False)])
+        w.line(game[0], bold=True)
+        w.line("The usual way to play this opening.", indent=8)
+        w.line(game[1], bold=True)
+        w.prose(until=H - 60)
+        w.col(1)
+        w.prose(until=H - 60)
+        w.page(head=False)
+        w.y = 36
+        w.line(game[2], bold=True)
+        w.line("Black has to defend with care.", indent=8)
+        w.line(game[3], bold=True)
+        w.line("1-0", bold=True)
+        w.prose(until=H - 60)
+        w.col(1)
+        w.y = 36
+        w.prose(until=H - 60)
+    w.save(path)
+    return path
+
+
+def test_numbered_chapter_titles_are_no_running_head(tmp_path):
+    """"Chapter 1" .. "Chapter 5" at the tops of their pages are no running
+    head that recurs on many pages: the game lines printed at the same
+    height at the top of the next pages are moves, and the games read
+    whole."""
+    pdf = make_chapter_book(tmp_path / "chapters.pdf")
+    doc = pymupdf.open(pdf)
+    tops = [pt.page_lines(doc, i)[0] for i in range(2, doc.page_count, 2)]
+    assert [ln["text"] for ln in tops] == [g[2] for g in CHAPTER_GAMES]
+    assert [ln["role"] for ln in tops] == ["moves"] * 5
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    games = [x for x in book["lines"] if x["title"].startswith("Smith - Jones")]
+    assert len(games) == 5
+    for g, game in zip(games, CHAPTER_GAMES):
+        board, san = chess.Board(), []
+        for tok in " ".join(game).split(" "):
+            san.append(board.san(board.parse_san(tok.split(".")[-1])))
+            board.push_san(san[-1])
+        assert sans(book, main_line(book, g)) == san
+
+
+def test_notes_after_a_diagram_at_the_end_of_a_chapter(tmp_path):
+    """Notes after a diagram that no line has reached, at the end of the
+    chapter, start a line from the diagram; each later note of it is placed
+    in that line, and none is left without a box."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=6)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    for k, part in enumerate(GAME_EN):
+        w.line(part, bold=True)
+        w.line("A natural move in this position.", indent=8)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.page()
+    w.prose(n=4)
+    w.picture("12")
+    w.line("White wins after 1.Rd8+ Kh7 2.Rd7, and if", indent=8)
+    w.line("then 2...Kg6 3.Rxf7 Kxf7 the ending is won.")
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p3-1": ENDING_FEN})
+    marks = [m for m in book["pages"][2]["marks"]]
+    assert [m["raw"] for m in marks] == ["Rd8+", "Kh7", "Rd7", "Kg6", "Rxf7", "Kxf7"]
+    assert all(m["status"] == "ok" and m["node"] for m in marks)
+
+
+# the position after 1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5, White to move
+GIUOCO_FEN = "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+
+
+def test_notes_after_a_diagram_wait_for_the_move_it_leads_to(tmp_path):
+    """A game whose text lacks Black's third move goes on from the diagram
+    printed after 3.Bc4 (the picture shows 3...Bc5). The notes printed
+    between the diagram and 4.c3 are numbered for White's fourth move, which
+    the game reaches only after the diagram: they are alternatives to 4.c3,
+    from the diagram's position, not moves the game before the diagram
+    "does not reach"."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4", bold=True)
+    w.line("Both sides develop their pieces.", indent=8)
+    w.picture("12")
+    w.line("Instead 4.b4 Bxb4 5.c3 is the Evans", indent=8)
+    w.line("Gambit, and 4.d3 d6 is a slow game.")
+    w.line("4.c3 Nf6 5.d4 exd4 6.cxd4 Bb4+", bold=True)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": GIUOCO_FEN})
+    nodes = book["nodes"]
+    frag = [x for x in book["lines"] if x["start_fen"] == GIUOCO_FEN]
+    assert frag, [(x["title"], x["start_fen"]) for x in book["lines"]]
+    root = nodes[frag[0]["root"]]
+    assert [nodes[c]["san"] for c in root["children"]] == ["c3", "b4", "d3"]
+    marks = {m["raw"]: m for m in book["pages"][1]["marks"]}
+    for raw in ("b4", "Bxb4", "d3", "d6"):
+        assert marks[raw]["status"] == "ok" and marks[raw]["node"], marks[raw]
+    assert not [u for u in book["unattached"] if "does not reach" in (u["reason"] or "")]
+
+
+def test_game_goes_on_from_the_diagram_after_a_box(tmp_path):
+    """A game whose text lacks Black's third move goes on from the diagram
+    printed after 3.Bc4 (the picture shows 3...Bc5), even when a box that
+    reads as a heading ("QUESTION", as a scanned book's shaded box of a
+    question reads) stands between the diagram and the game's next move:
+    the print's rule is that the game goes on from the diagram printed
+    before its next move. 4.c3 finds its start there, and the notes
+    hanging from it are read."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4", bold=True)
+    w.line("Both sides develop their pieces.", indent=8)
+    w.picture("12")
+    w.line("The bishops face each other on the long diagonals.", indent=8)
+    w.line("QUESTION", bold=True, size=11, x=COLS[0] + 40)
+    w.line("Why did Black not play the sharper knight move?", indent=8)
+    w.line("4.c3 Nf6 5.d4 exd4 6.cxd4 Bb4+", bold=True)
+    w.line("Or 5.d3 d6 with a slow game.", indent=8)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": GIUOCO_FEN})
+    nodes = book["nodes"]
+    marks = {m["raw"]: m for m in book["pages"][1]["marks"]}
+    for raw in ("c3", "d4", "exd4", "cxd4", "Bb4+", "d3", "d6"):
+        m = marks[raw]
+        assert m["status"] == "ok" and m["node"], (m, book["unattached"])
+    frag = [x for x in book["lines"] if x["start_fen"] == GIUOCO_FEN]
+    assert frag, [(x["title"], x["start_fen"]) for x in book["lines"]]
+    ids = main_line(book, frag[0])
+    assert sans(book, ids) == ["c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+"]
+    assert nodes[marks["d3"]["node"]]["parent"] == ids[1]
+
+
+def test_game_does_not_skip_its_unread_moves_after_a_diagram(tmp_path):
+    """When the game's first moves after the diagram find no place (here
+    "4.Qxh7", which cannot be played there, as a badly read move would), its
+    later moves do not go on from the diagram: they would skip the moves
+    between it and them and read from a position the book does not show."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4", bold=True)
+    w.line("Both sides develop their pieces.", indent=8)
+    w.picture("12")
+    w.line("The bishops face each other on the long diagonals.", indent=8)
+    w.line("QUESTION", bold=True, size=11, x=COLS[0] + 40)
+    w.line("Why did Black not play the sharper knight move?", indent=8)
+    w.line("4.Qxh7", bold=True)
+    w.line("A surprising idea that the reader should look at closely.", indent=8)
+    w.line("5.d3 a6 6.O-O d6 7.a4", bold=True)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": GIUOCO_FEN})
+    marks = {m["raw"]: m for m in book["pages"][1]["marks"]}
+    for raw in ("d3", "a6", "O-O", "d6"):
+        assert marks[raw]["status"] != "ok", (marks[raw], [x["title"] for x in book["lines"]])
+    assert not [x for x in book["lines"] if x["start_fen"] == GIUOCO_FEN]
+
+
+# the position after 4.c3 Nf6 5.d3 a6 6.O-O from GIUOCO_FEN, as a board
+# reading gives it: the side to move is not printed, and White is the default
+CASTLED_FEN = "r1bqk2r/1ppp1ppp/p1n2n2/2b1p3/2B1P3/2PP1N2/PP3PPP/RNBQ1RK1 w kq - 0 1"
+
+
+def test_game_goes_on_from_a_diagram_among_its_unplaced_moves(tmp_path):
+    """The game's moves after a diagram whose earlier moves found no place
+    are not lost with them. Here the text lacks White's fourth move (4.c3,
+    as a badly read move would be), so the run from 4...Nf6 has no position
+    to start from: the diagram before it shows the position after 3...Bc5.
+    A second diagram printed among its moves, after 6.O-O, shows the
+    position, and the moves after it ("6...d6 7.a4") go on from there. The side to move is the one their
+    number gives (6...d6: Black), not the board reading's default; the notes
+    to them are read as well."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5", bold=True)
+    w.line("Both sides develop their pieces.", indent=8)
+    w.picture("12")
+    w.line("The bishops face each other on the long diagonals.", indent=8)
+    w.line("4...Nf6 5.d3 a6 6.O-O", bold=True)
+    w.picture("", caption="")
+    w.line("6...d6 7.a4 Ba7 8.h3", bold=True)
+    w.line("Or 7...Bg4 8.Nbd2 with a quiet game.", indent=8)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books",
+                      diagram_fens={"p2-1": GIUOCO_FEN, "p2-2": CASTLED_FEN})
+    nodes = book["nodes"]
+    marks = {}
+    for m in book["pages"][1]["marks"]:
+        marks.setdefault(m["raw"], m)
+    for raw in ("Nf6", "d3", "a6"):
+        assert marks[raw]["status"] != "ok", marks[raw]
+    frag = [x for x in book["lines"] if x["start_fen"].split(" ")[:2] == CASTLED_FEN.split(" ")[:1] + ["b"]]
+    assert frag, [(x["title"], x["start_fen"]) for x in book["lines"]]
+    ids = main_line(book, frag[0])
+    assert sans(book, ids) == ["d6", "a4", "Ba7", "h3"]
+    for raw in ("d6", "a4", "Ba7", "h3", "Bg4", "Nbd2"):
+        m = marks[raw]
+        assert m["status"] == "ok" and m["node"], (m, book["unattached"])
+    assert nodes[marks["Bg4"]["node"]]["parent"] == ids[1]
+
+
+
+# the Ruy Lopez after 3...a6 (the book printed 3.Bc4 for 3.Bb5), as a board
+# reading gives it (White to move by default)
+RUY_FEN = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1"
+
+
+def _sure(*fens):
+    return {did: {"fen": fen, "confidence": 0.95, "doubtful": [], "turn": "w",
+                  "turn_from": "default", "flipped": False} for did, fen in fens}
+
+
+def _misprinted_game(tmp_path, after):
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 a6", bold=True)
+    w.line("Black asks the bishop at once where it is going.", indent=8)
+    w.picture("12")
+    w.line("The bishop keeps its diagonal.", indent=8)
+    w.line(after, bold=True)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "little.pdf")
+
+
+def test_game_goes_on_from_a_sure_diagram_it_does_not_reach(tmp_path):
+    """A line that reads but has gone wrong (here the book misprints 3.Bb5 as
+    3.Bc4, which is legal) runs on past the diagram that shows the true
+    position: the diagram, read surely, shows the bishop on b5, and the moves
+    printed after it ("4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 d6") read cleanly
+    from it but not from the line (no bishop of c4 reaches a4). The game goes
+    on from the diagram, and the line's moves before it, which no diagram
+    confirms, are doubtful (not green): one of them is wrong."""
+    _misprinted_game(tmp_path, "4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 d6")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": RUY_FEN},
+                      readings=_sure(("p2-1", RUY_FEN)))
+    marks = {}
+    for m in book["pages"][1]["marks"]:
+        marks.setdefault(m["raw"], m)
+    frag = [x for x in book["lines"] if x["start_fen"].split(" ")[0] == RUY_FEN.split(" ")[0]]
+    assert frag, [(x["title"], x["start_fen"]) for x in book["lines"]]
+    assert sans(book, main_line(book, frag[0])) == ["Ba4", "Nf6", "O-O", "Be7", "Re1", "b5",
+                                                    "Bb3", "d6"]
+    for raw in ("Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6"):
+        assert marks[raw]["status"] == "ok" and marks[raw]["node"], marks[raw]
+    for raw in ("Bc4", "a6"):
+        assert marks[raw]["status"] != "ok", marks[raw]
+    # (the diagram contradicts no move before the first that moves to c4 or b5)
+    for raw in ("e4", "e5", "Nf3"):
+        assert marks[raw]["status"] == "ok", marks[raw]
+
+
+def test_line_ignores_a_sure_diagram_its_moves_do_not_read_from(tmp_path):
+    """A diagram read surely that shows another position than the line (here
+    the Ruy Lopez after a game that does reach 3.Bc4 a6) does not overrule
+    the line when the moves printed after it do not read from it ("4.Bxf7+"
+    needs the bishop of c4): the line goes on, green, and stays whole."""
+    _misprinted_game(tmp_path, "4.Bxf7+ Kxf7 5.Nxe5+ Nxe5 6.d4 Nc6")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books", diagram_fens={"p2-1": RUY_FEN},
+                      readings=_sure(("p2-1", RUY_FEN)))
+    marks = {}
+    for m in book["pages"][1]["marks"]:
+        marks.setdefault(m["raw"], m)
+    assert not [x for x in book["lines"] if x["start_fen"].split(" ")[0] == RUY_FEN.split(" ")[0]]
+    game = [x for x in book["lines"] if x["kind"] == "game"]
+    assert sans(book, main_line(book, game[0]))[4:] == ["Bc4", "a6", "Bxf7+", "Kxf7", "Nxe5+",
+                                                        "Nxe5", "d4", "Nc6"]
+    for raw in ("Nc6", "a6", "Bxf7+", "Kxf7", "Nxe5+", "d4"):
+        assert marks[raw]["status"] == "ok" and marks[raw]["node"], marks[raw]
+
+
+ADAMS_GAME = ["1.e4 c5 2.Nf3 d6 3.d4 cxd4 4.Nxd4 Nf6", "5.Nc3 a6 6.Be3 e6 7.Be2 Qc7",
+              "8.Qd2 b5 9.a3 Bb7 10.f3 Nc6", "11.O-O-O b4 12.axb4 Nxb4 13.g4 Be7",
+              "14.g5 Nd7 15.h4 Nc5 16.Kb1 Rb8", "17.h5 O-O 18.g6 Bf6 19.Rdg1 Na8",
+              "20.gxh7+ Kh8"]
+
+
+def test_late_misprint_does_not_reread_a_clear_early_move(tmp_path):
+    """Adams - Kasparov, Linares 2005, in an OCR text with 19...Ba8 read "Na8"
+    (as the Art of Planning's OCR gives it): no knight reaches a8, but one from c5
+    could reach a6 had the a-pawn gone to a5, so a reading of the clear
+    "5...a6" as a5, set aside thirty moves before, came back to explain the
+    misprint, and the game read wrongly from its fifth move. A reading that
+    lost on the token it parted at does not come back so: 5...a6 is read as
+    printed, and the moves after it as well."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Adams - Kasparov, ", True), ("Linares 2005", False)])
+    for part in ADAMS_GAME:
+        w.line(part, bold=True)
+    w.line("0-1", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.doc.set_metadata({"producer": OCR_PRODUCER})      # an OCR text: squares may be misread
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books")
+    nodes = book["nodes"]
+    game = line_titled(book, "Adams - Kasparov")
+    got = sans(book, main_line(book, game))
+    assert got[9] == "a6", got
+    marks = {m["raw"]: m for m in book["pages"][1]["marks"]}
+    assert marks["a6"]["status"] == "ok"
+    for raw in ("Be3", "Nxb4", "Kb1", "Rdg1"):
+        assert marks[raw]["status"] == "ok" and nodes[marks[raw]["node"]]["san"] == raw
+
+
+# a game with Black's sixth move missing from the text ("6.Nb3 7.Qe2")
+LOST_REPLY = ["1.e4 c5 2.Nf3 e6 3.d4 cxd4", "4.Nxd4 a6 5.Bd3 Bc5", "6.Nb3 7.Qe2 d6 8.Be3 Nf6",
+              "9.Bxa7 Rxa7"]
+LOST_PRINTED = {"Qe2": (7, False), "d6": (7, True), "Be3": (8, False), "Nf6": (8, True),
+                "Bxa7": (9, False), "Rxa7": (9, True)}
+
+
+def test_printed_numbers_anchor_the_line(tmp_path):
+    """A move lost from the text does not shift the moves after it: 7.Qe2 is
+    never read as Black's sixth move, d6 as Black's sixth, nor 9...Rxa7 as
+    8...Ra7; the moves after the gap are read at their printed numbers, or
+    not at all."""
+    pdf = make_book(tmp_path / "lost.pdf", game=LOST_REPLY)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids[:11]) == ["e4", "c5", "Nf3", "e6", "d4", "cxd4", "Nxd4", "a6", "Bd3",
+                                    "Bc5", "Nb3"]
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids[:11])
+    nodes = [book["nodes"][i] for i in ids]
+    out_of_step = [(n["number"], n["black"], n["raw"], n["san"]) for n in nodes
+                   if n["raw"] in LOST_PRINTED and n["san"]
+                   and (n["number"], n["black"]) != LOST_PRINTED[n["raw"]]]
+    assert out_of_step == []
 
 
 def test_excluded_page_has_no_lines(tmp_path):
@@ -623,6 +1605,12 @@ def test_tokenizer_fixes():
     assert ("number", "68.") not in kinds("as in Position 68. 1he stalemate")
     # a glyph split from its square
     assert ("move", "ttl d4") in kinds("9.i.xf3 ttl d4 10.cxd4")
+    # a square split by OCR's space, with a sign, OCR's digit or the rest of a
+    # long move after the rank; never in a text set in type
+    assert kinds("1...Ng4-e 3+ 2.Kg2xh 3")[1] == ("move", "Ng4-e 3+")
+    assert ("move", "Kf2-e l") in kinds("3.Kf2-e l Rh3-h1#")
+    assert ("move", "ttlg 3-h5#") in kinds("3.ttlg 3-h5#", lenient=True)
+    assert [x.raw for x in tokenize("1.Qh5-e 3+ Kd8", exact=True)][:2] == ["1.", "Qh5-e"]
 
 
 def test_readable_comment_moves():
@@ -877,8 +1865,9 @@ def test_alekhine_page_13_bare_replies(tmp_path):
     assert not [m for p in book["pages"] if p["page"] == 13 for m in p["marks"] if m["raw"].startswith("Qxf7")]
     assert not [u for u in book["unattached"] if u["page"] == 13 and "11.Bb3" in u["text"]]
     # the pencil's join of a bare move the moves did not confirm, on a real page
-    items = [u for u in book["unattached"] if u.get("after") and u["chapter"] == game["chapter"]]
-    assert items, "no bare move stands in no line in the chapter"
+    # (of any chapter: the book holds a few)
+    items = [u for u in book["unattached"] if u.get("after")]
+    assert items, "no bare move stands in no line in the book"
     u = items[0]
     nodes = book["nodes"]
     target = next(n for n in nodes.values() if n.get("key") == u["after"])
@@ -887,3 +1876,80 @@ def test_alekhine_page_13_bare_replies(tmp_path):
     joined = next(n for n in nodes.values() if n.get("key") == u["key"])
     assert joined["corrected"] == "connected" and nodes[joined["parent"]].get("key") == target["key"]
     assert not [x for x in book["unattached"] if x["key"] == u["key"]]
+
+
+def _long_note_book(path, tail):
+    """A game with a long bracketed note: its variation 4.d3 Nf6 5.O-O, many
+    lines of prose, and then tail, the moves that go on from the variation,
+    printed so far from the bracket that the reader of the text no longer
+    counts it open (Alekhine p55: "61.Kc4 ( ... ) 61...d1Q 62.b8Q+ Kh7")."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=2)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.c3 Nf6", bold=True)
+    w.line("[ Quieter is 4.d3 Nf6 5.O-O when", indent=8)
+    w.prose(n=26)
+    w.line(tail, indent=8)
+    w.line("with a slow game. ]")
+    w.line("5.d4 exd4 6.cxd4 Bb4+ 7.Bd2", bold=True)
+    w.line("1-0", bold=True)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(path)
+    return path
+
+
+def test_a_run_goes_on_from_the_variation_before_it_after_a_long_note(tmp_path):
+    """A run that goes on from the variation printed just before it in the
+    same note ("5...d6 6.c3 a6" after "4.d3 Nf6 5.O-O" and a page of prose)
+    is placed after that variation, though the bracket the variation stands
+    in is no longer counted open where the run is printed."""
+    pdf = _long_note_book(tmp_path / "little.pdf", "5...d6 6.c3 a6")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    nodes = book["nodes"]
+    marks = {}
+    for pg in book["pages"]:
+        for m in pg["marks"]:
+            marks.setdefault(m["raw"], m)
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids)[:9] == ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4"]
+    for raw in ("d6", "a6"):
+        m = marks[raw]
+        assert m["status"] == "ok" and m["node"], (m, book["unattached"])
+    castle = nodes[nodes[marks["d6"]["node"]]["parent"]]
+    assert castle["san"] == "O-O" and nodes[castle["parent"]]["san"] == "Nf6"
+
+
+def test_a_run_that_reads_after_two_variations_is_not_placed(tmp_path):
+    """When the run reads as well after two variations printed before it, at
+    different positions, the program does not choose between them."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=2)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.c3 Nf6", bold=True)
+    # (both notes are closed before the run: an open "[" would place it)
+    w.line("[ Quieter is 4.d3 Nf6 5.O-O ]", indent=8)
+    w.prose(n=12)
+    w.line("( or 4.d3 Nf6 5.h3 )", indent=8)
+    w.prose(n=12)
+    w.line("5...d6 6.c3 a6", indent=8)
+    w.line("with a slow game.")
+    w.line("5.d4 exd4 6.cxd4 Bb4+ 7.Bd2", bold=True)
+    w.line("1-0", bold=True)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.save(tmp_path / "two.pdf")
+    book = build_book(tmp_path / "two.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books")
+    marks = {}
+    for pg in book["pages"]:
+        for m in pg["marks"]:
+            marks.setdefault(m["raw"], m)
+    assert marks["d6"]["status"] != "ok" or not marks["d6"]["node"], marks["d6"]

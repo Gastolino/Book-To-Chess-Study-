@@ -11,7 +11,8 @@
 // diagram's picture. On an iPad held sideways, in the dark scheme, the test:
 //   - has the worker fail the first reading on: the sheet says "Not read on: <why>.", the correction
 //     stays as the reader made it and is applied without reading on, and the sheet asks for Black's
-//     5th move, offering f5 (Part C's step); Undo takes the move back;
+//     5th move, offering f5 (Part C's step); 5...f5 is made on the board, and Undo takes both moves
+//     back: the sheet asks for the move again and the move list drops them;
 //   - has the worker answer the next reading on as one made while the book is still read and the
 //     chapter has no reading of its own yet ("queued"): the correction stays, the sheet waits, and
 //     once the book holds the move (a patch) the program reads on from it; Undo then takes it all
@@ -171,10 +172,18 @@ const GAME = ("d4 Nf6 Bg5 c5 Bxf6 gxf6 d5 Qb6 Qc1 f5 c4 Bh6 e3 f4 exf4 Bxf4 Qxf4
           s0.line === "Black's 5th move is missing before 6.c4." && s0.buttons[0] === "Play f5" &&
           JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 9)), { s0, connect: f0.connect });
     await shot("readon_0_failed");
+    // (5...f5 played at the prompt: the thread holds a move after 5.Qc1, which Undo takes out of the line)
+    await tapOffer("#thplay");
+    await lineIs(/^Next: /);
     await tapIn("#thundo");
     await lineIs(/play this move/);
-    check("Undo takes the move back", JSON.stringify((await fix()).moves) === "{}" &&
-          JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 8)), await gameNow());
+    const tree = await inFrame(() => [...document.querySelectorAll("#tree .mv[data-node]")]
+      .map((b) => READER.nodes[b.dataset.node] && READER.nodes[b.dataset.node].san));
+    s0 = await sheet();
+    check("Undo takes the move back, with the move made after it, and the move list drops them",
+          JSON.stringify((await fix()).moves) === "{}" && JSON.stringify(await gameNow()) === JSON.stringify(GAME.slice(0, 8)) &&
+          s0.line === "After 4…Qb6, play this move." && tree.indexOf("Qc1") < 0 && tree.indexOf("f5") < 0 &&
+          !out.errors.length, { game: await gameNow(), s0, tree, errors: out.errors });
     await tapIn("#thcancel");
 
     // ---------------------------------------------------------------- a reading on queued while the book is read

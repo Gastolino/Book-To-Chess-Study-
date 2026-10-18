@@ -39,10 +39,13 @@ _D = r"(?-i:[0-9lISB])"
 NUM = rf"(?=[^\s]*\d|[lI]$){_D}{{1,3}}(?:[.\-]{_D}{{1,3}})?[a-d]?"
 # A diagram label standing on its own line: a bare number ("14", "14a",
 # "3.12") or a number after a caption word, in several languages and with
-# common OCR misspellings ("Dlagram", "Diagrarn").
+# common OCR misspellings ("Dlagram", "Diagrarn"), the words of exercise
+# books ("Day 62", "Exercise 7") among them. The side to move may follow in
+# brackets ("Diagram 12 (W)", OCR's "{B)" too): group 2.
 CAPTION = (r"(?:[DO][il1]a?gr[ae](?:m|rn|in)(?:m|a|e)?|Diag\.|Dia\.|Fig(?:ure|\.)?|"
-           r"Pos(?:ition|\.)|No\.|Nr\.|#)")
-LABEL_RE = re.compile(rf"^(?:{CAPTION}\s*)?({NUM})$", re.I)
+           r"Pos(?:ition|\.)|No\.|Nr\.|#|Day|Exercise|Problem|Puzzle)")
+SIDE = r"[({]\s*((?-i:[WB]))\s*[)}]"
+LABEL_RE = re.compile(rf"^(?:{CAPTION}\s*)?({NUM})(?:\s*{SIDE})?$", re.I)
 # "Diagram 14" or "see Diagram 14" anywhere in the running text.
 REF_RE = re.compile(rf"\b[DO][il1]a?gr[ae](?:m|rn|in)(?:m|a|e|s)?\s+({NUM})\b", re.I)
 # A circled number beside a board: real circled digits, digits in brackets,
@@ -129,6 +132,20 @@ def stacked_boards(doc, xref, rect):
     return [pymupdf.Rect(rect.x0, rect.y0 + a * k, rect.x1, rect.y0 + b * k) for a, b in bands]
 
 
+def whole_inside(doc, xref, rect):
+    """True when a picture that is no square holds a whole board all the
+    same (boards.whole_board): ClearScan keeps a board with its margin and
+    rank digits as one picture wider than tall. A part of a board, or two
+    of them side by side, is not whole; a square picture is not looked at."""
+    if abs(rect.width / rect.height - 1) <= 0.12:
+        return False
+    from chessbook import boards
+    try:
+        return boards.whole_board(boards.picture_gray(doc, xref))
+    except (RuntimeError, ValueError):
+        return False
+
+
 def page_kind(chars, cover, boards, invisible):
     if cover:
         return "scan"
@@ -148,18 +165,26 @@ def between_boards(r, pic):
 
 
 MOVE_DOTS = ".•…·"
+# A word that holds a square or castles: the shape of a move, figurine junk
+# before it or not ("♘ec3", "tL'lec3", "'ifb2?", "d6!").
+MOVE_SHAPE_RE = re.compile(r"[a-h][1-8]|^[0O]-[0O]")
 
 
 def continues_as_move(r, others):
-    """True when a bare number at r is a move number whose dot and move OCR
-    split off into a text line of their own on the same row ("17" and
-    "• .ixf6t ..."): such a number is not a diagram label."""
+    """True when a bare number at r is a move number with its move printed
+    beside it on the same row, in a text line of its own: OCR splits off the
+    number's dot and move ("17" and "• .ixf6t ..."), and books that set their
+    moves as a table print the move a tab away ("11" and "♘ec3"), within
+    three line heights of the number. Such a number is not a diagram label,
+    which stands alone on its line. (A move further off, at Black's tab, has
+    the dots between, which ClearScan may print as a picture.)"""
     h = r.y1 - r.y0
     for t, o in others:
-        if o is r or not t or t.lstrip(" ")[:1] not in MOVE_DOTS:
+        words = (t or "").split()
+        if o is r or not words or not (words[0][0] in MOVE_DOTS or MOVE_SHAPE_RE.search(words[0])):
             continue
         overlap = min(r.y1, o.y1) - max(r.y0, o.y0)
-        if (o.x0 > (r.x0 + r.x1) / 2 and o.x0 - r.x1 <= 15
+        if (o.x0 > (r.x0 + r.x1) / 2 and o.x0 - r.x1 <= 3 * h
                 and overlap >= 0.5 * min(h, o.y1 - o.y0)):
             return True
     return False
@@ -223,6 +248,28 @@ def follows(prev, cur):
     # Chapter-numbered labels such as 3.12: the same chapter a little further
     # on, or the next chapter starting again near 1.
     return (c[0] == p[0] and c[1] - p[1] <= 12) or (c[0] == p[0] + 1 and c[1] <= 2)
+
+
+def read_s_by_sequence(numbers, diagrams):
+    """OCR reads a 5 as S as well as an 8 (DIGIT_FIX makes it 8). A label
+    with an S takes the reading that comes next after the labels before it
+    in reading order: "Day 20S" after "Day 204" is 205. The diagrams with
+    that label on its page follow (numbers and diagrams are changed in place)."""
+    prev, fixed = None, {}
+    for x in numbers:
+        raw = x.get("raw") or ""
+        if "S" in raw and re.fullmatch(r"\d+", x["label"]):
+            reads = [int(raw.replace("S", d).translate(DIGIT_FIX)) for d in "58"]
+            after = [v for v in reads if prev is not None and v > prev]
+            v = min(after, key=lambda v: v - prev) if after else reads[-1]
+            fixed[(x["page"], raw)] = x["label"] = str(v)
+        if re.fullmatch(r"\d+", x["label"]):
+            prev = int(x["label"])
+    for d in diagrams:
+        for b in [d] + d.get("boards", []):
+            lab = fixed.get((d["page"], b.get("label_raw")))
+            if lab:
+                b["label"] = lab
 
 
 def main_series(numbers):
@@ -334,25 +381,28 @@ def inspect_page(doc, i):
         xpics.sort(key=lambda t: ((t[0].x0 + t[0].x1) / 2 > mid, t[0].y0))
     pics = [(r, w, h) for r, w, h, _ in xpics]
     invisible = any(t.get("type") == 3 for t in page.get_texttrace())
-    head = page.rect.height * 0.06  # running head with the page number
+    H = page.rect.height
+    head = H * 0.06  # running head or foot with the page number
     # OCR sometimes splits a number with a space ("1 15" for 115). Lines that
     # touch a picture are its rank and file letters, so they are left out.
-    labels = []
+    labels, sides = [], {}
     for t, r in lines:
         m = LABEL_RE.match(t.replace(" ", "") if len(t) <= 8 else t)
-        if (m and m.group(1) not in RESULTS and (r.y0 + r.y1) / 2 > head
+        if (m and m.group(1) not in RESULTS and head < (r.y0 + r.y1) / 2 < H - head
                 and not any(r.intersects(p + (-12, -4, 12, 4)) and not between_boards(r, p)
                             for p, _, _ in pics)
                 and not continues_as_move(r, lines)):
             labels.append((m.group(1), r))
+            sides[len(labels) - 1] = (m.group(2) or "").lower() or None
     for raw, r in labels:
-        numbers.append({"page": i + 1, "label": raw.translate(DIGIT_FIX),
+        numbers.append({"page": i + 1, "label": raw.translate(DIGIT_FIX), "raw": raw,
                         "repaired": raw != raw.translate(DIGIT_FIX),
                         "rect": [round(v, 1) for v in r]})
     used = set()
     for pic, w, h, xref in xpics:
         k = label_for(pic, labels, used)
         raw = labels[k][0] if k is not None else None
+        side = sides.get(k)
         if k is not None:
             used.add(k)
         if isinstance(xref, tuple):
@@ -360,8 +410,9 @@ def inspect_page(doc, i):
             ink = textdiagram.ink_rect(page, pic)
             diagrams.append({
                 "page": i + 1, "rect": [round(v, 1) for v in ink], "pixels": [0, 0],
-                "label": raw.translate(DIGIT_FIX) if raw else None,
+                "label": raw.translate(DIGIT_FIX) if raw else None, "label_raw": raw,
                 "label_repaired": bool(raw) and raw != raw.translate(DIGIT_FIX),
+                "side": side,
                 "circled": False, "partial": False, "tall": False, "coords": [0, 0],
                 "text": True, "fen": fen, "encoding": td.encoding})
             continue
@@ -369,14 +420,16 @@ def inspect_page(doc, i):
         sub = []
         for j, br in enumerate(stack):
             if j == 0:
-                lab = raw
+                lab, lside = raw, side
             else:
                 kk = label_for(br, labels, used)
                 lab = labels[kk][0] if kk is not None else None
+                lside = sides.get(kk)
                 if kk is not None:
                     used.add(kk)
             sub.append({"rect": [round(v, 1) for v in br],
-                        "label": lab.translate(DIGIT_FIX) if lab else None,
+                        "label": lab.translate(DIGIT_FIX) if lab else None, "label_raw": lab,
+                        "side": lside,
                         "partial": abs(br.width / br.height - 1) > 0.12,
                         "coords": list(board_coords(br, lines))})
         circled = raw is None and any(
@@ -388,10 +441,12 @@ def inspect_page(doc, i):
             "page": i + 1,
             "rect": [round(v, 1) for v in pic],
             "pixels": [w, h],
-            "label": raw.translate(DIGIT_FIX) if raw else None,
+            "label": raw.translate(DIGIT_FIX) if raw else None, "label_raw": raw,
             "label_repaired": bool(raw) and raw != raw.translate(DIGIT_FIX),
+            "side": side,
             "circled": circled,
             "partial": abs(pic.width / pic.height - 1) > 0.12,
+            "whole": whole_inside(doc, xref, pic),
             "tall": pic.height > 1.3 * pic.width,
             "coords": list(board_coords(pic, lines)),
         })
@@ -420,6 +475,7 @@ def finish(out_dir, found):
         diagrams.extend(ds)
         numbers.extend(ns)
         refs.update(rs)
+    read_s_by_sequence(numbers, diagrams)
     main_ids = main_series(numbers)
     for k, x in enumerate(numbers):
         x["series"] = "main" if k in main_ids else "other"

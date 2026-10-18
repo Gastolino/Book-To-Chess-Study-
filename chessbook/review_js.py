@@ -842,7 +842,8 @@ function chooseGap(key, m){
   const san = done.map(d => d[1]).concat([m[0]]);
   FIX.set("gaps", key, {san});
   const left = gapInfo(key).missing - san.length;
-  afterFix();
+  // (once the gap holds every move the text lacks, the program reads on from the move after it)
+  afterFix(left > 0 ? null : key);
   openGap(key);
   setMsg("You gave " + m[0] + ". " + (left > 0 ? "The text lacks " + (left === 1 ? "one more move" : words(left) +
     " more moves") + " here: give the next one, or leave the rest. " : "The program then reads the line on from it. ") +
@@ -1361,7 +1362,9 @@ function penClick(b){
 /* ---------------- the thread: a line corrected move by move on the board */
 // With the pencil, a tap on a move the program misread, or on a box it placed in no line, asks for
 // the move printed there: the reader makes it on the board, from the position after the line's move
-// before it. The correction is stored at once (corrections.py "moves", with "connect" for a box in
+// before it (a tap on a move after a gap in the text, whose position is unknown, asks for the moves the
+// text lacks there, from the position before them). The correction is stored at once (corrections.py
+// "moves", with "connect" for a box in
 // no line, and the moves the text lacks before it as the join's "before"); once the book holds it
 // the app's worker says what follows (driver.suggest): the next printed moves to join, a move the
 // numbering says is missing, or a box that does not read, whose move the reader makes in turn. So
@@ -1470,11 +1473,15 @@ function threadFen(){
 }
 // the last move the board shows, in words: "5…f5", or the anchor's
 function lastText(){
-  if (!TH.before.length) return TH.anchor != null && D.nodes[TH.anchor] && D.nodes[TH.anchor].parent != null ?
-    moveText(TH.anchor, true) : "the start";
-  let fen = nodeFen(TH.anchor), t = "";
+  let fen = TH.anchor != null ? nodeFen(TH.anchor) : null, t = "";
+  // (a patch may take the anchor away, as Undo does: then the move Undo goes back to, or the start)
+  if (!TH.before.length || !fen) {
+    const u = TH.undo && TH.undo.state, id = D.nodes[TH.anchor] ? TH.anchor : u && D.nodes[u.anchor] ? u.anchor : null;
+    return id != null && D.nodes[id].parent != null ? moveText(id, true) : "the start";
+  }
   for (const s of TH.before) {
     const m = sanIn(fen, s);
+    if (!m) break;
     t = moveWords(fen, s);
     fen = CJ.after(fen, m[1]);
   }
@@ -1603,9 +1610,18 @@ function threadTap(b){
   const id = b.dataset.node;
   if (id) {
     const n = D.nodes[id];
-    // (a gap, a move whose position the gap before it leaves unknown, a move the reader added or
-    // read, a start: their own editors)
-    if (!n || n.parent == null || !n.key || n.gap || !beforeFen(n) || n.corrected === "added" || n.region) return false;
+    // (a move the reader added or read, a start: their own editors)
+    if (!n || n.parent == null || !n.key || n.corrected === "added" || n.region) return false;
+    // a gap in the text, or a move whose position the gap before it leaves unknown: the moves the
+    // text lacks there, made on the board from the position before them (a gap the reader cannot
+    // fill so, and a move whose position is unknown otherwise: their own editors)
+    if (n.gap || !beforeFen(n)) {
+      const gk = gapKeyOf(id), g = gk ? gapInfo(gk) : null;
+      if (!g || !g.base || !g.hole || g.missing <= g.filled.length) return false;
+      const k = nodeByKey(gk);
+      threadBegin({kind: "gap", key: gk, box: gk, page: k ? D.nodes[k].page : S.page, node: id, at: markBox(b)});
+      return true;
+    }
     // while the move of a box in no line is asked for, a move tapped on its page (or the page before)
     // is the one it follows
     if (TH.on && TH.kind === "seq" && (TH.step === "own" || TH.step === "gap") &&
@@ -1658,6 +1674,19 @@ function threadBegin(o){
     TH.fen = threadFen();
     TH.step = "own";
     TH.doubt = doubted(o.node) ? o.node : null;
+  } else if (o.kind === "gap") {
+    // a gap in the text: the position after the moves given for it so far, and the move tapped chosen
+    // (the board shows that position already, not the note of a move whose position is unknown); the
+    // box after the gap is named by its printed number, the ply the moves the text lacks lead to
+    const g = gapInfo(o.key), k = nodeByKey(o.key);
+    threadSetAnchor(g.filled.length ? g.filled[g.filled.length - 1] : g.before);
+    TH.fen = threadFen();
+    threadSelect(o.node, {at: o.at});
+    TH.ply = fenPly(g.base) + g.missing;
+    TH.boxSan = k && D.nodes[k].san || null;
+    TH.step = "gap"; TH.need = g.missing - g.filled.length;
+    // (the worker offers the moves the words between may stand for)
+    if (inApp()) threadPost(true);
   } else {
     TH.ply = printedPly(o.seq, o.key);
     // (a move printed without its number after a comment follows the move the text prints it after)
@@ -1768,7 +1797,8 @@ function threadShow(){
 // the box's full editor: the place of a box in no line (or that it is no move), the gap's moves, or
 // the move's own corrections; null when it has none
 function threadMoreTarget(){
-  if (TH.kind === "gap" && TH.key) return () => openGap(TH.key);
+  // (the key is taken now: More ends the thread before it opens the editor)
+  if (TH.kind === "gap" && TH.key) { const key = TH.key; return () => openGap(key); }
   const node = TH.kind === "line" ? TH.node : TH.key && !TH.seq ? nodeByKey(TH.key) : null;
   if (node && D.nodes[node]) return () => openMove(node);
   if (TH.seq && seqInfo(TH.seq)) { const seq = TH.seq; return () => openSeq(seq); }
@@ -2250,6 +2280,8 @@ function applyPatch(p){
   if (edit && edit.node && (ren[edit.node] || !D.nodes[edit.node])) edit.node = ren[edit.node] || null;
   if (S.node) S.line = D.nodes[S.node].line;
   else if (S.line && !D.lines[S.line]) S.line = null;
+  // (the thread finds its moves again before the page names them)
+  threadRebase();
   showPage(S.page);
   renderTree(); renderBoard(); renderInfo(); layoutPanel(false); highlightMark(false);
   if (RV.on) { const keep = RV.cur; renderReview(); RV.cur = keep; }
@@ -2278,7 +2310,6 @@ function applyPatch(p){
     else { closeFix(); said = "Placed in the line."; }
   }
   // the thread goes on once the book holds the move made on the board
-  threadRebase();
   const thread = !!(edit && edit.kind === "thread" && TH.on);
   if (thread && p.corrections) threadPatched(p);
   // the move made on the board: it is chosen once the book holds it
@@ -2681,6 +2712,15 @@ function askPromotion(src, moves){
     if (m) boardMove(src, m);
   });
 }
+// a move tried on the board that is not legal there: one line says so, in the thread's sheet or on
+// the page, and names the first move before it that the program reads with doubt
+function notLegal(src){
+  let first = null;
+  for (let id = src.at; id != null && D.nodes[id]; id = D.nodes[id].parent) if (doubted(id)) first = id;
+  const t = "Not legal here: an earlier move may be misread." +
+    (first ? " The program is not sure of " + moveText(first, true) + "." : "");
+  if (src.thread) { TH.said = t; threadShow(); } else say(t);
+}
 function playFrom(src, from, to){
   const moves = targetsOf(src.fen, from).filter(m => m[1].slice(2, 4) === to);
   BM.pick = null;
@@ -2748,15 +2788,16 @@ function initBoardMoves(){
       }
       const sq = squareAt(d.svg, e.clientX, e.clientY);
       if (d.own && dragged) {
-        // a drop on a square the piece can reach plays the move; any other drop puts it back
+        // a drop on a square the piece can reach plays the move; any other drop puts it back, and a
+        // drop on another square of the board says that the move is not legal
         if (sq && sq !== d.sq && targetsOf(d.src.fen, d.sq).some(m => m[1].slice(2, 4) === sq)) playFrom(d.src, d.sq, sq);
-        else { if (sq !== d.sq) BM.pick = null; paintBoards(); }
+        else { if (sq !== d.sq) BM.pick = null; paintBoards(); if (sq && sq !== d.sq) notLegal(d.src); }
       } else if (d.own) {
         if (d.was) BM.pick = null;
         paintBoards();
       } else if (sq === d.sq && targetsOf(d.src.fen, BM.pick.sq).some(m => m[1].slice(2, 4) === sq)) {
         playFrom(d.src, BM.pick.sq, sq);
-      } else { BM.pick = null; paintBoards(); }
+      } else { const tried = sq === d.sq; BM.pick = null; paintBoards(); if (tried) notLegal(d.src); }
     };
     box.addEventListener("pointerup", (e) => up(e, false));
     box.addEventListener("pointercancel", (e) => up(e, true));

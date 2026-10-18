@@ -19,8 +19,8 @@ from chessbook.movetext import (  # noqa: E402
 )
 
 
-def kinds(text):
-    return [(t.kind, t.raw) for t in tokenize(text)]
+def kinds(text, **kw):
+    return [(t.kind, t.raw) for t in tokenize(text, **kw)]
 
 
 def numbers(text):
@@ -78,6 +78,17 @@ def test_black_continuation_with_space_before_move():
     assert toks[1].raw == "axb5"
 
 
+def test_split_ellipsis_before_a_pawn_move():
+    # KIA page 104 prints "13...f6", read "13 .. .f6": the third dot is the
+    # ellipsis's, not a bishop's sign (it was read as 13...Bf6); a dot before
+    # a piece's junk glyph (".ic4") stays the glyph's
+    toks = tokenize("13 .. .f6 he would")
+    assert (toks[0].kind, toks[0].number, toks[0].black) == ("number", 13, True)
+    assert (toks[1].kind, toks[1].raw) == ("move", "f6")
+    assert [t.raw for t in tokenize("13 .. .exds 14 c4")][1] == "exds"
+    assert [t.raw for t in tokenize("13 .. .ic4")][1] == ".ic4"
+
+
 def test_bare_ellipsis_before_black_move():
     toks = tokenize("Black has ... d5 available")
     assert [(t.kind, t.raw) for t in toks] == [
@@ -118,12 +129,44 @@ def test_number_glued_to_rook_glyph_starts_a_run():
     assert kinds("the bk7 and")[1] == ("other", "bk7")
 
 
+def test_ocr_number_forms_start_a_run():
+    # OCR's text only (primer p271, p316, p194; gpa p125): a number glued to
+    # a figurine's junk whose square OCR misread ("34J!bl!" for 34.Rb1!), or
+    # with its 0 read as a letter ("3oJ:k5!" for 30.Rc5!), "1." read as "t."
+    # or "L.", and a letter for a number of a book without dots ("S es NdS
+    # 6" for 5 e5 Nd5 6) where the next number follows it
+    assert kinds("Kxg8 A classic example. 34J!bl! As a rule")[4:6] == [
+        ("number", "34"), ("move", "J!bl!")]
+    assert kinds("Kxg8 A classic example. 34J!bl! As a rule", exact=True)[4][0] == "other"
+    assert kinds("text 3oJ:k5! <it?gs 31.a4!")[1:3] == [("number", "3o"), ("move", "J:k5!")]
+    assert tokenize("text 3oJ:k5! <it?gs")[1].number == 30
+    assert kinds("Solution t.Yff2? l...i.xg2")[1:3] == [("number", "t."), ("move", "Yff2?")]
+    assert kinds("L.mf3 2.i.xg3!")[:2] == [("number", "L."), ("move", "mf3")]
+    toks = tokenize("will be slower. S es NdS 6 Bc4!", dotless=True)
+    assert [(t.kind, t.raw, t.number) for t in toks[3:]] == [
+        ("number", "S", 5), ("move", "es", 5), ("move", "NdS", 5), ("number", "6", 6),
+        ("move", "Bc4!", 6)]
+    # an initial, a word and prose numbers are left alone
+    assert [k for k, _ in kinds("L. Kubbel")] == ["other", "other"]
+    assert all(t.kind == "other" for t in tokenize("with 2 as 3 for", dotless=True))
+
 def test_k_in_a_square_may_also_be_an_h():
     # OCR reads an h as a k as well as a c joined to the glyph before it: in
     # "1 ... .!k8" (Primer page 173) the king goes to h8, and "J:k7" may still be Rc7
     board = chess.Board("6k1/6pp/2r1q3/4B3/3pn3/1Q6/6PP/5RK1 b - - 0 1")
     assert sans("1...Kk8", board) == ["Kh8"]
     assert sans("1.Kk2", chess.Board("4k3/8/8/8/8/8/8/2K5 w - - 0 1")) == ["Kc2"]
+
+
+def test_capital_c_before_a_rank_is_the_c_file():
+    # OCR sets the c of a pawn move as a capital ("C4" for c4, "11 C3!"), and
+    # a glyph before it keeps it a file ("èC7" for Qc7) ...
+    assert sans("1.d4 d5 2.C4 e6 3.Nc3 C5") == ["d4", "d5", "c4", "e6", "Nc3", "c5"]
+    b = chess.Board("k7/8/8/4Q3/8/8/8/4K3 w - - 0 1")
+    assert sans("1.\x1bC7", b, glyphs=GlyphModel(seed=True)) == ["Qc7"]
+    # ... but where C is the knight (French, Spanish), it stays a piece letter
+    assert sans("1.e4 e5 2.C3", letters="French")[2].startswith("N")
+    assert sans("1.e4 e5 2.Cc3", letters="Spanish")[2] == "Nc3"
 
 
 def test_check_sign_printed_apart_from_its_move():
@@ -136,8 +179,16 @@ def test_check_sign_printed_apart_from_its_move():
 def test_two_moves_glued_after_a_one_character_glyph():
     assert moves("4.qa4ltlf6 5.0-0") == ["qa4", "ltlf6", "0-0"]
     assert moves("1.e4 e5 2.Nf3Nc6") == ["e4", "e5", "Nf3", "Nc6"]
-    # a square after a square is one move in long notation
-    assert moves("1.e2e4 e7e5 2.Ng1f3 Qd8h4+") == ["e2e4", "e7e5", "Ng1f3", "Qd8h4+"]
+    # in a text set in type, a square after a square is one move in long notation
+    exact = [t.raw for t in tokenize("1.e2e4 e7e5 2.Ng1f3 Qd8h4+", exact=True) if t.kind == "move"]
+    assert exact == ["e2e4", "e7e5", "Ng1f3", "Qd8h4+"]
+    # in a text OCR read, it may be two moves whose space was lost: the
+    # decoder reads it either way, as the board allows
+    assert moves("1.e4e6 2.d4") == ["e4", "e6", "d4"]
+    assert sans("1.e4e6 2.d4") == ["e4", "e6", "d4"]
+    toks = tokenize("1.e2e4 e7e5 2.Ng1f3 Nb8c6")
+    assert [d.san for d in decode(chess.Board(), toks)] == ["e4", None, "e5", None,
+                                                            "Nf3", None, "Nc6", None]
 
 
 def test_glyph_dot_after_number():
@@ -163,6 +214,58 @@ def test_check_and_annotation_parsing():
     assert parse_move_text("Qxf7#")[0]["check"] == 3
     assert parse_move_text("e4!?")[0]["annotation"] == "!?"
     assert parse_move_text("0-0-0t") == [{"castle": "Q", "check": 1, "annotation": ""}]
+
+
+def test_capture_mark_after_glyph_junk_stays_a_capture():
+    # an "x" after a figurine's junk ("E:xfl t", primer p255) is the printed
+    # capture, never part of the glyph: a quiet move read from it does not
+    # take the capture mark as printed
+    assert all(q["capture"] is True for q in parse_move_text("E:xfl t"))
+    b = chess.Board("5r1k/6pp/8/8/8/8/6PP/6K1 b - - 0 24")
+    (d,) = decode(b, find_sequences("24...E:xflt")[0].tokens)
+    assert d.san == "Rf1+" and d.capture_mark is True
+
+def test_slip_of_a_named_square_or_capture_mark():
+    # a file letter or rank digit read as another square, or a capture mark
+    # on a move that takes nothing, is a slip (Decoded.slip); OCR's shapes
+    # that name no square ("s" for 5, "l" for 1) are none
+    b = chess.Board("4q1k1/r4p1p/P3b1p1/R1b1p3/4P2P/6P1/3Q1P1K/8 b - - 0 40")
+    (d,) = decode(b, find_sequences("40...Qc7")[0].tokens)
+    assert (d.san, d.slip) == ("Qe7", True)
+    (d,) = decode(b, find_sequences("40...Qe7")[0].tokens)
+    assert (d.san, d.slip) == ("Qe7", False)
+    b = chess.Board("4r1k1/5ppp/8/8/8/8/5PPP/3R2K1 b - - 0 31")
+    (d,) = decode(b, find_sequences("31...Rxe1+")[0].tokens)
+    assert (d.san, d.slip) == ("Re1+", True)
+    b = chess.Board("6k1/5ppp/8/8/7P/8/5PP1/6K1 w - - 0 1")
+    (d,) = decode(b, find_sequences("1.hs")[0].tokens)
+    assert (d.san, d.slip) == ("h5", False)
+    # an "o" whose rank was lost is no a-file square: the Primer's "go",
+    # printed for Rf1, is no rook move to a1
+    glyphs = GlyphModel()
+    glyphs.learn([("g", "R")] * 10)
+    b = chess.Board("5k2/2R2pp1/7p/4PK2/p7/2P3PP/5P2/4r3 w - - 0 42")
+    decs = decode(b, find_sequences("42.h4 go 43.f4", lenient=True)[0].tokens, glyphs=glyphs)
+    assert decs[1].raw == "go" and decs[1].san != "Ra1"
+    # ... and a file whose rank the print lacks is read through a slip ("ga",
+    # printed for Rf3, read as a rook move to the a-file)
+    b = chess.Board("5k2/2R2pp1/7p/4PK2/7P/r1P3P1/5P2/8 b - - 0 43")
+    (d,) = decode(b, find_sequences("43...ga", lenient=True)[0].tokens, glyphs=glyphs)
+    assert d.san[:2] == "Ra" and d.slip
+
+
+def test_bang_read_as_1_after_a_square():
+    # "c41?" is c4!? and "d3l" d3! with the "!" read as 1 or l, not a move to
+    # the first rank ("Kh1", "Ne1") with "c4" read as junk
+    b = chess.Board("r1bq1rk1/p2nbppp/4p3/1pppP3/8/3P1NP1/PPPN1PBP/R1BQR1K1 w - - 0 10")
+    (d,) = decode(b, find_sequences("10.c41?")[0].tokens)
+    assert (d.san, d.status, d.annotation) == ("c4", "ok", "!?")
+    assert sans("1.e4 e5 2.Nf3 Nc6 3.d3l d6") == ["e4", "e5", "Nf3", "Nc6", "d3", "d6"]
+    # ... also after a rank read as a letter ("hSI" for h5!)
+    assert any("h5" in q["squares"] and q["annotation"] == "!" and q["prefix"] == ""
+               for q in parse_move_text("hSI"))
+    # a square followed by 1 is still the rank where nothing else reads
+    assert "c1" in {s for q in parse_move_text("Rc1") for s in q["squares"]}
 
 
 def test_check_sign_before_annotation_is_not_a_rank():
@@ -231,6 +334,27 @@ def test_nested_parentheses():
     got = [(s.first_number, s.black_first, s.depth) for s in find_sequences(text)]
     assert got == [(12, False, 0), (12, False, 1), (12, True, 2), (13, False, 1),
                    (12, True, 0)]
+
+
+def test_a_long_square_bracket_stays_open_and_a_colon_joins_moves():
+    """A note in square brackets runs on for a page (alekhine p27: "[ Topalov
+    may have been better off entering the firestorm with 13.dxc5!? : Nxc3!
+    ... 16.Qxe1 ( ... ) 16...Qxd3 17.Ne5! ... ]"): its runs keep their depth
+    past a long comment and a closed parenthesis; and a colon set apart
+    between two moves joins them."""
+    prose = "The knight addresses the white queen with offensive brashness. " * 12
+    text = (f"13.Be4 [ 13.dxc5!? : Nxc3! {prose} 14.bxc3 Bxc3 15.Bh6 Bxe1 16.Qxe1 "
+            f"( 16.Bxf8 Kxf8 ) 16...Qxd3 17.Ne5! ] 13...cxd4")
+    got = [(s.first_number, s.black_first, s.depth, [t.raw for t in s.moves])
+           for s in find_sequences(text)]
+    assert got == [
+        (13, False, 0, ["Be4"]),
+        (13, False, 1, ["dxc5!?", "Nxc3!"]),
+        (14, False, 1, ["bxc3", "Bxc3", "Bh6", "Bxe1", "Qxe1"]),
+        (16, False, 2, ["Bxf8", "Kxf8"]),
+        (16, True, 1, ["Qxd3", "Ne5!"]),
+        (13, True, 0, ["cxd4"]),
+    ]
 
 
 def test_run_side_settled_by_later_number():
@@ -304,6 +428,37 @@ def test_fl_ligature_reads_as_f2_when_the_moves_need_it():
     assert sans("1.\x1dfl Kd7", b, glyphs=GlyphModel(seed=True)) == ["Rf1", "Kd7"]
 
 
+def test_clearscan_square_forms():
+    # ClearScan prints f3 as "o", "O" or "fJ", f1 as "n" and the rank 1
+    # after a file as "t" (The Art of Planning: "2 lbo d5", "2 ttJO e6",
+    # "2 tbfJ d6", "7 tbn d5", "Rfe1" as ":tfet"). The number before such a
+    # move and the reply after it are moves of the run, and the move is
+    # read as the square, not as an a-file ("tLlo" is no Na3).
+    toks = tokenize("1 e4 e5 2 ttJO e6 3 d4 exd4", dotless=True)
+    assert [(t.kind, t.raw) for t in toks][3:7] == [
+        ("number", "2"), ("move", "ttJO"), ("move", "e6"), ("number", "3")]
+    toks = tokenize("1 e4 e6 2 lbo d5 3 exd5 exd5", dotless=True)
+    assert [(t.kind, t.raw) for t in toks][3:6] == [("number", "2"), ("move", "lbo"),
+                                                    ("move", "d5")]
+    decs = decode(chess.Board(), toks)
+    assert [d.san for d in decs] == ["e4", "e6", "Nf3", "d5", "exd5", "exd5"]
+    assert sans("1.e4 c5 2.tLlo d6 3.d4 cxd4 4.tLlxd4 tLlf6 5.tLlc3")[2] == "Nf3"
+    assert sans("1.e4 c5 2.tbfJ d6 3.d4 cxd4 4.tbxd4")[2] == "Nf3"
+    assert sans("1.tbn Kd7", chess.Board("4k3/8/8/8/8/8/3N4/4K3 w - - 0 1"))[0] == "Nf1"
+    assert sans("1.:tfet Kh7", chess.Board("7k/8/8/8/8/8/8/R4RK1 w - - 0 1"))[0] == "Rfe1"
+    # a "t" set apart from the square is the check sign ("i.d t" for Bc1+)
+    from chessbook.movetext import _parse_raw
+    assert not any(q.whole for q in _parse_raw("i.d t").parses)
+    assert any(q.whole == "et" for q in _parse_raw(":tfet").parses)
+    # prose is no move ("two", "in", "at", "OPEN"), nor are the forms in a book set
+    # in type
+    assert moves("I have two and win in two at last") == []
+    toks = tokenize("12 OPEN 13 tLlo", dotless=True)
+    assert [t.raw for t in toks if t.kind == "move"] == ["tLlo"]
+    toks = tokenize("1.e4 e6 2.lbo d5")
+    assert decode(chess.Board(), toks, glyphs=GlyphModel(exact=True))[2].san != "Nf3"
+
+
 def test_castling_and_promotion():
     b = chess.Board("4k3/1P6/8/8/8/8/8/R3K2R w KQ - 0 1")
     assert sans("1.0-0-0 Kf7 2.b8=Q", b) == ["O-O-O", "Kf7", "b8=Q"]
@@ -351,6 +506,70 @@ def test_move_missing_from_the_text_is_bridged():
     assert decs[3].missing_before is not None and decs[2].missing_before is None
 
 
+def _out_of_step(decs, board=None):
+    """The moves read at another ply than their printed number names."""
+    start = (board or chess.Board()).ply()
+    out, ply = [], start
+    for d in decs:
+        if d.san:
+            ply = chess.Board(d.fen).ply() - 1
+            if ply != (d.number - 1) * 2 + d.black:
+                out.append((d.number, d.black, d.raw, d.san, d.status))
+    return out
+
+
+def test_printed_numbers_anchor_the_moves():
+    # Move 2 is lost from the text: 3.d4 stands at its printed ply, so it is
+    # not read, rather than read as 2.d4 with 4.Nxd4 bent to 3.Qxd4, all ok.
+    board = chess.Board()
+    for san in ("e4", "c5"):
+        board.push_san(san)
+    toks = find_sequences("3.d4 cxd4 4.Nxd4 a6 5.Nc3 e6")[0].tokens
+    for insert in (False, True):
+        decs = decode(board, toks, insert=insert)
+        assert _out_of_step(decs) == [] and decs[0].san is None, insert
+    # Black's sixth move is lost ("6.Nb3 7.Qe2"): the moves after it are
+    # never read a ply early, nor is d6, printed without a number, read as
+    # Black's sixth; with insert the missing move is supplied.
+    toks = find_sequences("1.e4 c5 2.Nf3 e6 3.d4 cxd4 4.Nxd4 a6 5.Bd3 Bc5 6.Nb3 7.Qe2 d6 "
+                          "8.Be3 Nf6 9.Bxa7 Rxa7")[0].tokens
+    decs = decode(chess.Board(), toks, insert=False)
+    assert _out_of_step(decs) == []
+    assert [d.san for d in decs[:11]] == ["e4", "c5", "Nf3", "e6", "d4", "cxd4", "Nxd4", "a6",
+                                          "Bd3", "Bc5", "Nb3"]
+    decs = decode(chess.Board(), toks)
+    assert _out_of_step(decs) == [] and decs[11].missing_before is not None
+    # a White move printed as such is not played as Black's ("3.Bd6" for 2...Bd5)
+    board = chess.Board("7k/1b6/5N1P/8/8/6p1/8/B5K1 w - - 0 1")
+    decs = decode(board, find_sequences("1.Be5 Bh1 2.Bxg3 3.Bd6")[0].tokens, insert=False)
+    assert [d.san for d in decs[:3]] == ["Be5", "Bh1", "Bxg3"] and _out_of_step(decs) == []
+    # a number misread by OCR names its move with its other readings ("S" for 8)
+    board = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5",
+                "Bb3", "d6"):
+        board.push_san(san)
+    decs = decode(board, find_sequences("S. c3 O-O 9. h3")[0].tokens, insert=False)
+    assert [(d.san, d.status) for d in decs] == [("c3", "ok"), ("O-O", "ok"), ("h3", "ok")]
+    # a position that repeats stands at its own move number, not at the first's
+    decs = decode(chess.Board(), find_sequences(
+        "1.Nf3 Nf6 2.Ng1 Ng8 3.Nf3 Nf6 4.Ng1 Ng8 5.e4 e5")[0].tokens, insert=False)
+    assert [d.status for d in decs] == ["ok"] * 10 and _out_of_step(decs) == []
+
+
+def test_a_move_read_for_the_other_side_is_guessed():
+    # A number printed without dots names no side for sure ("12 Qc7" in a
+    # book that prints none): read as Black's move of that number, Qc7 is
+    # 'guessed', never 'ok'.
+    board = chess.Board()
+    for san in ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2", "e5",
+                "Nb3", "Be7", "O-O", "O-O", "Be3", "Be6", "Qd2", "Nbd7", "a4", "Rc8", "f3"):
+        board.push_san(san)
+    (num, qc7) = tokenize("12 Qc7", dotless=True)
+    assert not num.side_known and not qc7.black
+    (d,) = decode(board, [num, qc7], insert=False)
+    assert d.san == "Qc7" and d.status == "guessed"
+
+
 def test_prose_word_after_a_move_ends_the_run():
     seqs = find_sequences("1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 and 4.Ba4 Nf6")
     assert [(s.first_number, len(s.moves)) for s in seqs] == [(1, 6), (4, 2)]
@@ -367,6 +586,44 @@ def test_ambiguous_and_guessed_statuses():
     decs = decode(chess.Board(), find_sequences(text)[0].tokens)
     assert [d.san for d in decs] == ["e4", "e5", "Nc3", "Nc6", "Nd5"]
     assert decs[2].status == "guessed" and "c3" in decs[2].alternatives
+
+
+def test_exact_text_reads_each_letter_as_printed():
+    # OCR reads an e for a c, a 6 for a 5, a lost glyph for a pawn: in an
+    # OCR'd book "3.Be4", where only a bishop to c4 can go, is Bc4. A book
+    # whose text layer holds the letters it was set in (GlyphModel(exact=
+    # True)) prints what it means: no legal move is "Be4" there.
+    toks = find_sequences("1.e4 e5 2.Nf3 Nc6 3.Be4 Nf6")[0].tokens
+    lenient = decode(chess.Board(), toks)
+    assert (lenient[4].san, lenient[4].status) == ("Bc4", "ok")
+    exact = decode(chess.Board(), toks, glyphs=GlyphModel(exact=True))
+    assert exact[4].status == "failed" and exact[4].san is None
+    assert [d.san for d in exact[:4]] == ["e4", "e5", "Nf3", "Nc6"] and exact[5].san == "Nf6"
+    # a piece letter is that piece, and a move without one a pawn's
+    assert decode(chess.Board(), tokenize("1.Bf3"))[0].san in ("Nf3", None)
+    assert decode(chess.Board(), tokenize("1.Bf3"), glyphs=GlyphModel(exact=True))[0].status \
+        == "failed"
+    board = chess.Board("4k3/8/8/8/8/8/8/1N2K3 w - - 0 1")
+    assert decode(board, tokenize("1.c3"))[0].san == "Nc3"
+    assert decode(board, tokenize("1.c3"), glyphs=GlyphModel(exact=True))[0].status == "failed"
+    # nor is "Nx" the junk of a figurine (no knight takes on e3 here)
+    board = chess.Board("r2qr1k1/ppp2ppp/1nnp1b2/8/2PP2b1/PPNBB3/4NPPP/R2Q1RK1 b - - 0 12")
+    assert decode(board, tokenize("12...Nxe3"))[0].san in ("Nc8", "Rxe3")
+    assert decode(board, tokenize("12...Nxe3"), glyphs=GlyphModel(exact=True))[0].status \
+        == "failed"
+    board = chess.Board("5rn1/1p2qp1k/4pbpp/p2pP3/P1r2BNP/P5P1/3Q1PB1/1R2R1K1 w - - 0 28")
+    learnt = GlyphModel(exact=True)
+    learnt.learn([("bx", "Q")] * 3)          # (as junk read in a run would teach it)
+    assert decode(board, tokenize("28.bxa5"), glyphs=learnt)[0].status == "failed"
+    # the printed letters still read as they are
+    text = "1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 d6 8.c3 O-O 9.h3 Nb8"
+    decs = decode(chess.Board(), find_sequences(text)[0].tokens, glyphs=GlyphModel(exact=True))
+    assert all(d.status == "ok" for d in decs) and decs[-1].san == "Nb8"
+    # a word that only OCR's misreadings make a move of ends the run
+    text = "14.Qxc8+ Rxc8 15.b3 Rd8 White's d4 point is weak. 8.c3 Nd5 Hi, I'm back"
+    assert [[m.raw for m in s.moves] for s in find_sequences(text, exact=True)] == [
+        ["Qxc8+", "Rxc8", "b3", "Rd8"], ["c3", "Nd5"]]
+    assert "White's" in [m.raw for m in find_sequences(text)[0].moves]
 
 
 def test_decoded_offsets_and_numbers():
@@ -424,3 +681,51 @@ def test_bench_smoke(tmp_path):
         st2 = results[(notation, "medium")][2]
         assert st2["games"] == 20
         assert st2["correct"] / st2["moves"] >= 0.97
+
+
+def test_a_number_glued_to_the_junk_of_a_knight():
+    """KIA's OCR glues a move number to the knight's junk, which starts with
+    an "l" ("16lL'lf6+!" for 16 Nf6+!): the number is 16, not 161, and so
+    for "3oJ:k5!" (30 Rc5!) where the run expects 30."""
+    from chessbook.movetext import tokenize
+    toks = tokenize("Answer: 16lL'lf6+! when if 16 ... gxf6? 17 exf6", dotless=True)
+    assert [(t.kind, t.raw, t.number) for t in toks[1:3]] == [
+        ("number", "16", 16), ("move", "lL'lf6+!", 16)]
+    toks = tokenize("29 h4 a5 3oJ:k5!", dotless=True)
+    assert [(t.raw, t.number) for t in toks[-2:]] == [("3o", 30), ("J:k5!", 30)]
+
+
+def test_a_queen_move_with_its_mark_read_as_l():
+    """"26 Wbsl" (26 Qb5!, the 5 read as "s" and the "!" as "l") is a move,
+    so the run goes on to it and the move before it (".iLcs", Bc5) is kept."""
+    from chessbook.movetext import tokenize
+    toks = tokenize("24 h4 1Le7 25 lZlce3 .iLcs 26 Wbsl\n\n  ", dotless=True, lenient=True)
+    assert [(t.kind, t.raw) for t in toks[-3:]] == [("move", ".iLcs"), ("number", "26"),
+                                                    ("move", "Wbsl")]
+
+
+def test_long_notation_names_both_squares():
+    """Brunthaler prints long notation, which its OCR reads with an "l" for
+    a 3 (and a 1, 2 or 7): p147 "l:tf5xfl" is Rf5xf3, the rook on f5 taking
+    on f3, not the quiet Rf7 that a plain "fl" would give; the queen then
+    takes back on f3 ("fi'g3xfl", Qg3xf3), not Qf2."""
+    board = chess.Board("r5k1/4q1p1/2b1p1P1/1p1pPr1p/p1pP1N1P/P1P2RQ1/2PK4/5R2 w - - 0 1")
+    assert sans("1.tLlf4xe6 l:tf5xfl 2.fi'g3xfl fi'e7xe6", board) == [
+        "Nxe6", "Rxf3", "Qxf3", "Qxe6"]
+
+
+def test_long_notation_with_the_rank_left_split_off():
+    """Brunthaler p146 prints "1...Qb1-b8", which its text splits into
+    "'iVb I -b8": one move, not Qb6 and two more."""
+    assert moves("l ... 'iVb I -b8 In a certain sense") == ["'iVb I -b8"]
+    board = chess.Board("4B1k1/5p1p/5pp1/p2Pn3/3QP3/7P/5PPK/1q6 b - - 0 1")
+    assert sans("1 ... 'iVb I -b8 2.ie8-a4 tZle5-f3+ 3.'1iih2-hl 'ilfb8-h2#", board) == [
+        "Qb8", "Ba4", "Nf3+", "Kh1", "Qh2#"]
+
+
+def test_initial_in_a_text_set_in_type_is_no_move_number():
+    # Alekhine p103 "as in S. Lakatos-D.Majer": OCR may print 8 as "S", but
+    # in a text set in type "S." is a player's initial
+    text = "as in S. Lakatos-D.Majer, correspondence 2009"
+    assert [t.kind for t in tokenize(text, exact=True)].count("number") == 0
+    assert [t.raw for t in tokenize(text) if t.kind == "number"] == ["S."]

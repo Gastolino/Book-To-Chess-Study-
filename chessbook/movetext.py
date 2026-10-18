@@ -92,7 +92,7 @@ FIGURINES = {"♔": "K", "♕": "Q", "♖": "R", "♗": "B", "♘": "N", "♙": 
 #: particular book is learnt from that book.
 COMMON_GLYPH_JUNK: dict[str, list[str]] = {
     "N": ["\x18", "tLl", "ti)", "lt)", "tt:l", "ttl", "tLJ", "ttJ", "lLl", "lbl", "lb",
-          "<:l", "tl)", "t!i)", "c!L!", "ltl", "tll", "lt:\\"],
+          "<:l", "tl)", "t!i)", "c!L!", "ltl", "tll", "lt:\\", "tb"],
     "Q": ["\x1b", "YlY", "'i!Y", "'ilY", "Wf", "1W", "V", "Y«", "Vl", "'!W", "VN", "'lW",
           "Wff", "YB", "1Mf", "'Wf"],
     "K": ["\x14", "®", "lt>", "<.!.>", "\\t>", "Wi>", "'it>", "<i!?", "<i!>", "ci>", "i>",
@@ -105,12 +105,14 @@ COMMON_GLYPH_JUNK: dict[str, list[str]] = {
 # What an OCR'd character in the file slot of a square can stand for, with the
 # cost of that reading. Exact readings cost nothing. A "k" is a c joined to the
 # last stroke of the glyph before it (":k7", "Jk1" for Rc7, Rc1), and only
-# when no c fits, an h (".!k8" for Kh8).
+# when no c fits, an h (".!k8" for Kh8). OCR sets the c as a capital ("C4"
+# for c4), which no English piece letter is; in a notation whose piece letter
+# it is (the French and Spanish knight) it stays the piece (_Scorer._index).
 FILE_READ: dict[str, dict[int, float]] = {
     "a": {0: 0.0}, "b": {1: 0.0, 7: 0.6}, "c": {2: 0.0, 4: 0.5}, "d": {3: 0.0},
     "e": {4: 0.0, 2: 0.5}, "f": {5: 0.0}, "g": {6: 0.0}, "h": {7: 0.0, 1: 0.6},
     "o": {0: 0.6}, "t": {5: 0.5}, "£": {5: 0.15}, "q": {6: 0.5}, "r": {5: 0.9},
-    "9": {6: 0.9}, "€": {4: 0.6}, "ƒ": {5: 0.3}, "k": {2: 0.6, 7: 1.6},
+    "9": {6: 0.9}, "€": {4: 0.6}, "ƒ": {5: 0.3}, "k": {2: 0.6, 7: 1.6}, "C": {2: 0.3},
 }
 # The same for the rank slot. 'l', 'I', 'i' and '!' read as 1 (and as the
 # 7 whose hook was lost), 'B', 'S' and 's' as 8 and 5, 'b' and 'G' as 6.
@@ -126,6 +128,15 @@ RANK_READ: dict[str, dict[int, float]] = {
     "B": {7: 0.3, 2: 0.9}, "S": {7: 0.4, 4: 0.5}, "s": {7: 0.4, 4: 0.6},
     "b": {5: 0.5}, "G": {5: 0.5}, "Z": {1: 0.6}, "z": {1: 0.7}, "T": {6: 0.7},
     "A": {3: 0.9}, "?": {6: 1.0},
+}
+# ClearScan's own signs for a whole square, printed after figurine junk: f3
+# as "o", "O" or "fJ" (the 3 a "J"), f1 as "n", and a square of the first
+# rank as its file and a "t" ("lbo", "ttJO", "tbfJ" for Nf3, "tbn" for Nf1,
+# ":tfet" for Rfe1). They cost more than the readings above, and a text set
+# in type (GlyphModel.exact) has none of them (_square_form).
+SQUARE_FORMS: dict[str, dict[int, float]] = {
+    "o": {chess.F3: 0.6}, "O": {chess.F3: 0.6}, "fJ": {chess.F3: 0.6}, "n": {chess.F1: 0.9},
+    **{f + "t": {chess.square(k, 0): 0.6} for k, f in enumerate("abcdefgh")},
 }
 CAPTURE_CHARS = set("xX:×*")
 LONG_SEP = set("-–—")
@@ -173,6 +184,7 @@ C_IMPLIED_NONCAP = 1.0  # a junk glyph that includes the capture mark, on a non-
 C_LONG_FROM = 9.0       # long notation whose from-square is not the square the piece leaves
 C_PAWN_DISAMB = 1.5     # a file letter before a pawn move that captures nothing ("gg4")
 C_SHAPE_OTHER = 1.6     # a piece other than the one its figurine's shape shows (Token.shape)
+C_BANG = 0.3            # a 1, l or I after a whole square read as the "!" it was ("c41?")
 SHAPE_SURE = 0.7        # a shape read this surely sets a reading apart as a letter does
 SHAPE_KNOWN = 0.8       # a symbol whose shape was read this surely needs no eye in the reader
 
@@ -195,10 +207,16 @@ class Token:
     tokenize() reads only when asked to (books that number moves that way).
     forced holds the SAN that a reader's correction gives a move token: the
     decoder then reads the token as that move, and as nothing else, where it
-    is legal. shape holds (piece letter, confidence) when the picture of the
+    is legal. prefer holds the SAN that the program's own reading gives a
+    move token (a diagram printed after it shows that move): the decoder
+    reads the token as that move where it is legal, and as the text reads it
+    where it is not. shape holds (piece letter, confidence) when the picture of the
     token's figurine was read (figshapes.py): a reading of that piece costs
     nothing for the symbol, a reading of another piece about as much as a
-    symbol that cannot be read.
+    symbol that cannot be read. glued marks a square that a text OCR read
+    prints against the move before it ("1.e4e6"): the two are two moves whose
+    space was lost, or one move in long notation ("e2e4"), as decode() finds
+    the board allows.
     """
     kind: str
     raw: str
@@ -210,7 +228,9 @@ class Token:
     layout: bool = False
     dotless: bool = False
     forced: Optional[str] = None    # the SAN a reader's correction gives this move token
+    prefer: Optional[str] = None    # the SAN the program's reading gives it, where legal
     shape: Optional[tuple] = None   # (piece letter, confidence) read from the figurine's picture
+    glued: bool = False             # a square printed against the move before it ("e4e6")
 
 
 @dataclass
@@ -243,7 +263,10 @@ class Decoded:
     were legal and the moves that follow chose one), 'ambiguous' (several
     readings remain equally good; the best is still filled in) or 'failed'
     (no legal reading; san, uci and fen are None, and alternatives holds the
-    move the search assumed in order to carry on, if any).
+    move the search assumed in order to carry on, if any) or 'joined' (a
+    square glued to the move before it, Token.glued, that the two read as one
+    move in long notation, "e2e4": the move is the token before's, san and uci
+    are None, and fen is the position after it).
     fen is the position after the move. cost is the reading's cost (0 for a
     clean token). glyph is the text read as the piece glyph, annotation the
     "!", "?" etc. printed after the move, square_read the characters read as
@@ -256,7 +279,12 @@ class Decoded:
     contradicts a piece glyph printed in the token: a pawn move read from a
     token with a piece glyph or with a file letter before a non-capture
     ("gg4" read as g4), or a piece letter of the notation read as another
-    piece.
+    piece. slip is True when the reading takes a character of the print for
+    another square than the one it names (a "c" read as the e-file, a "7" as
+    the first rank) or supplies a rank the print lacks, or reads a capture
+    mark the print shows for a move that takes nothing, or a capture for a
+    move printed with no mark: the print, read literally, is another move. OCR's slips of shape that name no square
+    ("s" for 5, "l" for 1) are no such slip.
     """
     raw: str
     start: int
@@ -275,6 +303,7 @@ class Decoded:
     missing_before: Optional[str] = None
     capture_mark: Optional[bool] = None
     glyph_lost: bool = False
+    slip: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -295,12 +324,22 @@ class GlyphModel:
     a character the text lacks. A book whose OCR loses the f-file letter
     ("Nf5" printed "N5") or prints "f3" as "6" then reads those cheaply.
     learn_run() feeds both from one decoded run.
+
+    exact marks a book whose text layer holds the letters it was set in
+    (pdftext.exact_text), not what OCR made of them: a square character is
+    then the file or rank it names and nothing else, a piece letter of the
+    notation is that piece, a move printed without one a pawn's, and no
+    letter stands in the junk OCR makes of a figurine ("Nx", "h" for "Bx").
+    The OCR's confusions (FILE_READ, RANK_READ, C_WRONG_LETTER, C_VANISH) are
+    no readings of such a text, so a move that only they would explain fails.
     """
     PIECES = "KQRBNP"
     DEFAULT = {"K": 0.196, "Q": 0.196, "R": 0.196, "B": 0.196, "N": 0.196, "P": 0.02}
+    exact = False
 
-    def __init__(self, seed: bool = False, kappa: float = 2.0):
+    def __init__(self, seed: bool = False, kappa: float = 2.0, exact: bool = False):
         self.kappa = kappa
+        self.exact = exact
         self.counts: dict[str, Counter] = defaultdict(Counter)
         self.char_counts: dict[str, Counter] = defaultdict(Counter)
         self.piece_totals: Counter = Counter()
@@ -465,6 +504,8 @@ class GlyphModel:
         """Cost of reading file character fch (None: no file printed) as each file."""
         key = ("f", fch, rank_missing)
         hit = self._square_cache.get(key)
+        if hit is None and self.exact and fch is not None:
+            hit = self._square_cache[key] = _exact(FILE_READ.get(fch, {}))
         if hit is None:
             default = FILE_READ.get(fch, {}) if fch is not None else \
                 {f: C_MISSING_FILE for f in range(8)}
@@ -476,6 +517,8 @@ class GlyphModel:
         """Cost of reading rank character rch (None: no rank printed) as each rank."""
         key = ("r", rch, file_missing)
         hit = self._square_cache.get(key)
+        if hit is None and self.exact and rch is not None:
+            hit = self._square_cache[key] = _exact(RANK_READ.get(rch, {}))
         if hit is None:
             default = RANK_READ.get(rch, {}) if rch is not None else \
                 {r: C_MISSING_RANK for r in range(8)}
@@ -520,6 +563,11 @@ def _strip_spaces(text: Optional[str]) -> str:
     characters \\x1c-\\x1f and \\t, which OCR makes of figurines (the rook's
     "\\x1d"), and so turn a piece move into a pawn move."""
     return (text or "").strip(_REAL_SPACES)
+
+
+def _exact(reads: dict) -> dict:
+    """The readings of a character that are no misreading of it."""
+    return {k: c for k, c in reads.items() if c == 0.0}
 
 
 def _blend(default: dict, counts: Optional[Counter], missing: bool) -> dict:
@@ -591,6 +639,10 @@ class _Parse:
     promo: Optional[str]       # None, '' (sign without piece) or the text
     fch: Optional[str] = None  # the character read as the destination file (None: absent)
     rch: Optional[str] = None  # the character read as the destination rank (None: absent)
+    bang: bool = False         # the token's last 1, l or I read as "!" (_BANG_RE)
+    whole: Optional[str] = None  # a sign for the whole square (SQUARE_FORMS), dest its square
+    nocheck: bool = False      # the final "t" read as that sign's rank 1, not as a check sign
+    long: bool = False         # long notation: dfile and drank name the square the piece leaves
 
 
 @dataclass
@@ -654,7 +706,10 @@ def _capture_opts(rest: str):
     while run < len(rest) and rest[len(rest) - 1 - run] in CAPTURE_CHARS:
         run += 1
     opts = [(True, rest[:len(rest) - k]) for k in range(1, run + 1)]
-    opts.append((False, rest))
+    if not (run < len(rest) and rest[-1] in "xX×"):
+        # an "x" after a glyph's junk is the capture mark, not part of the
+        # glyph ("E:xfl t" is Rxf1+, never a quiet rook move)
+        opts.append((False, rest))
     if rest and rest[-1] in LONG_SEP:
         opts.append(("-", rest[:-1]))
     return opts
@@ -662,12 +717,44 @@ def _capture_opts(rest: str):
 
 _DIS_RANK = {c: RANK_READ[c] for c in "12345678lI"}
 _DIS_FILE = {c: v for c, v in FILE_READ.items() if c in "abcdefgh£"}
+# Long notation ("Rf5xf3") prints the square the piece leaves as well as the
+# square it goes to; a piece must stand on the first, and only that piece's
+# moves to a square that fits the second are readings. That leaves so few
+# moves that OCR's looser slips of a rank may be read there, which a short
+# move cannot afford: in a scan read by ClearScan (Brunthaler) an "l" stands
+# for a 3 as well as a 1 or 7 ("l:tf5xfl" for Rf5xf3, "'iVdlxe4+" for
+# Qd3xe4+), in the square left also for a 2 ("'iVclxg6+" for Qc2xg6+), "S",
+# "s" and "B" there for 5 or 8 ("eSxd4"), and an "H" in the square reached
+# for a digit with the check sign merged into it ("/bf4-hH" for Nf4-h3+,
+# "ie4-dH" for Be4-d5+, "l:tg8-gH" for Rg8-g2+). The readings below are
+# added to the usual ones, in a long move only (LONG_FROM_EXTRA in the
+# square left, LONG_RANK_EXTRA in the square reached).
+LONG_RANK_EXTRA: dict[str, dict[int, float]] = {
+    "l": {2: 0.9}, "fl": {2: 0.9}, "I": {2: 1.0}, "i": {2: 1.0},
+    "H": {1: 0.9, 2: 0.9, 4: 0.9},
+}
+LONG_FROM_EXTRA: dict[str, dict[int, float]] = {
+    "l": {1: 1.1, 2: 0.9}, "I": {1: 1.1, 2: 1.0},
+}
+_LONG_DIS_RANK = {c: {**LONG_FROM_EXTRA.get(c, {}), **RANK_READ[c]} for c in "12345678lISsB"}
 
 
-def _disamb_opts(rest: str):
+def long_rank_costs(costs: dict, rch: Optional[str]) -> dict:
+    """costs (a rank character's readings) with the readings long notation adds."""
+    extra = LONG_RANK_EXTRA.get(rch or "")
+    if not extra:
+        return costs
+    out = dict(costs)
+    for k, v in extra.items():
+        out[k] = min(out.get(k, math.inf), v)
+    return out
+
+
+def _disamb_opts(rest: str, long: bool = False):
     opts = [(None, None, rest)]
-    if rest and rest[-1] in _DIS_RANK:
-        dr = _DIS_RANK[rest[-1]]
+    ranks = _LONG_DIS_RANK if long else _DIS_RANK
+    if rest and rest[-1] in ranks:
+        dr = ranks[rest[-1]]
         opts.append((None, dr, rest[:-1]))
         if len(rest) >= 2 and rest[-2] in _DIS_FILE:
             opts.append((_DIS_FILE[rest[-2]], dr, rest[:-2]))
@@ -685,6 +772,7 @@ def _dest_costs(fread: Optional[dict], rread: Optional[dict]) -> dict:
 def _enumerate_parses(core: str) -> list:
     out = []
     n = len(core)
+    is_long = bool(_LONG_CORE_RE.search(core))
     heads = []
     eq = core.rfind("=")
     if eq > 0:
@@ -702,15 +790,20 @@ def _enumerate_parses(core: str) -> list:
         rank_opts = []
         if head[-1] in RANK_READ:
             rank_opts.append((RANK_READ[head[-1]], head[-1], head[:-1]))
-        elif head[-1] in FILE_READ:
-            rank_opts.append((None, None, head))          # rank missing
+        elif is_long and head[-1] in LONG_RANK_EXTRA:
+            rank_opts.append((LONG_RANK_EXTRA[head[-1]], head[-1], head[:-1]))
+        elif head[-1] in FILE_READ and not head[-1].isupper() and head[-1] != "o":
+            # rank missing; an "o" is no file whose rank was lost (the Primer's "go",
+            # printed for Rf1, is no rook move to the a-file)
+            rank_opts.append((None, None, head))
         for rread, rch, before in rank_opts:
             b = before.rstrip(NOISE_CHARS) if rread is not None else before
             file_opts = []
-            if b and b[-1] in FILE_READ:
-                file_opts.append((FILE_READ[b[-1]], b[-1], b[:-1]))
-            elif rread is not None:
-                file_opts.append((None, None, b))         # file missing
+            last = b[-1] if b and b[-1] in FILE_READ else None
+            if last is not None:
+                file_opts.append((FILE_READ[last], last, b[:-1]))
+            if rread is not None and (last is None or last.isupper()):
+                file_opts.append((None, None, b))         # file missing (a "C" may be a piece letter)
             for fread, fch, rest in file_opts:
                 if fread is None and rread is None:
                     continue
@@ -718,19 +811,48 @@ def _enumerate_parses(core: str) -> list:
                     rread, rch = RANK_READ["fl"], "fl"      # the "fl" ligature
                 dest = _dest_costs(fread, rread)
                 for cap, rest2 in _capture_opts(rest):
-                    for dfile, drank, prefix in _disamb_opts(rest2):
+                    for dfile, drank, prefix in _disamb_opts(rest2, is_long):
                         if cap == "-" and dfile is None:
                             continue
                         out.append(_Parse(_strip_spaces(prefix), dfile, drank, cap, dest, promo,
-                                          fch, rch))
-    if _LONG_CORE_RE.search(core):
+                                          fch, rch, long=is_long and dfile is not None
+                                          and drank is not None))
+    for form, dest in SQUARE_FORMS.items():
+        if _square_form(core, form):
+            for cap, rest in _capture_opts(core[:-len(form)].rstrip(NOISE_CHARS)):
+                for dfile, drank, prefix in _disamb_opts(rest):
+                    out.append(_Parse(_strip_spaces(prefix), dfile, drank, cap, dest, None,
+                                      whole=form))
+    if is_long:
         # long notation ("Ng1-f3", "e2-e4", "d2xd3"): the square the piece leaves is
         # printed, so only readings that take it as that square count
         out = [q for q in out if q.dfile is not None and q.drank is not None] or out
     return out
 
 
-_LONG_CORE_RE = re.compile(r"[a-h£][1-8lI]\s?[-–—x:×]\s?[a-h£][1-8lIBS]")
+_LOWER_JUNK = {j for js in COMMON_GLYPH_JUNK.values() for j in js
+               if len(j) > 1 and j.isalpha() and j.islower()}
+
+
+def _square_form(core: str, form: str) -> bool:
+    """True when core ends in the ClearScan sign form for a square
+    (SQUARE_FORMS) after figurine junk: text that is no word in small
+    letters ("lb", "ttJ", ":tf"; "ex" before an "O"), so that "two", "in",
+    "at" and "OPEN" stay words."""
+    if form not in SQUARE_FORMS or not core.endswith(form):
+        return False
+    pre = core[:-len(form)].rstrip(NOISE_CHARS)
+    if not pre or (pre.isalpha() and pre.isupper()):
+        return False
+    return (form == "O" or not (pre.isalpha() and pre.islower())
+            or pre.rstrip("x") in _LOWER_JUNK)
+
+
+_LONG_CORE_RE = re.compile(r"[a-h£][1-8lISsB]\s?[-–—x:×]\s?[a-h£][1-8lIiBSsH]")
+# A whole square and a 1, l or I after it: OCR's reading of a "!" ("c41?" for
+# c4!?, "d3l" for d3!, "hSI" for h5!). Read as the rank, it would leave the
+# square as junk.
+_BANG_RE = re.compile(r"[a-h£][1-8sSB][1lI]$")
 
 
 @lru_cache(maxsize=200000)
@@ -743,11 +865,23 @@ def _parse_raw(raw: str) -> _Parsed:
         zeros = sum(ch in "0Oo°" for ch in cc)
         castle = "Q" if zeros >= 3 else "K"
     parses = [] if castle else _enumerate_parses(core)
+    if not castle and not check and core.endswith("H") and any(q.long for q in parses):
+        check = 1               # "/bf4-hH": the H is a digit and the check sign (LONG_RANK_EXTRA)
+    if not castle and _BANG_RE.search(core):
+        parses += [replace(q, bang=True) for q in _enumerate_parses(core[:-1])]
     if not parses and not castle and check and text.endswith("t"):
         # the final 't' was not a check sign after all
         parses = _enumerate_parses(core + "t")
         check = 0
+    if not castle and check and re.search(r"[a-h]t[!?]*$", raw.strip()):
+        # ClearScan's rank 1 ("Rfe1" printed ":tfet"), right after the file
+        parses += [replace(q, nocheck=True) for q in _enumerate_parses(core + "t") if q.whole]
     return _Parsed(raw, castle, check, ann, parses)
+
+
+def _annotation(parsed: _Parsed, q: Optional[_Parse]) -> str:
+    """The annotation of a token as parse q reads it."""
+    return "!" + parsed.annotation if q is not None and q.bang else parsed.annotation
 
 
 def parse_move_text(raw: str) -> list[dict]:
@@ -760,7 +894,7 @@ def parse_move_text(raw: str) -> list[dict]:
     for q in p.parses:
         out.append({"prefix": q.prefix, "capture": q.cap,
                     "squares": sorted(chess.square_name(s) for s in q.dest),
-                    "promotion": q.promo, "check": p.check, "annotation": p.annotation})
+                    "promotion": q.promo, "check": p.check, "annotation": _annotation(p, q)})
     return out
 
 
@@ -797,11 +931,20 @@ class _Scorer:
         hit = self._piece_cache.get(prefix)
         if hit is not None:
             return hit
+        # in an exact text (GlyphModel.exact) no glyph is lost or misread
+        lost = math.inf if self.glyphs.exact else C_VANISH
+        wrong = math.inf if self.glyphs.exact else C_WRONG_LETTER
         if prefix == "":
-            out = {pt: (0.0 if pt == PAWN else C_VANISH) for pt in PIECE_LETTER}
+            out = {pt: (0.0 if pt == PAWN else lost) for pt in PIECE_LETTER}
         elif prefix in self.letters:
             want = self.letters[prefix]
-            out = {pt: (0.0 if pt == want else C_WRONG_LETTER) for pt in PIECE_LETTER}
+            out = {pt: (0.0 if pt == want else wrong) for pt in PIECE_LETTER}
+        elif self.glyphs.exact and (prefix[:1] in _FILE_LETTERS or prefix[:1] in self.letters):
+            # a letter of the notation or a file letter with something after it
+            # ("Nx", "bx": the capture mark taken into the glyph), or a file
+            # letter alone ("h" for "Bx"), is OCR's junk for a figurine, which
+            # a text set in type does not hold
+            out = {pt: math.inf for pt in PIECE_LETTER}
         else:
             pri = self.glyphs.prior(prefix)
             out = {pt: min(-math.log(max(pri[PIECE_LETTER[pt]], 1e-6)), 6.0)
@@ -821,7 +964,8 @@ class _Scorer:
     def plain(self) -> "_Scorer":
         """The same scorer with no glyph knowledge (the unlearnt prior)."""
         if self._plain is None:
-            self._plain = _Scorer(self._letters_arg, None) if len(self.glyphs) else self
+            self._plain = _Scorer(self._letters_arg, GlyphModel(exact=self.glyphs.exact)) \
+                if len(self.glyphs) else self
         return self._plain
 
     def weak_glyph(self, prefix: Optional[str]) -> bool:
@@ -873,12 +1017,22 @@ class _Scorer:
         mask = 0
         g = self.glyphs
         for p in parsed.parses:
+            if p.whole:
+                if not g.exact:
+                    for sq, a in p.dest.items():
+                        by_dest[sq].append((p, a))
+                        mask |= chess.BB_SQUARES[sq]
+                continue
+            if p.fch in self.letters:
+                continue        # the book's piece letter ("C3" in French) is no file
             fc = g.file_costs(p.fch, p.rch is None)
             rc = g.rank_costs(p.rch, p.fch is None)
+            if p.long and not g.exact:
+                rc = long_rank_costs(rc, p.rch)
             for f, a in fc.items():
                 for r, b_ in rc.items():
                     sq = chess.square(f, r)
-                    by_dest[sq].append((p, a + b_))
+                    by_dest[sq].append((p, a + b_ + (C_BANG if p.bang else 0.0)))
                     mask |= chess.BB_SQUARES[sq]
         hit = (dict(by_dest), mask)
         self._index_cache[parsed.raw] = hit
@@ -908,9 +1062,10 @@ class _Scorer:
         ff, fr = chess.square_file(m.from_square), chess.square_rank(m.from_square)
         need_file = need or (pt == PAWN and is_cap)
         need_rank = same_file
+        exact = self.glyphs.exact
         if p.dfile is not None:
             fc = p.dfile.get(ff)
-            if fc is None:
+            if fc is None or (fc and exact):
                 # long notation names the square the piece leaves: another square
                 # is no reading of it ("Bf1-d4" is not d2-d4)
                 c += C_LONG_FROM if long_form else C_DISAMB_WRONG
@@ -920,7 +1075,7 @@ class _Scorer:
             c += C_DISAMB_MISSING
         if p.drank is not None:
             rc = p.drank.get(fr)
-            if rc is None:
+            if rc is None or (rc and exact):
                 c += C_LONG_FROM if long_form else C_DISAMB_WRONG
             else:
                 c += rc + (0.0 if need_rank or long_form or (need and p.dfile is None)
@@ -979,7 +1134,8 @@ class _Scorer:
                 if best <= limit:
                     b2 = board.copy(stack=False)
                     b2.push(m)
-                    best += self._check_cost(b2, parsed.check)
+                    best += self._check_cost(b2, 0 if best_p is not None and best_p.nocheck
+                                             else parsed.check)
                     if best <= limit:
                         out.append((m, best, glyph, best_pc, b2, best_p))
         out.sort(key=lambda t: t[1])
@@ -1004,9 +1160,12 @@ class _Scorer:
             if parsed.castle and board.is_castling(m):
                 best = 0.5
             for p in parsed.parses:
-                c = (g.file_costs(p.fch, p.rch is None).get(f, C_UNREAD)
-                     + g.rank_costs(p.rch, p.fch is None).get(r, C_UNREAD)
-                     + min(self.piece_costs(p.prefix)[pt], 4.0))
+                if p.fch in self.letters or (p.whole and g.exact):
+                    continue
+                sq_c = (p.dest.get(m.to_square, 2 * C_UNREAD) if p.whole else
+                        g.file_costs(p.fch, p.rch is None).get(f, C_UNREAD)
+                        + g.rank_costs(p.rch, p.fch is None).get(r, C_UNREAD))
+                c = sq_c + min(self.piece_costs(p.prefix)[pt], 4.0) + (C_BANG if p.bang else 0.0)
                 if (p.cap is True) != board.is_capture(m):
                     c += 0.8
                 if c < best:
@@ -1037,10 +1196,18 @@ _NUM_DOTS_RE = re.compile(r"^([0-9lIOoSsB|]{1,3})([.…•·]+)(.*)$", re.S)
 _BARE_NUM_RE = re.compile(r"^[0-9lIOoSsB|]{1,3}$")
 _DOTS_ONLY_RE = re.compile(r"^[.…•·]+$")
 _LEAD_DOTS_RE = re.compile(r"^([.…•·]+)(.+)$", re.S)
+# a pawn's move, as OCR reads it ("f6", "exd5", "es" for e5, "f51" for f5!)
+_PAWN_AFTER_DOT_RE = re.compile(r"[a-h](?:x[a-h])?[1-8sS](?![a-zA-Z])")
 _GLUE_AFTER = set("12345678t+#!?)")
 _GLUED_NUM_RE = re.compile(r"([0-9][0-9lIOo]{0,2}|[lI][0-9lIOo]{0,2}|[sS])(?=[.…•·]+\S)")
 _DOTLESS_RE = re.compile(r"^(\d{1,3})(?=[^\d.…•·])(.+)$", re.S)
 _ONE_GLYPH_RE = re.compile(r"^(?:[1Il](?=J[^ ])|U(?=[:J][^ ]))")
+# OCR's forms of a move number in a text it read (not one set in type): "1."
+# read as "t.", "L." or "!." ("t.Yff2?" for 1.Qf2?), and a number glued to the
+# junk of a figurine with its dot lost and a 0 or 1 read as a letter ("3oJ:k5!"
+# for 30.Rc5!): the junk starts with a capital and a sign ("J!", "J:", "E:")
+_OCR_ONE_RE = re.compile(r"^[tL!]([.…•·]+)")
+_OCR_GLUED_RE = re.compile(r"^([1-9][0-9lIOo]{1,2})(?=[A-Z][^\w\s])(.+)$", re.S)
 # Words after which a number names a diagram, a page or an exercise.
 _REF_WORD_RE = re.compile(r"^(?:[DO][il1]a?gr[ae](?:m|rn|in)s?|Diag\.?|Positions?|Pos\.?|Nos?\.|"
                           r"[Pp]ages?|pp?\.|Fig(?:ure)?s?\.?|Exercises?|Problems?|Games?|"
@@ -1048,7 +1215,8 @@ _REF_WORD_RE = re.compile(r"^(?:[DO][il1]a?gr[ae](?:m|rn|in)s?|Diag\.?|Positions
 _CHECK_SIGN_RE = re.compile(r"^(?:tt?|[+#†‡])$")
 _ANNOT_RE = re.compile(r"^(?:[!?]{1,2}|\([!?]{1,2}\)|[+#†‡]|tt?|=|±|∓|\+-|-\+|=\+|\+=)$")
 _LAYOUT_RE = re.compile(r"^(?:\d{1,3}[a-d]?|[a-h]|[A-H])$")
-_PIECE_WORD_RE = re.compile(r"^[A-Z][a-z]?[a-h1-8]?[x:]?[a-h£tqo][lIiSsBbGZz]$")
+# (a rank OCR read as a letter may carry a "!" read as "l": "Wbsl" for Qb5!)
+_PIECE_WORD_RE = re.compile(r"^[A-Z][a-z]?[a-h1-8]?[x:]?[a-h£tqo](?:[lIiSsBbGZz]|[SsBGZz][lI])$")
 _STRONG_RE = re.compile(r"([a-h£tqo]|(?<![a-z])k)['`’]?([1-8])(?:=\S{0,4}|[^\d\s]{1,3})?$")
 _DIGIT_MAP = str.maketrans({"l": "1", "I": "1", "|": "1", "O": "0", "o": "0",
                             "S": "8", "s": "8", "B": "8"})
@@ -1104,16 +1272,20 @@ def _shape(w: str) -> Optional[str]:
     if core in _STOP_WORDS or core.lower() in _STOP_WORDS and core[1:].islower():
         return None
     parses = _parse_raw(w).parses
-    if not parses or (core.isalpha() and all(p.rch is None for p in parses)):
+    if not parses or (core.isalpha() and all(p.rch is None and not p.whole for p in parses)):
         return None          # a word whose only reading lacks a rank ("Or", "and")
     m = _STRONG_RE.search(core)
     if m:
         pre = core[:m.start()]
         if not (pre.isalpha() and pre.islower() and len(pre) >= 4):
             return "strong"
-    if core.isalpha() and core.islower() and (len(core) >= 6 or core[-1] in "acdefgh" or (
-            len(core) >= 4 and not re.search(r"[a-h£tqo][lIiSsBbGZz]$", core))):
-        return None          # a lowercase word ("and", "mate"), unless it ends like a square ("ttlel")
+    if core.isalpha() and core.islower() and (core[-1] in "acdefgh" or (
+            len(core) >= 4 and not re.search(r"[a-h£tqo][lIiSsBbGZz]$", core)) or (
+            len(core) >= 6 and not re.fullmatch(r"[^aeiouy]+x[a-h][lIiSsBbGZz]", core))):
+        # a lowercase word ("and", "mate"), unless it ends like a square
+        # ("ttlel"); a long one also, unless it is a glyph's junk and a
+        # capture, which have no vowel ("ltlxas" for Nxa5)
+        return None
     if (core.isalpha() and len(core) >= 3 and core[0].isupper() and core[1:].islower()
             and not _PIECE_WORD_RE.match(core)):
         return None          # a capitalised word, unless it reads as "Rel" (Re1) or "Ncb" (Nc6)
@@ -1222,21 +1394,25 @@ _BARE_SQUARE_RE = re.compile(r"^[a-h][1-8]$")
 
 
 @lru_cache(maxsize=20000)
-def _glued_moves(w: str) -> Optional[int]:
+def _glued_moves(w: str, exact: bool = False) -> Optional[int]:
     """Where a second move starts in a word that holds two moves printed without
     a space ("lDc4lDg6", "Nf3Nc6", "qa4ltlf6"), if it does. Both parts must
-    look clearly like moves; a square after a square ("e2e4", "Ng1f3") is one
-    move in long notation."""
-    if len(w) < 5:
+    look clearly like moves. In a text set in type (exact), a square after a
+    square ("e2e4", "Ng1f3") is one move in long notation; in a text OCR read
+    it may be two moves whose space was lost ("1.e4e6"), and the word is cut,
+    for decode() to read either way (Token.glued)."""
+    if len(w) < (5 if exact else 4):
         return None
-    for m in _SQUARE_END_RE.finditer(w, 1):
+    for m in _SQUARE_END_RE.finditer(w, 1 if exact else 0):
         p = m.end()
         left, right = w[:p], w[p:]
-        if len(right) < 3 or right[0] in "-–—x:×=+#!?.,;()" or right[0].isdigit():
+        square = bool(_BARE_SQUARE_RE.match(_strip_suffix(right)[0]))
+        if len(right) < (2 if square and not exact else 3) \
+                or right[0] in "-–—x:×=+#!?.,;()" or right[0].isdigit():
             continue
         if _shape(left) != "strong" or _shape(right) != "strong":
             continue
-        if _BARE_SQUARE_RE.match(_strip_suffix(right)[0]):
+        if square and exact:
             continue                # long notation without its dash: "e2e4", "Qd1h5+"
         return p
     return None
@@ -1327,8 +1503,11 @@ def _collect_dots(text, pieces, j, groups):
         ml = _LEAD_DOTS_RE.match(w)
         if ml:
             d = len(ml.group(1))
-            if d == 1 and groups:
+            if d == 1 and groups and not (_dot_count(text, groups) == 2
+                                          and _PAWN_AFTER_DOT_RE.match(w, 1)):
                 return j + 1, (a, b)            # that dot belongs to the glyph (".ic4")
+            # (but "13 .. .f6" is "13...f6": a pawn's move after the dot has
+            # no glyph, and the dot is the third of the ellipsis)
             groups.append((a, a + d))
             return j + 1, (a + d, b)
         break
@@ -1346,6 +1525,8 @@ def _side(text, groups, rest) -> tuple[bool, bool]:
         return True, False                      # "5 ... .ixf3" or "3 … .ic4"
     if c == 2 and len(groups) == 1 and attached:
         return True, False                      # "6..id3" or "1..Ra6"
+    if c > 3:
+        return True, False                      # "3 .... c6xd7+": a figurine read as dots
     return True, True
 
 
@@ -1411,16 +1592,49 @@ def _scan_number(text, pieces, i, st: Optional[_TokState], dotless: bool = False
     if not vals:
         return None
     num = vals[0]
+    black, known = _side(text, groups, rest)
     if st is not None and st.in_seq:
         exp_n, _ = st.expect()
         if exp_n in vals:
             num = exp_n
-    black, known = _side(text, groups, rest)
+    elif len(vals) > 1:
+        num = _fitting_value(text, pieces, j, rest, vals, black, st) or num
     start, end = digit_spans[0][0], groups[-1][1]
     return Token("number", text[start:end], start, end, num, black, known), j, rest
 
 
+def _fitting_value(text, pieces, j, rest, vals, black, st) -> Optional[int]:
+    """Which of a number's readings ("s" is 8 or 5, "so" 80 or 50) the text
+    around it gives, outside a run: the number printed after the move (or
+    after Black's reply to it) is the next one ("after s ... Qxd5 6 Nc3": 5),
+    or else the numbering of the last run goes on ("5 exd5 looks logical,
+    when after s ... Qxd5": 5). None when neither tells."""
+    k = j - 1 if rest is not None else j          # the piece of the move
+    nxt = _successor(text, pieces, k if black else k + 1, vals)
+    if nxt is not None:
+        return nxt
+    if st is not None and st.last_num is not None:
+        exp_n, exp_b = st.expect()
+        ply = 2 * (exp_n - 1) + int(exp_b)        # the move expected next, or the one after
+        fit = [v for v in vals if 0 <= 2 * (v - 1) + int(black) - ply <= 1]
+        if len(fit) == 1:
+            return fit[0]
+    return None
+
+
 MAX_DOTLESS = 200      # highest move number read without a dot
+
+
+def _successor(text, pieces, k, vals) -> Optional[int]:
+    """The value among vals of a move number printed without a dot when the
+    word at piece k (Black's reply) reads as a move and the next word is the
+    number after it ("S es NdS 6 Bc4!": S is 5), else None."""
+    if k + 1 >= len(pieces):
+        return None
+    w, n = text[pieces[k][0]:pieces[k][1]], text[pieces[k + 1][0]:pieces[k + 1][1]]
+    if not (_shape(w) or _square_word(w)) or not re.fullmatch(r"\d{1,3}", n):
+        return None
+    return int(n) - 1 if int(n) - 1 in vals else None
 
 
 def _dotless_number(text, pieces, digit_spans, j, st, rest=None):
@@ -1441,7 +1655,11 @@ def _dotless_number(text, pieces, digit_spans, j, st, rest=None):
         alone = ((digits in ("S", "s") or (len(digits) >= 2 and digits[0].isdigit()))
                  and _shape(text[a:b]) == "strong")
         if not alone and (exp[0] is None or (exp[0] + 1 if exp[1] else exp[0]) not in vals):
-            return None
+            # or where the number after the next two moves follows it
+            nxt = _successor(text, pieces, j + 1 if rest is None else j, vals)
+            if nxt is None:
+                return None
+            vals = [nxt]
     a, b = rest or pieces[j]
     w2 = text[a:b]
     if (_NUM_DOTS_RE.match(w2) or _BARE_NUM_RE.match(w2) or _RESULT_RE.match(w2)
@@ -1473,7 +1691,8 @@ def _scan_continuation(text, pieces, i):
     return Token("number", text[s:e], s, e, None, True, True), j, rest
 
 
-def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[Token]:
+def tokenize(text: str, lenient: bool = False, dotless: bool = False,
+             exact: bool = False) -> list[Token]:
     """Split book text into number, move, result and other tokens.
 
     Offsets index into text and raw == text[start:end]. A word becomes a move
@@ -1494,6 +1713,11 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
     the word after it must look clearly like a move ("13 Bh6", not "2 pawns"),
     and no word such as "Diagram" or "page" may stand before it. Whether the
     move is legal is for decode() to tell.
+
+    exact is for a text layer that holds the letters the book was set in
+    (GlyphModel.exact): there a word after a move is a move only when it
+    prints a square or castling as such (_shape() 'strong'); a word that
+    only OCR's misreadings make a move of ("White's", "Hi", "as") is prose.
     """
     pieces = _pieces(text)
     toks: list[Token] = []
@@ -1505,16 +1729,16 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             st.in_seq = False
             st.prev = "other"
 
-    def move(s, e):
-        cut = _glued_moves(text[s:e])
+    def move(s, e, glued=False):
+        cut = _glued_moves(text[s:e], exact)
         if cut:                                  # two moves printed without a space
             move(s, s + cut)
-            move(s + cut, e)
+            move(s + cut, e, bool(_BARE_SQUARE_RE.match(_strip_suffix(text[s + cut:e])[0])))
             return
         n, b = st.expect()
         if n is None:                            # after a bare "...": sides alternate
             b = st.last_black == (st.moves_since % 2 == 0)
-        toks.append(Token("move", text[s:e], s, e, n, bool(b)))
+        toks.append(Token("move", text[s:e], s, e, n, bool(b), glued=glued))
         st.moves_since += 1
         st.in_seq = True
         st.prev = "move"
@@ -1571,7 +1795,9 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             other(s, e)                          # "1. A pawn ...", "4. White's": a numbered list
             return j
         if _shape(w) or (_parse_raw(w).parses and not w[:1].isupper()
-                         and (next_is_boundary(j) or next_is_strong(j))):
+                         and (next_is_boundary(j) or next_is_strong(j)
+                              or (toks[-1].dotless
+                                  and _successor(text, pieces, j, {toks[-1].number})))):
             move(s, e)
             return j
         if j < len(pieces) and len(w) <= 5 and not any(ch.isdigit() for ch in w) \
@@ -1590,13 +1816,25 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
         return j
 
     def split_rank(i, w):
-        """A rank digit split from a move that lacks one: "i.xd 1" for Bxd1."""
-        if not re.fullmatch(r"[1-8]", w) or toks[-1].kind != "move":
+        """A rank digit split from a move that lacks one: "i.xd 1" for Bxd1.
+        In a text OCR read (not exact), also with the move's sign ("Qh5-e 3+"),
+        as OCR prints the digit ("Kf2-e l", "hS-g 8") or with the rest of a
+        long move after it ("Ng 3-h5#"); a move that names its from-square
+        and the file it goes to lacks the rank whatever its from-square holds."""
+        if toks[-1].kind != "move":
             return False
         prev = toks[-1].raw
         core = _strip_suffix(prev)[0]
-        if not re.search(r"[a-h£]$", core) or any(p.rch is not None
-                                                  for p in _parse_raw(prev).parses):
+        if not re.search(r"[a-h£]$", core):
+            return False
+        if not re.fullmatch(r"[1-8]", w):
+            if exact or not re.fullmatch(r"[1-8lSB](?:[-–x:][a-h£].*|[+#!?]*)", w):
+                return False
+            if len(w) > 1 and w[1] not in "+#!?":
+                # "Ng 3-h5#": the from-square is split, in a move that names no square yet
+                return not re.search(r"[a-h£][1-8lSB]", core)
+        if not re.search(r"[-–x:][a-h£]$", core) \
+                and any(p.rch is not None for p in _parse_raw(prev).parses):
             return False
         if i + 1 < len(pieces):
             nxt = text[pieces[i + 1][0]:pieces[i + 1][1]]
@@ -1610,6 +1848,17 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
                 if after is not None and after in joined and after not in _read_number(m.group(1)):
                     return False
         return True
+
+    def split_from_rank(i, w):
+        """True when w is the lone rank of a long move's square left, between
+        the move's glyph and file ("'iVb") and the rest ("-b8", "xb8")."""
+        if len(w) != 1 or w not in "12345678lI" or i + 1 >= len(pieces) \
+                or pieces[i + 1][0] - pieces[i][1] > 2:
+            return False
+        core = _strip_suffix(toks[-1].raw)[0]
+        nxt = text[pieces[i + 1][0]:pieces[i + 1][1]]
+        return (bool(re.search(r"[a-h£]$", core)) and not re.search(r"[a-h£]['`]?[1-8lIBSs]", core)
+                and bool(re.match(r"[-–x:][a-h£]\s?[1-8lIBSs]", nxt)))
 
     def slot_before_number(j):
         """True when piece j is the move number that follows exactly one more move
@@ -1655,7 +1904,7 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
         # out of the run's numbering, a number without dots names no side: it
         # stands before Black's reply too in books that set moves as a table
         tok.side_known = False
-        if shp == "strong":
+        if shp == "strong" or _successor(text, pieces, j, vals) is not None:
             return True
         if shp != "weak":
             # a word that is also a square ("es" for e5) only with a move's
@@ -1681,6 +1930,15 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
     while i < len(pieces):
         s, e = pieces[i]
         w = text[s:e]
+        if not exact and toks and toks[-1].kind == "move" and s - toks[-1].end <= 2 \
+                and split_from_rank(i, w):
+            # "'iVb I -b8" for Qb1-b8: the rank of the square left, split off
+            # on both sides, and the rest of the long move after it
+            t = toks[-1]
+            e = pieces[i + 1][1]
+            toks[-1] = replace(t, raw=text[t.start:e], end=e)
+            i += 2
+            continue
         if toks and toks[-1].kind == "move" and s - toks[-1].end <= 2 and (
                 _ANNOT_RE.match(w)                                   # "e4 !"
                 or (_LONG_TAIL_RE.match(w) and _LONG_HEAD_RE.search(toks[-1].raw))  # "e7 -e5"
@@ -1693,6 +1951,14 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
         if _RESULT_RE.match(w):
             toks.append(Token("result", w, s, e))
             st.in_seq, st.prev = False, "result"
+            i += 1
+            continue
+        if (w == ":" and st.in_seq and st.prev == "move" and i + 1 < len(pieces)
+                and _shape(text[pieces[i + 1][0]:pieces[i + 1][1]]) == "strong"):
+            # a colon set apart between two moves joins them ("13.dxc5!? :
+            # Nxc3! The knight ... 14.bxc3"): the reply printed after it
+            # without its number is the run's next move
+            other(s, e, layout=True)
             i += 1
             continue
         if w in "([{)]}" or (len(w) == 1 and w.isalpha() and text[e:e + 1] == ")"
@@ -1709,6 +1975,8 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             other(s, e)
             i += 1
             continue
+        if r is not None and exact and re.fullmatch(r"[A-Z]\.", text[s:r[0].end]):
+            r = None                     # "as in S. Lakatos-D.Majer": in type, "S." is an initial
         if r is not None:
             tok, j, rest = r
             number(tok)
@@ -1730,6 +1998,20 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             st.in_seq, st.prev = True, "number"
             i = after_number(rest[0], rest[1], j)
             continue
+        mo = None if exact or (st.in_seq and st.prev == "move") else _OCR_ONE_RE.match(w)
+        if mo:
+            de = s + mo.end()
+            nj = i + 1 if de < e else i + 2
+            nxt = (de, e) if de < e else (pieces[i + 1] if i + 1 < len(pieces) else None)
+            w2 = text[nxt[0]:nxt[1]] if nxt is not None else ""
+            if _shape(w2) and not _NUM_DOTS_RE.match(w2) and not _prose_word(w2) \
+                    and not (re.match(r"[A-Z][a-z]{2}", w2) and _shape(w2) != "strong"):
+                # "1." that OCR read as "t.", "L." or "!." ("t.Yff2?", "L. mf3"),
+                # not an initial ("L. Kubbel")
+                many = _dot_count(text, [(s + 1, de)]) >= 2
+                number(Token("number", text[s:de], s, de, 1, many, not many))
+                i = after_number(nxt[0], nxt[1], nj)
+                continue
         mj = _ONE_GLYPH_RE.match(w)
         if mj and not (st.in_seq and st.prev == "move") and _shape(w[1:]) == "strong":
             # "1." printed with its dot lost before a glyph that starts with
@@ -1749,13 +2031,28 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
                 number(Token("number", w, s, e, exp_n, False, True))
                 i = after_number(pieces[i + 1][0], pieces[i + 1][1], i + 2)
                 continue
-        mg = _DOTLESS_RE.match(w)
+        mg = (None if exact else _OCR_GLUED_RE.match(w)) or _DOTLESS_RE.match(w)
+        md = _DOTLESS_RE.match(w)
+        if mg and md and mg is not md and not mg.group(1).isdigit() and _shape(md.group(2)):
+            # a number glued to a glyph's junk that starts with a letter read
+            # as a digit ("16lL'lf6+!", the knight's "lL'l"): the digits alone
+            # where the run expects them or where the letter makes no number
+            # of a game (161)
+            exp_n, _ = st.expect()
+            vd, vg = int(md.group(1)), _read_number(mg.group(1))
+            if (st.in_seq and exp_n is not None and exp_n in (vd, vd - 1)) or not vg \
+                    or vg[0] >= 100:
+                mg = md
         if mg:                                   # dotless number glued to a move: "4JWxd8t"
-            val, rest_w = int(mg.group(1)), mg.group(2)
+            val, rest_w = _read_number(mg.group(1))[0] if mg.group(1)[0] != "0" else 0, mg.group(2)
             exp_n, exp_b = st.expect()
             in_ctx = st.in_seq and st.prev == "move" and exp_n == val and _shape(rest_w)
-            alone = (len(mg.group(1)) >= 2 and _shape(rest_w) == "strong"
-                     and not rest_w[0].islower() and not rest_w[0].isdigit())
+            alone = (len(mg.group(1)) >= 2 and not rest_w[0].islower() and not rest_w[0].isdigit()
+                     and (_shape(rest_w) == "strong"
+                          # in OCR's text, also a square OCR misread after a
+                          # figurine's junk ("34J!bl!" for 34.Rb1!)
+                          or (not exact and _shape(rest_w) == "weak"
+                              and bool(re.match(r"[A-Z][^\w\s]", rest_w)))))
             if dotless and not alone and _shape(rest_w) == "strong" \
                     and not rest_w[0].isdigit() and val <= MAX_DOTLESS \
                     and not (st.in_seq and st.prev == "move" and exp_n is not None):
@@ -1803,6 +2100,10 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False) -> list[To
             shp = _shape(w)
             if w.endswith(":") and _prose_word(w):
                 shp = None                       # "Answer:" after a move is no move
+            if exact and shp != "strong":
+                other(s, e)                      # (no OCR there to have misread a move)
+                i += 1
+                continue
             if shp == "strong" or (shp == "weak" and (
                     next_is_boundary(i + 1) or next_is_strong(i + 1) or _move_like(w)
                     or (i + 1 < len(pieces) and text[pieces[i + 1][0]] == "(")
@@ -1862,6 +2163,10 @@ def uses_dotless_numbers(texts: Iterable[str]) -> bool:
 # Sequences
 # ---------------------------------------------------------------------------
 _PAREN_LIFE = 600
+# A square bracket set apart holds a long note, often a page of prose and
+# lines ("[ Topalov may have been better off ... ] 13...cxd4"): it stays open
+# longer (one glued to a word may be OCR's "[f" for "If").
+_SQUARE_LIFE = 3000
 
 
 def _number_values(tok: Token) -> list:
@@ -1892,22 +2197,27 @@ def _relabel(tokens: list, number: Optional[int], black: bool) -> tuple:
     return n, b
 
 
-def find_sequences(text: str, lenient: bool = False, dotless: bool = False) -> list[Sequence]:
+def find_sequences(text: str, lenient: bool = False, dotless: bool = False,
+                   exact: bool = False) -> list[Sequence]:
     """Maximal runs of moves that begin at a move number or a "..." continuation.
 
     Parenthesised sub-lines come out as runs of their own with depth > 0.
     Within a run, the side of each move follows the run's numbering, which
-    also settles numbers whose dots could be read either way. lenient and
-    dotless are passed to tokenize().
+    also settles numbers whose dots could be read either way. lenient,
+    dotless and exact are passed to tokenize().
     """
-    toks = tokenize(text, lenient, dotless)
+    toks = tokenize(text, lenient, dotless, exact)
     seqs: list[Sequence] = []
     opens: list[int] = []        # offsets of open parentheses
+    kinds: list[str] = []        # their characters
+    lives: list[int] = []        # how long each stays open
     cur: Optional[dict] = None
 
     def depth_at(pos):
-        while opens and pos - opens[-1] > _PAREN_LIFE:
+        while opens and pos - opens[-1] > lives[-1]:
             opens.pop()
+            kinds.pop()
+            lives.pop()
         return len(opens)
 
     def close():
@@ -1939,12 +2249,23 @@ def find_sequences(text: str, lenient: bool = False, dotless: bool = False) -> l
                 close()
                 depth_at(t.start)
                 opens.append(t.start)
+                kinds.append(t.raw)
+                lives.append(_SQUARE_LIFE if t.raw == "[" and text[t.end:t.end + 1].isspace()
+                             else _PAREN_LIFE)
                 continue
             if t.raw in ")]}":
                 close()
+                # a closing bracket closes its own kind, and any left open
+                # inside it ("[ ... ( ... ]")
+                want = "([{"[")]}".index(t.raw)]
+                k = len(kinds) - 1 - kinds[::-1].index(want) if want in kinds else len(kinds) - 1
                 if opens:
-                    opens.pop()
+                    del opens[k:], kinds[k:], lives[k:]
                 continue
+            if "]" in t.raw and "[" not in t.raw and "[" in kinds:
+                # a square bracket closed on a word ("[of his game ... 1957].")
+                k = len(kinds) - 1 - kinds[::-1].index("[")
+                del opens[k:], kinds[k:], lives[k:]
             close()
             continue
         if t.kind == "result":
@@ -2000,15 +2321,21 @@ KAPPA_RUN = 2.0       # weight of the book prior against the junk's earlier uses
 
 
 class _Hyp:
-    __slots__ = ("cost", "board", "node", "offset", "fails", "gmap")
+    __slots__ = ("cost", "board", "node", "offset", "fails", "gmap", "ply", "lag")
 
-    def __init__(self, cost, board, node, offset, fails, gmap):
+    def __init__(self, cost, board, node, offset, fails, gmap, ply, lag=0):
         self.cost = cost
         self.board = board
         self.node = node
         self.offset = offset        # 1 when the run's numbering is one ply out
         self.fails = fails          # consecutive failed tokens
         self.gmap = gmap            # glyph -> {piece type: uses so far in this run}
+        # the ply of board, counted here: the candidates' boards are shared
+        # between positions that repeat, whatever their move numbers
+        self.ply = ply
+        # tokens since the last printed number that took no ply, junk: the
+        # move printed after them without a number takes their place
+        self.lag = lag
 
 
 def _forced_candidates(board: chess.Board, san: str):
@@ -2025,6 +2352,10 @@ def _forced_candidates(board: chess.Board, san: str):
 def _token_candidates(scorer, board, tok, parsed, gmap):
     if getattr(tok, "forced", None):
         return _forced_candidates(board, tok.forced)
+    if getattr(tok, "prefer", None):
+        hit = _forced_candidates(board, tok.prefer)
+        if hit:
+            return hit
     return _adjusted(_shape_candidates(scorer, board, tok, parsed), board, gmap, scorer)
 
 
@@ -2153,59 +2484,181 @@ def _with_glyph(gmap, glyph, pt, scorer):
 
 
 OLD_AGE = 12          # tokens after which a parted hypothesis counts as old
-OLD_KEEP = 4          # old hypotheses kept in the beam
+OLD_KEEP = 4          # old hypotheses kept in the beam ...
+OLD_WORSE = 0.5       # ... unless they read the token they parted at dearer by this much
 RETRY_FACTOR = 4      # beam multiplier for the second search of a run with failures
 WILD_MARGIN = 2.5     # a failed-token expansion must come this close to the best reading
 WILD_HYPS = 3         # only the best few hypotheses expand a failed token
 
 # A path entry: (token index, kind, move, inserted move, cost, glyph, parse);
-# kind is "move", "wild" (a failed token, any move played) or "skip" (no ply).
+# kind is "move", "wild" (a failed token, any move played), "skip" (no ply),
+# "long" (the token and the square glued to it read as one move in long
+# notation, "e2e4") or "joined" (that square, which takes no ply of its own).
+
+
+def _places(tokens: list) -> list:
+    """For each move token of a run: where the printed move numbers put it,
+    as (plies, flipped, numbered) in the book's numbering, or None for a
+    move before the run's first number that was read.
+
+    numbered is True when the number stands right before the token. plies
+    holds the ply that number names for the token's side, under each reading
+    of its digits (_read_number: "S" is 5 or 8); a move printed without a
+    number stands a ply after the move before it ("2.Nf3 e6": e6 at 2...).
+    flipped holds the plies of the other side's move, where the number does
+    not name a side for sure ("19 Qc1" in a book that prints no dots, "18
+    ..Bxc5"): a move read there is read only by flipping its printed side."""
+    out, prev, last = [], None, None
+    for t in tokens:
+        if t.kind == "number":
+            prev = t
+            continue
+        if t.kind != "move":
+            continue
+        if prev is not None and prev.kind == "number" and t.number is not None \
+                and prev.number is not None:
+            digits = re.match(r"^[0-9lIOoSsB| \n]+", prev.raw)
+            vals = _read_number(digits.group(0)) if digits else []
+            if prev.number not in vals:
+                vals = [prev.number]    # numbered by the run around it, or by the reader
+            lp = (t.number - 1) * 2 + int(bool(t.black))
+            plies = frozenset(lp + 2 * (v - prev.number) for v in vals)
+            other = frozenset()
+            if not prev.side_known:
+                other = frozenset(p + 1 - 2 * (lp % 2) for p in plies)
+                if lp % 2 and not any(ch in DOT_CHARS for ch in prev.raw):
+                    # printed without dots, as White's moves are ("14 exd5"),
+                    # though the run reads it as Black's
+                    plies, other = plies | other, frozenset()
+            last = (plies, other, 0)
+            out.append((plies, other, True))
+        elif last is not None and (prev is None or prev.kind == "move"):
+            plies, other, n = last
+            last = (plies, other, n + 1)
+            out.append((frozenset(p + n + 1 for p in plies),
+                        frozenset(p + n + 1 for p in other), False))
+        else:
+            last = None
+            out.append(None)
+        if getattr(t, "forced", None):
+            out[-1] = None          # the reader's move is played where it stands
+        prev = t
+    return out
+
+
+def _names_square(raw: str) -> bool:
+    """True when a token prints a square: a move, however misread, and not a
+    piece symbol alone, which OCR parts from its square ("1.K c2")."""
+    return bool(re.search(r"[a-h][1-8]", raw.replace(" ", "")))
+
+
+def _numbering_shift(board: chess.Board, places: list) -> int:
+    """How far the board's numbering stands from the book's for a run: 0
+    where the run's first printed number is within a move of the board's
+    (a line's position carries the book's numbering), so that a number
+    that disagrees with it shows a move lost or extra; else (a position
+    whose number was not read, a number OCR misread: "7" for 27) the
+    difference there, which the run's other numbers then keep to."""
+    for k, place in enumerate(places):
+        if place is not None:
+            d = min((board.ply() + k - p for p in place[0]), key=abs)
+            return d if abs(d) > 2 else 0
+    return 0
 
 
 def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
             beam: int, allow_wild: bool, offset0: int, gmap0=None, old_keep: int = None,
-            insert: bool = True, anchored: Optional[list] = None):
+            insert: bool = True, anchored: Optional[list] = None,
+            places: Optional[list] = None, shift: int = 0):
     """Beam search over move tokens. Returns (best hypothesis, index where all died).
 
     insert allows a move missing from the text to be supplied. anchored[k] is
     True when a printed move number stands right before token k: such a token
     is a move of the side its number names, so treating it as junk that takes
-    no ply does not shift the numbering of the moves after it."""
-    hyps = [_Hyp(0.0, board0.copy(stack=False), None, offset0, 0, gmap0 or {})]
+    no ply does not shift the numbering of the moves after it. places[k]
+    (from _places) is where that number puts token k, the board's ply less
+    shift: the token is read as a move only there, never a move or a ply
+    early or late, so a move lost from the text does not shift the moves
+    after it."""
+    hyps = [_Hyp(0.0, board0.copy(stack=False), None, offset0, 0, gmap0 or {}, board0.ply())]
     died_at = None
     for k, tok in enumerate(mtoks):
         parsed = _parse_raw(tok.raw)
         children: dict = {}
         failing = []
         best_total = math.inf
+        readings = [("move", tok, parsed)]
+        if k + 1 < len(mtoks) and getattr(mtoks[k + 1], "glued", False):
+            # a square glued to this move: two moves, or one in long notation
+            long_tok = _long_token(tok, mtoks[k + 1])
+            readings.append(("long", long_tok, _parse_raw(long_tok.raw)))
 
-        def expand(h, b, off, extra, ins):
+        place = places[k] if places is not None else None
+
+        def lags(h, skip=False):
+            numbered = place is not None and place[2]
+            n = 0 if numbered else h.lag
+            return n + 1 if skip and not (numbered and _names_square(tok.raw)) else n
+
+        def expand(h, b, off, extra, ins, ply):
             nonlocal best_total
             best_local = math.inf
-            for m, c, glyph, pc, b2, prs in _token_candidates(scorer, b, tok, parsed, h.gmap):
-                total = h.cost + extra + c
-                best_local = min(best_local, extra + c)
-                best_total = min(best_total, total)
-                key = (_board_key(b2), off)
-                old = children.get(key)
-                if old is None or total < old.cost:
-                    gm = _with_glyph(h.gmap, glyph, b.piece_type_at(m.from_square), scorer)
-                    children[key] = _Hyp(total, b2, (h.node, (k, "move", m, ins, c, glyph, prs)),
-                                         off, 0, gm)
+            if place is not None:
+                # the side to move is what the printed number names
+                off = int(labels[k] != (b.turn == chess.BLACK))
+            for kind, t, p in readings:
+                for m, c, glyph, pc, b2, prs in _token_candidates(scorer, b, t, p, h.gmap):
+                    total = h.cost + extra + c
+                    best_local = min(best_local, extra + c)
+                    best_total = min(best_total, total)
+                    key = (_board_key(b2), off, kind)
+                    old = children.get(key)
+                    if old is None or total < old.cost:
+                        gm = _with_glyph(h.gmap, glyph, b.piece_type_at(m.from_square), scorer)
+                        children[key] = _Hyp(total, b2, (h.node, (k, kind, m, ins, c, glyph, prs)),
+                                             off, 0, gm, ply + 1, lags(h))
             return best_local
 
+        def missing(h, rank, best_local):
+            # a move missing from the text, then this one
+            if not (insert and allow_wild and h.fails == 0 and rank < WILD_HYPS):
+                return best_local
+            for w in h.board.legal_moves:
+                b2 = h.board.copy(stack=False)
+                b2.push(w)
+                best_local = min(best_local, expand(h, b2, h.offset, C_INSERT, w, h.ply + 1))
+            return best_local
+
+        placed = set()
         for rank, h in enumerate(hyps):
-            want = chess.BLACK if labels[k] ^ bool(h.offset) else chess.WHITE
-            if h.board.turn == want:
-                best_local = expand(h, h.board, h.offset, 0.0, None)
+            if h.node is not None and h.node[1][1] == "long":
+                # the square of a move read in long notation: no ply of its own
+                best_total = min(best_total, h.cost)
+                children[(_board_key(h.board), h.offset ^ 1, "joined")] = _Hyp(
+                    h.cost, h.board, (h.node, (k, "joined", None, None, 0.0, None, None)),
+                    h.offset ^ 1, 0, h.gmap, h.ply, lags(h, skip=True))
+                continue
+            if place is not None:
+                at = h.ply - shift + lags(h)
+                if at in place[0]:
+                    best_local = expand(h, h.board, h.offset, 0.0, None, h.ply)
+                elif at in place[1]:
+                    best_local = expand(h, h.board, h.offset, C_PARITY, None, h.ply)
+                else:
+                    best_local = math.inf
+                    if at + 1 in place[0]:
+                        best_local = missing(h, rank, best_local)
+                if at in place[0] or at in place[1]:
+                    placed.add(id(h))
             else:
-                best_local = expand(h, h.board, h.offset ^ 1, C_PARITY, None)
-                if (insert and allow_wild and h.fails == 0 and rank < WILD_HYPS
-                        and best_local > 1.0 + C_PARITY):
-                    for w in h.board.legal_moves:        # a move missing from the text
-                        b2 = h.board.copy(stack=False)
-                        b2.push(w)
-                        best_local = min(best_local, expand(h, b2, h.offset, C_INSERT, w))
+                placed.add(id(h))
+                want = chess.BLACK if labels[k] ^ bool(h.offset) else chess.WHITE
+                if h.board.turn == want:
+                    best_local = expand(h, h.board, h.offset, 0.0, None, h.ply)
+                else:
+                    best_local = expand(h, h.board, h.offset ^ 1, C_PARITY, None, h.ply)
+                    if best_local > 1.0 + C_PARITY:
+                        best_local = missing(h, rank, best_local)
             if best_local > FAIL_TRIGGER:
                 failing.append(h)
         protected = []
@@ -2214,7 +2667,8 @@ def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
             if not allow_wild:
                 protected.append(_Hyp(h.cost + C_FAIL, h.board,
                                       (h.node, (k, "skip", None, None, C_FAIL, None, None)),
-                                      h.offset ^ skip_flip, h.fails + 1, h.gmap))
+                                      h.offset ^ skip_flip, h.fails + 1, h.gmap, h.ply,
+                                      lags(h, skip=True)))
                 continue
             if rank >= WILD_HYPS or h.fails >= MAX_FAILS or h.cost + C_FAIL > best_total + WILD_MARGIN:
                 continue
@@ -2222,13 +2676,16 @@ def _search(board0: chess.Board, mtoks: list, labels: list, scorer: _Scorer,
             # move, the more alike the text the better)
             protected.append(_Hyp(h.cost + C_SKIP, h.board,
                                   (h.node, (k, "skip", None, None, C_SKIP, None, None)),
-                                  h.offset ^ skip_flip, h.fails + 1, h.gmap))
+                                  h.offset ^ skip_flip, h.fails + 1, h.gmap, h.ply,
+                                  lags(h, skip=True)))
+            if id(h) not in placed:
+                continue        # no move of this token stands where its number puts it
             for w, rc, prs in scorer.relaxed(h.board, parsed):
                 b2 = h.board.copy(stack=False)
                 b2.push(w)
                 c = C_FAIL + WILD_WEIGHT * rc
                 protected.append(_Hyp(h.cost + c, b2, (h.node, (k, "wild", w, None, c, None, prs)),
-                                      h.offset, h.fails + 1, h.gmap))
+                                      h.offset, h.fails + 1, h.gmap, h.ply + 1, lags(h)))
         kids = _prune(sorted(children.values(), key=lambda h: h.cost), beam,
                       OLD_KEEP if old_keep is None else old_keep)
         if protected:
@@ -2270,7 +2727,7 @@ def _prune(kids: list, beam: int, old_keep: int) -> list:
             break
         anc.add(id(node))
         node = node[0]
-    out, old = [kids[0]], 0
+    out, old, best_path = [kids[0]], 0, None
     for h in kids[1:]:
         node, d = h.node, 0
         while node is not None and id(node) not in anc and d <= OLD_AGE:
@@ -2279,6 +2736,10 @@ def _prune(kids: list, beam: int, old_keep: int) -> list:
         if d > OLD_AGE or (node is None and anc):
             if old >= old_keep:
                 continue
+            if best_path is None:
+                best_path = _parting_costs(kids[0].node)
+            if _parted_worse(h.node, best_path):
+                continue
             old += 1
         out.append(h)
         if len(out) >= beam:
@@ -2286,12 +2747,75 @@ def _prune(kids: list, beam: int, old_keep: int) -> list:
     return out
 
 
+def _parting_costs(node) -> dict:
+    """{id of a node on the path: None} and {token index: reading cost} of
+    the moves along the path that ends at node, for _parted_worse."""
+    ids, costs = set(), {}
+    while node is not None:
+        ids.add(id(node))
+        node, entry = node
+        if entry[1] in ("move", "long"):
+            costs[entry[0]] = entry[4]
+    return {"ids": ids, "costs": costs}
+
+
+def _parted_worse(node, best) -> bool:
+    """True when the path that ends at node parted from the best path (best:
+    _parting_costs of it) by reading the token where they parted dearer than
+    the best path reads it, by OLD_WORSE or more: the old reading lost on
+    that token itself ("a5" for a clear "a6"), and is not kept against a
+    misreading much later that it might explain more cheaply (a "Na8" for
+    Ba8 that a knight on a6 would explain). An old reading that parted on
+    an equal or cheaper reading of the token, set aside for a move after it,
+    is still kept."""
+    first = None
+    while node is not None and id(node) not in best["ids"]:
+        node, entry = node
+        first = entry
+    if first is None or first[1] not in ("move", "long"):
+        return False
+    theirs = best["costs"].get(first[0])
+    return theirs is not None and first[4] >= theirs + OLD_WORSE
+
+
+def _names_other(prs, raw, m, pt, is_cap, scorer) -> bool:
+    """True when the reading prs of move m (of piece type pt; is_cap: it
+    captures) from the token raw takes the print for another move than it
+    names: a file letter, or a rank digit after its file letter, read as
+    another file or rank, a file letter that ends the print, its rank lacking (the
+    Primer's "ga", printed for Rf3, is no rook move to a3), an "x" on a move that
+    takes nothing, or a capture printed with no mark (Decoded.slip). A rank
+    printed with no file before it may be OCR's shape for the square ("6"
+    for f3 in the Primer), and a ":" a figurine's junk: they are no slip."""
+    if prs is None or prs.whole:
+        return False
+    if prs.fch is not None and prs.fch in "abcdefgh" and prs.rch is None \
+            and raw.rstrip("!?+# ").endswith(prs.fch):
+        return True     # (a "t" after the file may be its rank, a 1, read as a check)
+    if prs.fch is not None and prs.fch in "abcdefgh" and \
+            "abcdefgh".index(prs.fch) != chess.square_file(m.to_square):
+        return True
+    if prs.fch is not None and prs.rch is not None and prs.rch in "12345678" and \
+            int(prs.rch) - 1 != chess.square_rank(m.to_square):
+        return True
+    if prs.cap is True and not is_cap and any(c in raw for c in "xX×"):
+        return True
+    return bool(is_cap and prs.cap is None and pt != PAWN
+                and not (prs.prefix and prs.prefix[-1] in "xX×")
+                and not scorer.implies_capture(prs.prefix))
+
+
 def _has_failure(node) -> bool:
     while node is not None:
         node, entry = node
-        if entry[1] != "move":
+        if entry[1] not in ("move", "long", "joined"):
             return True
     return False
+
+
+def _long_token(tok: Token, nxt: Token) -> Token:
+    """tok with the square glued to it, as one move in long notation ("e2e4")."""
+    return replace(tok, raw=tok.raw + nxt.raw, end=nxt.end, glued=False)
 
 
 def _better(a, a_died, b, b_died) -> bool:
@@ -2320,10 +2844,12 @@ def _path(node) -> list:
     return out
 
 
-def _future_cost(board, mtoks, labels, scorer, offset, gmap, beam=4) -> float:
+def _future_cost(board, mtoks, labels, scorer, offset, gmap, beam=4, places=None,
+                 shift=0) -> float:
     if not mtoks:
         return 0.0
-    best, died = _search(board, mtoks, labels, scorer, beam, False, offset, gmap)
+    best, died = _search(board, mtoks, labels, scorer, beam, False, offset, gmap,
+                         places=places, shift=shift)
     return best.cost + (C_FAIL * (len(mtoks) - died) if died is not None else 0.0)
 
 
@@ -2338,9 +2864,13 @@ def decode(board: chess.Board, tokens: list, lookahead: int = 3, letters=None,
     or extra. letters picks a LETTER_SETS entry (or a dict letter -> K Q R B N);
     glyphs is a GlyphModel holding the book's learnt glyph junk. lookahead is
     the number of following moves used to choose between readings that fit a
-    token equally well. With insert=False the search never supplies a move
-    that the numbering shows to be missing from the text; such a run then
-    reads with the numbering one ply out, or fails.
+    token equally well. The printed move numbers anchor the moves: a move
+    with its number printed before it is read only at the ply that number
+    names (see _places), so a move lost from the text never shifts the moves
+    after it. With insert=False the search never supplies a move that the
+    numbering shows to be missing from the text; the moves after it then
+    fail. A move read only by flipping its printed side is 'guessed', never
+    'ok'.
     """
     return _decode(board, tokens, _Scorer(letters, glyphs), lookahead, beam, insert)
 
@@ -2368,25 +2898,28 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
         return []
     labels = [bool(t.black) for t in mtoks]
     anchored = _anchors(tokens)
+    places = _places(tokens)
+    shift = _numbering_shift(board, places)
     offset0 = int((board.turn == chess.BLACK) != labels[0])
     best, died_at = _search(board, mtoks, labels, scorer, beam, True, offset0, insert=insert,
-                            anchored=anchored)
+                            anchored=anchored, places=places, shift=shift)
     if died_at is not None or _has_failure(best.node):
         # A reading that only later moves confirm may have been pruned: try
         # again with a much wider beam that keeps every surviving alternative.
         wide, wide_died = _search(board, mtoks, labels, scorer, beam * RETRY_FACTOR, True, offset0,
-                                  old_keep=beam * RETRY_FACTOR, insert=insert, anchored=anchored)
+                                  old_keep=beam * RETRY_FACTOR, insert=insert, anchored=anchored,
+                                  places=places, shift=shift)
         if _better(wide, wide_died, best, died_at):
             best, died_at = wide, wide_died
     entries = _path(best.node)
     out: list[Decoded] = []
     b = board.copy(stack=False)
-    offset, gmap = offset0, {}
+    offset, gmap, lag = offset0, {}, 0
 
     def failed(tok, parsed, alts=(), cost=C_FAIL, prs=None):
         sq = (prs.fch, prs.rch) if prs is not None else (None, None)
         return Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, None, None, None,
-                       "failed", list(alts), round(cost, 3), None, parsed.annotation, sq)
+                       "failed", list(alts), round(cost, 3), None, _annotation(parsed, prs), sq)
 
     for idx, tok in enumerate(mtoks):
         parsed = _parse_raw(tok.raw)
@@ -2394,15 +2927,37 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
             out.append(failed(tok, parsed))
             continue
         _, kind, m, ins, c, glyph, prs = entries[idx]
-        missing = None
+        numbered = places[idx] is not None and places[idx][2]
+        if numbered:
+            lag = 0
+        if kind == "joined":
+            offset ^= 1
+            lag += 1
+            out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, None, None,
+                               b.fen(), "joined"))
+            continue
+        step = 1                                 # the next token the moves after it start at
+        if kind == "long":
+            kind, step = "move", 2
+            parsed = _parse_raw(_long_token(tok, mtoks[idx + 1]).raw)
+        missing, flipped = None, False
         if ins is not None:
             missing = b.san(ins)
             b.push(ins)
-        elif kind == "move" and (labels[idx] ^ bool(offset)) != (b.turn == chess.BLACK):
+        if places[idx] is not None:
+            if kind == "move":
+                # read for the side the printed number does not name
+                flipped = b.ply() - shift + lag not in places[idx][0]
+                offset = int(labels[idx] != (b.turn == chess.BLACK))
+        elif ins is None and kind == "move" and \
+                (labels[idx] ^ bool(offset)) != (b.turn == chess.BLACK):
             offset ^= 1
+            flipped = True
         if kind == "skip":
             if not anchored[idx]:
                 offset ^= 1
+            if not (numbered and _names_square(tok.raw)):
+                lag += 1
             out.append(failed(tok, parsed, (), c))
             continue
         if kind == "wild":
@@ -2410,7 +2965,8 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
             b.push(m)
             out.append(failed(tok, parsed, [alt], c, prs))
             continue
-        if getattr(tok, "forced", None):
+        if getattr(tok, "forced", None) or (getattr(tok, "prefer", None) and
+                                            b.san(m) == tok.prefer):
             san = b.san(m)
             b.push(m)
             out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, san, m.uci(),
@@ -2439,12 +2995,14 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
         status, alts = "ok", []
         if others or mine_c > lo + FIT_MARGIN:
             def score(mv, cc, gg, n_ahead):
-                toks_ = mtoks[idx + 1: idx + 1 + n_ahead]
+                toks_ = mtoks[idx + step: idx + step + n_ahead]
                 b2 = b.copy(stack=False)
                 b2.push(mv)
                 gm = _with_glyph(gmap, gg, b.piece_type_at(mv.from_square), scorer)
-                return cc + _future_cost(b2, toks_, labels[idx + 1: idx + 1 + n_ahead],
-                                         scorer, offset, gm)
+                return cc + _future_cost(b2, toks_, labels[idx + step: idx + step + n_ahead],
+                                         scorer, offset ^ (step - 1), gm,
+                                         places=places[idx + step: idx + step + n_ahead],
+                                         shift=shift)
 
             mine = score(m, score_c, glyph, lookahead)
             scored = sorted(((score(mm, cc, gg, lookahead), mm, cc, gg) for mm, cc, gg in others),
@@ -2459,6 +3017,8 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
                 if ties:
                     status = "ambiguous"
             alts = [b.san(t[1]) for t in scored]
+        if flipped and status == "ok":
+            status = "guessed"
         pt = b.piece_type_at(m.from_square)
         gmap = _with_glyph(gmap, glyph, pt, scorer)
         is_cap = b.is_capture(m)
@@ -2470,11 +3030,12 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
                     and not (prs.dfile is not None and prs.drank is not None))
             elif prs.prefix in scorer.letters:
                 lost = scorer.letters[prs.prefix] != pt
+        slip = _names_other(prs, tok.raw, m, pt, is_cap, scorer)
         san = b.san(m)
         b.push(m)
         sq = (prs.fch, prs.rch) if prs is not None else (None, None)
         cap_mark = (prs.cap is True) if prs is not None else None
         out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, san, m.uci(),
-                           b.fen(), status, alts, round(mine_c, 3), glyph, parsed.annotation, sq,
-                           missing, cap_mark, lost))
+                           b.fen(), status, alts, round(mine_c, 3), glyph,
+                           _annotation(parsed, prs), sq, missing, cap_mark, lost, slip))
     return out

@@ -58,6 +58,8 @@ import pymupdf
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 MAX_SIDE = 720         # larger pictures are scaled down to this shorter side first
+RENDER_SIDE = 560      # shorter side at least of a part of the page rendered as a board picture
+RENDER_BLUR = 0.2      # points: the blur of such a rendering
 N = 64                 # pixels per square in the normalised board
 G = 32                 # pixels per square side of a drawing's grouping feature
 TYPES = "PNBRQK"
@@ -107,6 +109,7 @@ class Pictures:
     def __init__(self, doc):
         self.doc = doc
         self.pages = {}
+        self.glyphs = {}
 
     def images(self, pno):
         if pno not in self.pages:
@@ -114,10 +117,29 @@ class Pictures:
             self.pages[pno] = list(imgs.values())
         return self.pages[pno]
 
-    def gray(self, rec):
+    def overdrawn(self, pno, r):
+        """True when the page prints visible glyphs (their middle) inside
+        the rect r, over the picture there: OCR's invisible text does not
+        count."""
+        if pno not in self.glyphs:
+            boxes = []
+            try:
+                spans = self.doc[pno - 1].get_texttrace()
+            except (RuntimeError, ValueError, AttributeError):
+                spans = []
+            for s in spans:
+                if s.get("type") == 3 or s.get("opacity", 1) == 0:
+                    continue
+                boxes.extend(ch[3] for ch in s.get("chars") or ())
+            self.glyphs[pno] = boxes
+        return any(r.x0 <= (b[0] + b[2]) / 2 <= r.x1 and r.y0 <= (b[1] + b[3]) / 2 <= r.y1
+                   for b in self.glyphs[pno])
+
+    def gray(self, rec, render=False):
         """The part of the page that rec["rect"] covers, as a grey array at
         about the resolution of the embedded picture (at most MAX_SIDE pixels
-        on its shorter side)."""
+        on its shorter side). With render, the page as it is printed there,
+        whatever it draws over the picture."""
         r = pymupdf.Rect(rec["rect"])
         px = list(rec.get("pixels") or [0, 0])
         page = self.doc[rec["page"] - 1]
@@ -153,6 +175,16 @@ class Pictures:
                         x1, y1 = int(min(W, round((r.x1 - box.x0) * kx))), int(min(H, round((r.y1 - box.y0) * ky)))
                         if x1 - x0 > 8 and y1 - y0 > 8:
                             g = full[y0:y1, x0:x1]
+        if g is not None and render:
+            # that part of the page rendered at the picture's resolution at
+            # least, and finer where the picture is coarse: the glyphs drawn
+            # over it have hairline outlines, which a coarse rendering greys
+            h, w = g.shape
+            zoom = max(w / max(1.0, r.width), h / max(1.0, r.height), RENDER_SIDE / max(1.0, min(r.width, r.height)))
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=r, colorspace=pymupdf.csGRAY)
+            # a light blur merges the dots of a stippled grey square, as
+            # the scanned picture's own grey squares are smooth
+            g = cv2.GaussianBlur(_gray_from_pixmap(pix), (0, 0), RENDER_BLUR * zoom)
         if g is None:
             # a rotated or unusual picture: render that part of the page
             zoom = (px[0] / max(1.0, r.width)) if px[0] else 3.0
@@ -240,6 +272,21 @@ def locate_grid(gray):
     if res[3]:
         X0, Y0, S = res[1] + lx, res[2] + ly, res[3]
     return X0 / f2, Y0 / f2, S / f2, v
+
+
+def whole_board(gray):
+    """True when the picture holds one whole board: an 8 x 8 grid that
+    board_cells would read, standing inside the picture and filling most of
+    its longer side, whatever the margin round it (rank digits beside it).
+    A corner or strip of a board, or two boards side by side, is none."""
+    if gray is None or min(gray.shape) < 48 or max(gray.shape) > 4 * min(gray.shape):
+        return False
+    x0, y0, s, score = locate_grid(gray)
+    agree, _ = grid_check(gray, x0, y0, s)
+    H, W = gray.shape
+    return (agree >= 0.8 and score >= 0.06 and 8 * s >= 0.6 * max(H, W)
+            and -s / 2 <= x0 and x0 + 8 * s <= W + s / 2
+            and -s / 2 <= y0 and y0 + 8 * s <= H + s / 2)
 
 
 def grid_check(gray, x0, y0, s):
@@ -392,8 +439,9 @@ def _local_stats(a, sigma):
 
 
 def segment(a):
-    """Piece masks (8, 8, N, N) of the squares of a cleaned board image, and
-    each mask's area before thin strokes were removed.
+    """Piece masks (8, 8, N, N) of the squares of a cleaned board image, each
+    mask's area before thin strokes were removed, and the pixels (8, 8, N, N)
+    of an occupied dark square that have the square's own shade.
 
     A pixel belongs to the background when its neighbourhood looks like the
     empty squares of its colour (mean grey and texture). The piece is what
@@ -424,10 +472,13 @@ def segment(a):
         ts = min(0.25, max(0.06, 2 * float(np.percentile(ds, 98))))
         info[p] = (mb, sb, tm, ts)
     masks = np.zeros((8, 8, N, N), bool)
+    shade = np.zeros((8, 8, N, N), bool)
     raw = np.zeros((8, 8))
     P = np.array([[info[bool(PAR[i, j])] for j in range(8)] for i in range(8)], np.float32)
     BG = ((np.abs(M - P[:, :, 0, None, None]) < P[:, :, 2, None, None])
           & (np.abs(S - P[:, :, 1, None, None]) < P[:, :, 3, None, None]))
+    A = a.reshape(8, N, 8, N).transpose(0, 2, 1, 3)
+    dark = PAR if info[True][0] < info[False][0] else ~PAR
     BG |= ring
     busy = (~BG).sum(axis=(2, 3))
     for i in range(8):
@@ -456,7 +507,14 @@ def segment(a):
                     keep = [k for k in range(1, n) if stats[k, cv2.CC_STAT_AREA] >= 0.3 * big]
                     mk = np.isin(lab, keep).astype(np.uint8)
             masks[i, j] = mk > 0
-    return masks, raw
+            if dark[i, j]:
+                # the dark square's own shade in patches wider than a stroke
+                # (between the points of a crown, which the mask encloses);
+                # the paper of a light square is paper anyway
+                own = float(np.median(A[i, j][ring]))
+                sh = (np.abs(A[i, j] - own) < 0.08).astype(np.uint8)
+                shade[i, j] = cv2.morphologyEx(sh, cv2.MORPH_OPEN, OPEN_K) > 0
+    return masks, raw, shade
 
 
 ERODE = np.ones((3, 3), np.uint8)
@@ -479,7 +537,7 @@ def board_cells(gray):
         return out
     a = board_image(gray, x0, y0, s)
     c, hatch = remove_hatching(a)
-    masks, raw = segment(c)
+    masks, raw, shade = segment(c)
     C = c.reshape(8, N, 8, N).transpose(0, 2, 1, 3)
     occ = {}
     areas = masks.mean(axis=(2, 3))
@@ -489,7 +547,10 @@ def board_cells(gray):
             if areas[i, j] < MIN_AREA:
                 continue
             ys, xs = np.nonzero(mk)
-            g = np.where(mk, C[i, j], 1.0)
+            # the square's colour that the mask encloses (between the points
+            # of a crown) is no part of the drawing: it counts as paper, as
+            # it would on a light square
+            g = np.where(mk & ~shade[i, j], C[i, j], 1.0)
             dx = int(round(N / 2 - (xs.min() + xs.max() + 1) / 2))
             dy = int(round(0.9 * N - (ys.max() + 1)))
             T = np.float32([[1, 0, dx], [0, 1, dy]])
@@ -618,6 +679,19 @@ def group_drawings(X, T=GROUP_DIST):
         remap = {u: k for k, u in enumerate(used)}
         lab = np.array([remap[v] for v in lab])
         C = np.array([X[lab == k].mean(0) for k in range(len(used))])
+        # centres that ended up closer than T hold one drawing (the first
+        # pass seeds a group with whichever drawing comes first): one group
+        near = _sqdist(C, C) < limit
+        root = list(range(len(C)))
+        for a, b in zip(*np.nonzero(np.triu(near, 1))):
+            ra, rb = root[a], root[b]
+            if ra != rb:
+                root = [ra if r == rb else r for r in root]
+        if len(set(root)) < len(C):
+            used = sorted(set(root))
+            remap = {u: k for k, u in enumerate(used)}
+            lab = np.array([remap[root[v]] for v in lab])
+            C = np.array([X[lab == k].mean(0) for k in range(len(used))])
     return lab, C
 
 
@@ -828,6 +902,54 @@ def printed_orientation(words, rect):
     return None
 
 
+def marker_turn(page, words, rect):
+    """'b' or 'w' when a small square printed just beside the board gives
+    the side to move, filled for Black and empty for White (Brunthaler
+    prints one above each board's right corner), else None. The text layer
+    holds a short word there (OCR reads the square as "•", "o", "0" or
+    "D"); the page's picture tells a square from a letter, and its colour.
+    words comes from page_words."""
+    r = pymupdf.Rect(rect)
+    side = min(r.width, r.height)
+    m = 0.15 * side
+    for box, t in words:
+        t = t.strip()
+        cx, cy = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
+        if (not t or len(t) > 2 or t in "abcdefgh12345678" or (r.x0 < cx < r.x1 and r.y0 < cy < r.y1)
+                or not (r.x0 - m < cx < r.x1 + m and r.y0 - m < cy < r.y1 + m)
+                or not (r.x0 < cx < r.x1 or r.y0 < cy < r.y1)):
+            continue
+        s = 0.12 * side
+        clip = pymupdf.Rect(cx - s, cy - s, cx + s, cy + s) & page.rect
+        zoom = 4.0
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, colorspace=pymupdf.csGRAY)
+        ink = (_gray_from_pixmap(pix) < 128).astype(np.uint8)
+        # the board's own squares are no marker
+        b = (r + (-1, -1, 1, 1)) & clip
+        if not b.is_empty:
+            ink[int((b.y0 - clip.y0) * zoom):int(np.ceil((b.y1 - clip.y0) * zoom)),
+                int((b.x0 - clip.x0) * zoom):int(np.ceil((b.x1 - clip.x0) * zoom))] = 0
+        n, lab, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+        for k in range(1, n):
+            x, y, w, h, _ = stats[k]
+            if not (0.03 * side * zoom <= min(w, h) and max(w, h) <= 0.12 * side * zoom
+                    and 0.75 <= w / h <= 1.33):
+                continue
+            sq = lab[y:y + h, x:x + w] == k
+            q = max(1, min(w, h) // 5)
+            # a square is inked all along its four edges; a letter is not
+            edges = (sq[:q].any(0).mean(), sq[-q:].any(0).mean(),
+                     sq[:, :q].any(1).mean(), sq[:, -q:].any(1).mean())
+            if min(edges) < 0.9:
+                continue
+            inner = sq[h // 3:h - h // 3, w // 3:w - w // 3].mean()
+            if inner > 0.9:
+                return "b"
+            if inner < 0.1:
+                return "w"
+    return None
+
+
 # ---------------------------------------------------------------- the book
 
 LAST = {}      # the groups and names of the last book read, for inspection
@@ -839,7 +961,30 @@ def picture_cells(pics, rec):
         g = pics.gray(rec)
     except (RuntimeError, ValueError):
         g = None
-    return board_cells(g)
+    r = board_cells(g)
+    if g is None:
+        return r
+    # ClearScan draws part of a scanned board (pieces, grey squares) as a
+    # font over the picture it leaves behind: where the page prints glyphs
+    # over the board (or over the picture, where it shows no whole board),
+    # the board is what the page shows there
+    box = pymupdf.Rect(rec["rect"])
+    if r["grid"] is not None:
+        x0, y0, s = r["grid"]
+        h, w = g.shape
+        kx, ky = box.width / w, box.height / h
+        box = pymupdf.Rect(box.x0 + x0 * kx, box.y0 + y0 * ky,
+                           box.x0 + (x0 + 8 * s) * kx, box.y0 + (y0 + 8 * s) * ky)
+    else:
+        box = pymupdf.Rect(box.x0 + 3, box.y0 + 3, box.x1 - 3, box.y1 - 3)
+    if pics.overdrawn(rec["page"], box):
+        try:
+            r2 = board_cells(pics.gray(rec, render=True))
+        except (RuntimeError, ValueError):
+            r2 = None
+        if r2 is not None and r2["grid"] is not None:
+            r = dict(r2, rendered=True)
+    return r
 
 
 def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None, cells=None):
@@ -852,7 +997,8 @@ def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None, cells=N
     diagram); they help to name the book's piece drawings. Returns
     {id: {"fen", "confidence", "doubtful": [squares], "status", "turn",
     "turn_from", "flipped"}}; status is "read", "doubtful", "partial" (no
-    whole board in the picture) or "unread" (no position could be made).
+    whole board in the picture) or "unread" (no position could be made);
+    turn_from is "caption", "marker" (marker_turn) or "default".
     cells maps diagram ids to the boards picture_cells found in them."""
     from . import selection as sel
     say = progress or (lambda *_: None)
@@ -911,7 +1057,13 @@ def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None, cells=N
                        "known": Counter()})
     pieces = [g for g in groups if g["kind"] == "piece"]
     if pieces:
-        thr = _otsu_split([g["white_share"] for g in pieces], [len(g["members"]) for g in pieces])
+        # the divide between White's and Black's drawings is learnt from the
+        # book's own pictures; boards rendered from the page (picture_cells)
+        # follow it, so that they do not move it
+        own = [sum(1 for b, _ in g["members"] if not boards[b].get("rendered")) for g in pieces]
+        if not sum(own):
+            own = [len(g["members"]) for g in pieces]
+        thr = _otsu_split([g["white_share"] for g in pieces], own)
     else:
         thr = 0.5
     for g in groups:
@@ -1009,9 +1161,13 @@ def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None, cells=N
                 group_of=group_of, flip=flip)
     # the positions
     for bi, r in enumerate(boards):
-        turn = caption_turn(texts[r["rec"]["page"]][1], r["rec"]["rect"])
+        words, lines = texts[r["rec"]["page"]]
+        turn = caption_turn(lines, r["rec"]["rect"])
+        marker = None if turn else marker_turn(doc[r["rec"]["page"] - 1], words, r["rec"]["rect"])
         out[r["id"]] = _position(r, bi, groups, names, margins, group_of, closeness,
-                                 flip.get(bi, False), turn, typical)
+                                 flip.get(bi, False), turn or marker, typical)
+        if marker:
+            out[r["id"]]["turn_from"] = "marker"
     say(f"board reading: {ngroups} groups of piece drawings, "
         f"{sum(1 for v in out.values() if v['status'] == 'read')} boards read")
     return out

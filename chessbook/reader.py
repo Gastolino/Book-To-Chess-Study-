@@ -2304,6 +2304,7 @@ function diagramReading(d){
         ", which " + (dq.length === 1 ? "carries" : "carry") + " a dashed outline on the board above.";
     if (R && R.flipped) t += " The book shows this board from Black's side, and so does the board above.";
     if (R && R.turn_from === "caption") t += " The caption gives the side to move.";
+    if (R && R.turn_from === "marker") t += " The square printed beside the board gives the side to move.";
     return t;
   }
   if (d.status === "partial") return "The picture shows part of a board only, so board reading (Stage 3) does not read it.";
@@ -2424,9 +2425,20 @@ window.readingState = readingState;
 function init(){
   placeBoard();
   readingState();
+  // (where a finger touched the page: the browser moves a tap onto a small target near it, and the
+  // eye on a box's corner is smaller than its box, so that a tap inside a box went to the eye. A tap
+  // the finger made on a box, off the eye's own drawing, is the box's)
+  let touched = null;
+  $("ov").addEventListener("pointerdown", (e) => { touched = e.pointerType === "touch" ? [e.clientX, e.clientY] : null; }, true);
   $("ov").addEventListener("click", (e) => {
-    const b = e.target.closest("button");
+    let b = e.target.closest("button");
+    const at = e.detail ? touched : null;
+    touched = null;
     if (!b) return;
+    if (b.dataset.eye && at) {
+      const under = document.elementFromPoint(at[0], at[1]), box = under && under.closest("#ov .mark");
+      if (box) b = box;
+    }
     S.wanted = null;
     if (penClick(b)) return;
     if (b.dataset.eye) { openSymMenu(b); return; }

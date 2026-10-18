@@ -17,7 +17,8 @@
 //     no sheet and no joining; More opens the box's Place sheet, whose "Continue a line..." starts a
 //     join that its Close ends; while joining, the sheet's list joins (never "in its place"), and the
 //     join the program refuses says why in the sheet;
-//   - taps the box again: the move is made on the full board, which stays in view under the sheet
+//   - taps the box again: a move that is not legal there is answered in the sheet ("Not legal here:
+//     an earlier move may be misread."); the move is made on the full board, which stays in view under the sheet
 //     (the small board of the bar is not shown); makes 5.Qc1 there: the correction (its move, and
 //     the join after 4...Qb6) is stored and sent with {readOn}; the sheet says "Reading on…", the
 //     board keeps the position after 5.Qc1 and the small book of the top bar turns its pages; the
@@ -271,6 +272,13 @@ const SIZES = [["a 375 px phone", 375, 812], ["an upright iPad", 834, 1194], ["a
         .observe(document.getElementById("busy"), { attributes: true });
     });
     await tapIn(await markSel(itet));
+    // a move the board does not take (the pawn on e2 stands in the queen's way) is answered in the sheet
+    await play("d1", "h5");
+    const no = await inFrame(() => ({ msg: document.getElementById("fixmsg").innerText.trim(),
+      line: document.querySelector("#fix .thl").innerText.trim() }));
+    check("a move that is not legal here says so in the sheet, which still asks for the move",
+          no.msg === "Not legal here: an earlier move may be misread." && no.line === "After 4…Qb6, play this move." &&
+          JSON.stringify((await fix()).moves) === "{}", no);
     t0 = Date.now();
     await play("d1", "c1");
     const f1 = await fix();

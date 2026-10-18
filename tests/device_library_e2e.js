@@ -27,12 +27,16 @@
 //     files) on an iPhone 13 and an iPad in landscape, light and dark;
 //   - removes the book after its confirmation: its files, its record, its
 //     corrections and its place are gone;
+//   - while the reading of a book is saved, the sign of work shows until the
+//     library holds it (the worker giving the reading is not enough);
 //   - in a fresh profile, adds BOOK2 with each step slowed down and leaves
 //     for the library once the parts of its reading (Stage 1, the boards)
 //     are kept: opened again, the reading goes on from them, and once it is
-//     finished they make way for the stored reading; opened once more, the
-//     book draws no thumbnails (they are kept with the reading); and with the
-//     network cut off, the app and the book open from the device.
+//     finished they make way for the stored reading; the browser closed the
+//     moment the sign of work stops, the library holds that reading; opened
+//     once more, the book draws no thumbnails (they are kept with the
+//     reading); and with the network cut off, the app and the book open from
+//     the device.
 // Prints one JSON object {ok, checks, errors, timings, screenshots, notes};
 // the exit code is 1 when a check fails.
 const { chromium, devices } = require("playwright");
@@ -120,11 +124,19 @@ async function device(name, opts, profile) {
     worker.postMessage = (m, t) => { window.__sent.push(m.type); return post(m, t); };
     window.__said = [];
     window.__got = [];
+    window.__atReading = [];
     const on = worker.onmessage;
     worker.onmessage = (e) => {
       if (e.data && (e.data.type === "status" || e.data.type === "progress")) window.__said.push(e.data.text);
       if (e.data) window.__got.push(e.data.type);
-      return on(e);
+      const r = on(e);
+      // the sign of work once the page has taken the worker's reading (the library stores it after)
+      if (e.data && e.data.type === "reading") {
+        window.__atReading.push({ busy: document.getElementById("busy").classList.contains("on"),
+                                  saving: /Saving the program's reading/.test(workNow()),
+                                  saved: document.body.dataset.saved || null });
+      }
+      return r;
     };
   });
   // the library's IndexedDB, read directly
@@ -291,6 +303,13 @@ async function run() {
     note("book 1: " + one.took + "; stored reading " + one.rec.reading.stored + " bytes (gzip), " +
          one.rec.reading.size + " bytes before gzip; PDF " + one.rec.size + " bytes; title " + JSON.stringify(one.rec.title));
     check("the book was read in the browser", (await a.page.evaluate(() => window.__sent)).includes("process"));
+    // the sign of work: on while the library stores the reading (a page closed then loses it), off after
+    const atReading = await a.page.evaluate(() => window.__atReading);
+    check("the sign of work shows while the reading is stored",
+      atReading.length === 1 && atReading[0].busy && atReading[0].saving && !atReading[0].saved, atReading);
+    const afterSave = await a.until(() => a.page.evaluate(() => document.body.dataset.saved &&
+      { saving: /Saving the program's reading/.test(workNow()), count: LIB.saving }), "the reading kept", 60000);
+    check("and stops saying so once the library holds it", !afterSave.saving && afterSave.count === 0, afterSave);
     const st1 = await a.stored();
     check("the PDF, the reading and the record are kept in IndexedDB",
       st1.files.includes(one.id + ":pdf") && st1.files.includes(one.id + ":reading") && st1.books.length === 1, st1);
@@ -414,8 +433,9 @@ async function run() {
     check("the book holds the correction", g1.glyph === piece, g1);
 
     // ---------------------------------------------------------------- saving the books as files
+    // (the button loads the page again: the new page has no body for a moment)
     await a.page.click("#another");
-    await a.page.waitForFunction(() => document.body.classList.contains("library") &&
+    await a.page.waitForFunction(() => document.body && document.body.classList.contains("library") &&
       document.querySelectorAll("#books li.book").length === 2);
     const s1 = await saveFile(a, one.id, file1);
     const s2 = await saveFile(a, two.id, file2);
@@ -453,7 +473,7 @@ async function run() {
       stB.books.length === 1 && stB.books[0].reading && stB.books[0].cover > 0 && stB.files.length === 2, stB);
     // the library lists the bookmark under the book, and opens the book there
     await b.page.click("#another");
-    await b.page.waitForFunction(() => document.body.classList.contains("library") &&
+    await b.page.waitForFunction(() => document.body && document.body.classList.contains("library") &&
       document.querySelectorAll("#books li.book").length === 1);
     const bmLine = await b.page.evaluate((id) => {
       const el = document.querySelector("#books li.book[data-id='" + id + "'] .bms");
@@ -473,7 +493,7 @@ async function run() {
                   "the pictures of the page shown in the device's store", 120000).catch(() => 0);
     // the same file again: the library holds the book already
     await b.page.click("#another");
-    await b.page.waitForFunction(() => document.body.classList.contains("library") &&
+    await b.page.waitForFunction(() => document.body && document.body.classList.contains("library") &&
       document.querySelectorAll("#books li.book").length === 1);
     await addFile(b, file1);
     await b.page.waitForFunction(() => /already in your library/.test(document.getElementById("status").textContent),
@@ -532,7 +552,8 @@ async function run() {
 
     // ---------------------------------------------------------------- a reading cut short
     {
-      const c = await device("cut short", DESK);
+      const profileC = path.join(work, "profile-c");
+      let c = await device("cut short", DESK, profileC);
       await openLibrary(c);
       await c.page.goto(siteUrl + (siteUrl.includes("?") ? "&" : "?") + "pace=1500");
       await c.page.waitForFunction(() => document.body.classList.contains("library"), null, { timeout: 60000 });
@@ -559,14 +580,18 @@ async function run() {
       const said = await c.page.evaluate(() => window.__said);
       check("the reading goes on from the parts kept",
             said.some((x) => /taken up where it stopped: the pages and the boards are read already/.test(x)), said);
-      const fin = await c.until(async () => {
-        const s = await c.stored();
-        const b = s.books.find((x) => x.id === id);
-        return b && b.reading && !b.partial && !s.files.includes(id + ":partial") ? b : null;
-      }, "the stored reading in place of the parts", 600000);
-      check("the finished reading replaces the parts", !!fin);
-      // opened once more: from the stored reading, with its thumbnails
+      // the reader closes the app the moment the sign of work stops: the library holds the reading
+      await c.page.waitForFunction(() => window.__got.includes("reading") &&
+        !document.getElementById("busy").classList.contains("on"), null, { timeout: 600000, polling: 10 });
+      await c.close();
+      c = await device("cut short, closed as the work stops", DESK, profileC);
       await openLibrary(c);
+      const s = await c.stored();
+      const fin = s.books.find((x) => x.id === id);
+      check("the finished reading replaces the parts",
+            fin && fin.reading && !fin.partial && !s.files.includes(id + ":partial"), { fin, files: s.files });
+      // opened once more: from the stored reading, with its thumbnails
+      await whenReady(c);
       await c.instrument();
       await c.page.click("#books li.book[data-id='" + id + "'] .open");
       await c.page.waitForFunction(() => document.body.dataset.book === "opened", null, { timeout: 600000 });
@@ -597,7 +622,7 @@ async function run() {
           await s.page.waitForFunction(() => document.body.dataset.book === "opened",
                                        null, { timeout: 600000 });
           await s.page.click("#another");
-          await s.page.waitForFunction(() => document.body.classList.contains("library"));
+          await s.page.waitForFunction(() => document.body && document.body.classList.contains("library"));
         }
         await s.page.waitForFunction(() => document.querySelectorAll("#books li.book").length === 2 &&
           !document.getElementById("libspace").hidden);

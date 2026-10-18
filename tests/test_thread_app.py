@@ -69,6 +69,7 @@ def test_the_reader_threads_the_line_in_the_app(site, tmp_path):
     assert {"turning reading on under the board turns the pencil on",
             "Cancel closes the sheet and leaves no joining",
             "Close ends the join",
+            "a move that is not legal here says so in the sheet, which still asks for the move",
             "the sheet said, line by line: reading on, then how far it read and that the line reads to its end",
             "the line holds the whole game, with no further tap",
             "Undo takes back the reader's move and the program's join after it, and asks for the move again",
@@ -93,6 +94,7 @@ def test_reading_on_stops_for_the_reader_in_the_app(site, tmp_path):
     res = _run("readon_e2e.js", site, book, ROOT / "output" / "screens" / "thread")
     names = {c["name"] for c in res["checks"]}
     assert {"a reading on that fails says why in one line, keeps the correction as made, and goes on without reading on",
+            "Undo takes the move back, with the move made after it, and the move list drops them",
             "a reading on queued while the book is read keeps the correction, and the sheet waits for the book",
             "once the book holds the move, the program reads on from it",
             "Undo after reading on brings the page and the move list back to 4...Qb6",
@@ -101,4 +103,23 @@ def test_reading_on_stops_for_the_reader_in_the_app(site, tmp_path):
             "the page turned forward to 13.Qe3, which is outlined",
             "after 12...Qc2 the sheet offers 13.Qe3 to join",
             "the join is stored with Qc2 before it, as the reader's, and the line holds the whole game"} <= names
+    print(json.dumps(res["timings"], indent=1))
+
+
+@pytest.mark.skipif(not _ready(), reason="no local Pyodide folder, Pyodide wheels, node or Playwright")
+def test_a_tap_after_a_gap_asks_for_the_missing_move_in_the_app(site, tmp_path):
+    """tests/gaptap_e2e.js: the game's text lacks 5...f5 (make_long's
+    lacking), so the position of 6.c4 and of the moves after it is unknown.
+    A tap on such a move asks for the move the text lacks, as the thread
+    asks for any other box: the board takes it, from the position before the
+    gap, and the program reads on from it by itself."""
+    from test_read_on import make_long
+    book = make_long(tmp_path / "wells.pdf", lacking=True)
+    res = _run("gaptap_e2e.js", site, book, ROOT / "output" / "screens" / "thread")
+    names = {c["name"] for c in res["checks"]}
+    assert {"a tap on a move after the gap asks for the move the text lacks, as the thread does",
+            "the board takes Black's move, from the position after 5.Qc1",
+            "More opens the gap's own editor",
+            "the move made is stored as the gap's",
+            "the program read on from the gap by itself, through 12.d6"} <= names
     print(json.dumps(res["timings"], indent=1))
