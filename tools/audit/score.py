@@ -44,12 +44,13 @@ import books  # noqa: E402
 
 SQ = re.compile(r"[a-h][1-8]")
 CASTLE = re.compile(r"[0Oo]-?[0Oo]")
-# OCR's slips of shape, which change no move: the letter or sign OCR prints
+# OCR's slips of shape, which change no move (gpa's bold font sets "G" for 6,
+# p63 "NbG" for Nb6): the letter or sign OCR prints
 # for a file or a rank character. A move whose printed square reads so is
 # the same move; any other difference of square or piece is a misreading.
 FILE_SLIP = {"£": "f", "C": "c"}
 RANK_SLIP = {"l": "1", "I": "1", "i": "1", "!": "1", "|": "1", "t": "1",
-             "s": "58", "S": "58", "B": "8", "Z": "2", "z": "2", "O": "0"}
+             "s": "58", "S": "58", "B": "8", "Z": "2", "z": "2", "O": "0", "G": "6"}
 
 
 def _norm(s):
