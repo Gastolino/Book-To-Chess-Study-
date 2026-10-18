@@ -537,6 +537,44 @@ def _caps(text, least=4):
                                             and upper + soft >= 0.9 * len(letters))
 
 
+# a square as a move prints it, OCR's 5 as S and 1 as l or I among them
+_ROW_MOVE_RE = re.compile(r"[a-h][1-8SsIl]|^[0O]-[0O]")
+_BARE_NUMBER_RE = re.compile(r"\d{1,3}")
+
+
+def _move_on_row(t, r, pic, others):
+    """True when the line t at r, by a board picture pic, is a move printed on
+    a row of moves under or beside the board, not a mark of the board: it
+    begins with a move number ("27 ..... xe3+"), or a move number stands
+    before it on its row ("20" and "\\"'xf5!"), a number that is no rank
+    digit at the board's edge. A scan's picture of a board may reach over the
+    rows printed under it (ClearScan keeps there the figurines it could not
+    read), and a move printed as figurine junk would else be taken for OCR
+    junk read from the board."""
+    words = t.split()
+    if not words:
+        return False
+
+    def edge_digit(text, box):
+        return len(text.strip()) == 1 and (abs(box.x1 - pic.x0) <= 16 or abs(box.x0 - pic.x1) <= 16)
+
+    if _BARE_NUMBER_RE.fullmatch(words[0]):
+        return (len(words) > 1 and any(_ROW_MOVE_RE.search(w) for w in words[1:3])
+                and not edge_digit(words[0], r))
+    if not _ROW_MOVE_RE.search(words[0]):
+        return False
+    h = r.y1 - r.y0
+    for ot, o in others:
+        num = "".join((ot or "").split())
+        if o is r or not _BARE_NUMBER_RE.fullmatch(num) or edge_digit(num, o):
+            continue
+        overlap = min(r.y1, o.y1) - max(r.y0, o.y0)
+        if (o.x1 <= r.x0 + 1 and r.x0 - o.x1 <= 7 * h
+                and overlap >= 0.5 * min(h, o.y1 - o.y0)):
+            return True
+    return False
+
+
 def _pic_zone_index(bbox, pics, margin):
     cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
     best = None
@@ -1219,6 +1257,8 @@ def page_lines(doc, page_index, fonts=None):
             rank = (len(t) == 1 and pic.y0 <= (r.y0 + r.y1) / 2 <= pic.y1
                     and (abs(r.x1 - pic.x0) <= 16 or abs(r.x0 - pic.x1) <= 16))
             if LABEL_RE.match(t) and not rank and continues_as_move(r, row_texts):
+                continue
+            if _move_on_row(t, r, pic, row_texts):
                 continue
             box = pymupdf.Rect(rl["bbox"])
             inside = abs(box & pics[j]) >= 0.6 * abs(box) if abs(box) else False

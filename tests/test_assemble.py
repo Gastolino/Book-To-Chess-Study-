@@ -1167,6 +1167,42 @@ def test_game_goes_on_from_a_diagram_among_its_unplaced_moves(tmp_path):
     assert nodes[marks["Bg4"]["node"]]["parent"] == ids[1]
 
 
+def test_move_under_a_board_whose_picture_reaches_over_it(tmp_path):
+    """A scan's picture of a board may reach over the row of moves printed
+    under it (ClearScan keeps there the figurines it could not read: Planning
+    p65 "20 Qxf5!"). The move, printed as figurine junk on its row after its
+    move number, is the game's next move, not OCR junk read from the board."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Smith - Jones, ", True), ("London 1901", False)])
+    w.line("1.e4 e5 2.Qh5 Nc6 3.Bc4 Nf6", bold=True)
+    w.line("Black overlooks the threat to f7.", indent=8)
+    cx = w.x0 + COL_W / 2
+    board = pymupdf.Rect(cx - 60, w.y, cx + 60, w.y + 120)
+    # the picture holds the board and the row under it
+    w.pg.insert_image(pymupdf.Rect(board.x0, board.y0, board.x1, board.y1 + 34), pixmap=w.board)
+    w.y = board.y1 + 24
+    w.pg.insert_text((board.x0 + 30, w.y), "4", fontname="tibo", fontsize=10)
+    w.pg.insert_text((board.x0 + 62, w.y), "\"'xf7#", fontname="tibo", fontsize=10)
+    w.y += 26
+    w.line("The oldest trap of them all.", indent=8)
+    w.line("1-0", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.doc.set_metadata({"producer": OCR_PRODUCER})
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == ["e4", "e5", "Qh5", "Nc6", "Bc4", "Nf6", "Qxf7#"]
+    mark = next((m for m in book["pages"][1]["marks"] if m["raw"] == "\"'xf7#"), None)
+    assert mark is not None and mark["node"] == ids[-1]
+
 
 # the Ruy Lopez after 3...a6 (the book printed 3.Bc4 for 3.Bb5), as a board
 # reading gives it (White to move by default)
