@@ -562,6 +562,22 @@ def test_misread_square_after_a_doubtful_move_is_not_certain(tmp_path):
     assert clear[12] == "ok" and all(st == "ok" for st in clear)
 
 
+def test_piece_letter_read_as_another_piece_is_not_certain(tmp_path):
+    """A piece letter of the notation read as another piece ("7.Bf3+", where
+    no bishop reaches f3, read as Qf3+) is the print taken for another move:
+    where the line went wrong before it (gpa p32 "8 Ba4" made 8.a4, p94
+    "Bxf8" made Qxf8), the move the print names is not this one. It is shown
+    guessed, never ok; the moves after it read as before."""
+    game = [GAME_EN[0], GAME_EN[1], "6.Nxf7 Kxf7 7.Bf3+ Ke6", GAME_EN[3]]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN
+    st = [book["nodes"][i]["status"] for i in ids]
+    assert st[12] == "guessed"
+    assert all(s == "ok" for k, s in enumerate(st) if k != 12)
+
+
 def test_text_drawn_by_ocr_is_not_exact(tmp_path):
     # an OCR layer: the text is drawn invisibly over the picture of the page
     w = _Writer()

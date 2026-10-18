@@ -3900,6 +3900,10 @@ class _Builder:
                 # a misread square or capture mark where the line may have gone
                 # wrong: the move the print names may be the line's, not this
                 self.nodes[nid]["status"] = "guessed"
+            elif d.status == "ok" and not said and not tok.forced and self.letter_lost(tok, d):
+                # a piece letter of the notation read as another piece: the
+                # print names another move, which the line may have lost
+                self.nodes[nid]["status"] = "guessed"
             if said:
                 # a diagram after it chose the move: a guess against the text
                 self.nodes[nid].update(status="guessed", alternatives=[said])
@@ -3948,6 +3952,32 @@ class _Builder:
                 return True
             nid = n["parent"]
         return False
+
+    def letter_lost(self, tok, d):
+        """True when the decoder read the piece letter of the notation that
+        token tok prints ("Ba4", "Qf2") as another piece or a pawn
+        (Decoded.glyph_lost with a letter, not a figurine's junk), in a book
+        whose moves have shown that letter as its own piece (the glyph model
+        learnt it so: in Planning's text layer an "N" may stand for the
+        bishop's figurine, which the print shows), and the print does not
+        name the square the piece comes from (Brunthaler's text layer sets
+        "K" for the bishop in "Kd2-f4#", which the origin square tells), nor
+        did the reader name the piece."""
+        if not d.glyph_lost or not d.glyph or not d.uci or self.named_piece(tok, d):
+            return False
+        if self.letter_table is None:
+            self.letter_table = _resolve_letters(self.dec.decode_letters)
+        piece = self.letter_table.get(d.glyph)
+        if piece is None:
+            return False
+        model = self.dec.glyphs
+        if model is None or not len(model) or not model.strong(d.glyph):
+            return False
+        pri = model.prior(d.glyph)
+        if max(pri, key=pri.get) != chess.piece_symbol(piece).upper():
+            return False
+        raw = (tok.raw or "").replace(" ", "")
+        return not any(d.uci[:2] + s in raw for s in "-x:–")
 
     def child_with(self, parent, san):
         for c in self.nodes[parent]["children"]:
