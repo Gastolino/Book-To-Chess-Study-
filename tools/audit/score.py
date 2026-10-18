@@ -172,7 +172,9 @@ def glyph_pieces(book):
 
 
 def twin_agrees(raw, san, glyphs=None, frm=None):
-    raw = _joined(_norm(raw)).replace("'", "")
+    # the Primer's OCR sets the ligature "ffi" for f8 (p314 prints Kf8 for
+    # "'it>ffi"); "fi" for f7 is RANK_TWIN's "i" (p165 Kf7 for "@fi")
+    raw = _joined(_norm(raw)).replace("'", "").replace("ffi", "f8")
     # a check's "t" and the marks after it ("i.xflt!") are no square, where
     # the print shows a square before them
     bare = re.sub(r"[t!?+#]+$", "", raw)
