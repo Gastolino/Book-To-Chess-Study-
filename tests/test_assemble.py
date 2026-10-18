@@ -130,14 +130,16 @@ class _Writer:
 
 
 def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", second=False,
-              ocr=False, tail=(), note5="Safer is 5...Na5 6.Bb5+ c6"):
+              ocr=False, tail=(), note5="Safer is 5...Na5 6.Bb5+ c6", box=False):
     """The little test book: one chapter, or with second a second chapter
     after it (pages 10 and 11) that holds another game. Set in type, its text
     is exact (pdftext.exact_text); with ocr, its producer is an OCR program,
     for a game printed as OCR's junk (test_corrections.GARBLED). tail: lines
     (text, bold) printed right after the result of the first game. A line of
     the game or note5 may be a list of (text, bold) parts, for a line set in
-    both fonts. note7 may be a list of lines."""
+    both fonts. note7 may be a list of lines. box: a shaded box across the
+    column (a picture, as a scan prints a question's background) right under
+    the last line of the game's moves."""
     w = _Writer()
 
     def put(text, bold, indent=0):
@@ -180,6 +182,11 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
     for text in [note7] if isinstance(note7, str) else note7:
         w.line(text, indent=8)
     put(game[3], True)
+    if box:
+        rect = pymupdf.Rect(w.x0, w.y - 4, w.x0 + COL_W, w.y + 36)
+        w.pg.insert_image(rect, pixmap=pymupdf.Pixmap(pymupdf.csGRAY, pymupdf.IRect(0, 0, 64, 16),
+                                                      False))
+        w.y += 50
     w.line("White has a strong attack.", indent=8)
     w.line("1-0", bold=True)
     for text, bold in tail:
@@ -563,6 +570,23 @@ def test_misread_square_after_a_doubtful_move_is_not_certain(tmp_path):
     assert clear[12] == "ok" and all(st == "ok" for st in clear)
 
 
+def test_misread_square_where_a_note_leaves_the_line_is_not_certain(tmp_path):
+    """A note's first move off the line read through a slip of its square
+    ("5...Na6", where the knight reaches a5, not a6) may stand at another move
+    than the one the note means (kia p141 "19...Bc6 and 20...Bb5", read as
+    20...Bh8 after the game's 20.Nxc6): it is shown guessed, not ok. The
+    note's moves after it, and the game, read as before."""
+    pdf = make_book(tmp_path / "little.pdf", ocr=True, note5="Safer is 5...Na6 6.Bb5+ c6")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+    na5 = [n for n in book["nodes"].values() if n.get("san") == "Na5" and not n.get("main")]
+    assert len(na5) == 1 and na5[0]["status"] == "guessed"
+    bb5 = [n for n in book["nodes"].values() if n.get("san") == "Bb5+" and not n.get("main")]
+    assert len(bb5) == 1 and bb5[0]["status"] == "ok"
+
+
 def test_piece_letter_read_as_another_piece_is_not_certain(tmp_path):
     """A piece letter of the notation read as another piece ("7.Bf3+", where
     no bishop reaches f3, read as Qf3+) is the print taken for another move:
@@ -577,6 +601,19 @@ def test_piece_letter_read_as_another_piece_is_not_certain(tmp_path):
     st = [book["nodes"][i]["status"] for i in ids]
     assert st[12] == "guessed"
     assert all(s == "ok" for k, s in enumerate(st) if k != 12)
+
+
+def test_move_over_a_shaded_box_is_no_coordinate(tmp_path):
+    """A scan prints a question on a shaded box across the column, which the
+    text layer holds as a picture (kia p48: "11 es" over the box of the
+    question under it). The moves printed just above it are moves, not the
+    coordinates of a board: a coordinate stands beside a board, and a board
+    is square. The game reads on to its last move."""
+    game = [GAME_EN[0], GAME_EN[1], GAME_EN[2], "8.C3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game, ocr=True, box=True)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN[:-1] + ["c3"]
 
 
 def test_text_drawn_by_ocr_is_not_exact(tmp_path):

@@ -548,6 +548,27 @@ def _pic_zone_index(bbox, pics, margin):
     return None if best is None else best[1]
 
 
+# A line that starts as a line of moves does: a move number (OCR's "1o" for
+# 10, "4S" for 45) or the dots of Black's move ("... bs", "• • • bs?").
+_MOVE_LINE_RE = re.compile(r"^(?:\d{1,3}|[1-9][oOSs]|[1l][0-9oOS])(?:\.|\s|$)|^(?:[.•·]\s?){3,}")
+
+
+def _move_line(t):
+    """Whether a line starts as a line of moves: a number or dots, then a word
+    with a Latin letter (OCR's "1o" alone is 10)."""
+    m = _MOVE_LINE_RE.match(t)
+    if not m:
+        return False
+    rest = t[m.end():].lstrip(" .•·").split(" ")[0]
+    return bool(re.search(r"[A-Za-z]", rest or m.group(0)))
+
+
+def _squarish(r):
+    """Whether a picture has a board's shape (no more than half again as wide
+    as it is tall, or as tall as it is wide)."""
+    return r.width <= 1.5 * r.height and r.height <= 1.5 * r.width
+
+
 def _bands(raws, body_size):
     """Learn where running heads and page numbers sit: baseline limits for the
     top band and for the bottom band (None where the book has none).
@@ -1226,6 +1247,14 @@ def page_lines(doc, page_index, fonts=None):
             # reads as words (a chapter title printed over an ornament).
             vis = [ch for ch in rl["text"] if ch != " "]
             junky = sum(ch.isalnum() for ch in vis) < 0.6 * len(vis)
+            # Coordinates stand beside a board, which is square: a wide
+            # picture (the shaded box of a question set across the page) has
+            # none, and a line of moves printed just above or below it ("11
+            # es", "19 lL!asl" in OCR's letters) is no coordinate.
+            if (not inside and not _squarish(pic) and _move_line(t) and len(rl["words"]) <= 6
+                    and _pic_zone_index(rl["bbox"], [pc for pc in pics if _squarish(pc)],
+                                        (2.5 if short else 1.6) * bs) is None):
+                continue
             if (inside and junky) or all(_coord_token(w["text"]) for w in rl["words"]) or (
                     not f["real"] and not f["kinds"]["move"]):
                 role[k], diag[k] = "coord", f"p{p}-{j + 1}"

@@ -3871,7 +3871,7 @@ class _Builder:
             self.nodes[nid]["key"] = fixes.token_key(page, box, tok.raw)
         return nid
 
-    def add_decoded(self, L, parent, tok, d, main, merge=False):
+    def add_decoded(self, L, parent, tok, d, main, merge=False, branch=False):
         """Nodes for one decoded token under parent; returns (node ids, reused).
         With merge, a move that parent already has as a child reuses that child
         (reused is True). The move number and side come from the position the
@@ -3896,9 +3896,12 @@ class _Builder:
                 self.nodes[nid]["alternatives"] = list(d.alternatives[:4])
             said = self.misread_move(tok) if tok.prefer == d.san else None
             if d.status == "ok" and d.slip and not said and not tok.forced \
-                    and self.doubt_before(L, parent):
+                    and (branch or self.doubt_before(L, parent)):
                 # a misread square or capture mark where the line may have gone
-                # wrong: the move the print names may be the line's, not this
+                # wrong, or where a note's moves leave the line (the note may
+                # branch off at another move, kia p141 "20...Bb5" read as Bh8
+                # after the game's 20.Nxc6): the move the print names may be
+                # the line's, not this
                 self.nodes[nid]["status"] = "guessed"
             elif d.status == "ok" and not said and not tok.forced and self.letter_lost(tok, d):
                 # a piece letter of the notation read as another piece: the
@@ -4620,7 +4623,8 @@ class _Builder:
         out = []
         merging = True
         for t, d in zip(run.moves, decs):
-            new, reused = self.add_decoded(L, parent, t, d, False, merge=merging)
+            new, reused = self.add_decoded(L, parent, t, d, False, merge=merging,
+                                           branch=merging)
             merging = merging and reused
             parent = new[-1]
             out.extend(new)
