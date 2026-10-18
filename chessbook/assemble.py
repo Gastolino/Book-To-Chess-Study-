@@ -421,6 +421,7 @@ _SETUP_RE = re.compile(r"\b(?:White|Black)\s*[:(]", re.I)
 _SENTENCE_END_RE = re.compile(r"(?:[^\W\d_]{2}[.!?]|;)\s|[.!?]\s+(?=[A-Z][a-z]+ )")
 _REAL_WORD_RE = re.compile(r"^[^\W\d_]{2,}")
 _BARE_NUMBER_RE = re.compile(r"^[0-9lIO]{1,3}$")
+_NOTE_NUMBER_RE = re.compile(r"^[0-9lIOSs]{1,3}[.…•·]*$")
 _MOVE_NUMBER_WORD_RE = re.compile(r"^(\d{1,3})\s*(?:\.|…)*$")    # "5", "5.", "5..."
 _NUMBER_LINE_RE = re.compile(r"^[0-9lIOS]{1,3}(?: [0-9lIOS])?(?: ?[.…•·]+)*$")
 _DOTS_RE = re.compile(r"^[.…•·]+$")
@@ -1577,6 +1578,23 @@ class _Builder:
                     and (self.starts_main(nxt) or _numbering_goes_on(words, out, i)
                          or (dots and j - i == 1))):
                 out[i:j] = ["m"] * (j - i)
+            i = j
+        # The converse: a move or two in the move font inside a sentence of
+        # the notes, between its move number and a move in the body font
+        # ("Also possible is 8 Nh4 Bd7", kia p43, the knight's move alone in
+        # the move font), belong to the note; else the note loses them and
+        # its number stands alone, and the main line takes them as its own
+        i = 0
+        while i < len(out):
+            if out[i] != "m" or i < 2 or out[i - 1] != "n" or out[i - 2] != "n":
+                i += 1
+                continue
+            j = i
+            while j < len(out) and out[j] == "m":
+                j += 1
+            if (j - i <= 2 and j < len(out) and _NOTE_NUMBER_RE.match(words[i - 1])
+                    and not _shape(words[i - 2]) and all(_shape(w) for w in words[i:j + 1])):
+                out[i:j] = ["n"] * (j - i)
             i = j
         # and a move number that starts the printed line in the body font
         # goes with the move after it in the move font ("7 C3", kia p100)
@@ -3997,8 +4015,20 @@ class _Builder:
             if base:
                 self.tidy(L, head)
         follows = state["last"] is not None and cue
+        if not follows and run.ply is not None and 0 < block <= len(L.main_tok):
+            # a number OCR printed so that it reads two ways ("s" is 5 or 8)
+            # goes where the moves printed before the note stand, rather than
+            # moves ahead of them, when it reads there
+            reach = self.node_ply(L.main_tok[block - 1][2])
+            if reach is not None and run.ply > reach + 1:
+                run = self.other_reading(L, run, block, state["vars"][block], reach + 1) or run
         placed = self.place(L, run, block, state["vars"][block],
                             only=state["last"] if follows else None)
+        if placed is not True and not follows:
+            alt = self.other_reading(L, run, block, state["vars"][block])
+            if alt is not None:
+                run = alt
+                placed = self.place(L, run, block, state["vars"][block])
         if placed is True:
             L.variations += 1
             state["last"] = state["vars"][block][-1]
@@ -4172,6 +4202,29 @@ class _Builder:
                       "next": (max(plies) + 1) if plies else None, "bracket": run.bracket,
                       "end": run.end})
         return True
+
+    def other_reading(self, L, run, block, vars_, limit=None):
+        """The note run read with another value of its first move number, as
+        OCR prints it ("s ..." is 8 or 5, "so" 80 or 50), when the run reads
+        cleanly there in L (at ply limit or before it, when given): else None."""
+        first = run.tokens[0] if run.tokens else None
+        if L.waiting or first is None or first.kind != "number" or first.number is None:
+            return None
+        for v in _number_values(first):
+            if v == first.number:
+                continue
+            for black in ((bool(first.black),) if first.side_known else (False, True)):
+                ply = 2 * (v - 1) + int(black)
+                alt = _renumbered(run, ply) if limit is None or ply <= limit else None
+                if alt is None:
+                    continue
+                for parent, _ in self.candidates(L, alt, block, vars_):
+                    fen = self.nodes[parent]["fen"]
+                    decs = self.dec.run(fen, alt.tokens) if fen else None
+                    if decs and _fit(decs)[0] == 0 and not any(
+                            d.capture_mark and d.san and "x" not in d.san for d in decs):
+                        return alt
+        return None
 
     def unread_reason(self, L, run, decs):
         """Tell an unreadable move apart from moves that are not legal there."""

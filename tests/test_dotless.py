@@ -121,6 +121,24 @@ def test_numbers_in_a_run_must_follow_on():
         (".*.xg7", 22, False), ("6xg7", 22, True), ("lld4", 23, False)]
 
 
+def test_ocr_letters_for_a_number_read_by_the_numbering_around_them():
+    # "s ..." is 5 or 8, "so" 50 or 80: outside a run, the number after the
+    # move tells which (kia p53 "after s ... Qxd5 6 Nc3"; p269 "After so ...
+    # Qe1+ 51 Nf1"), or else the numbering of the last run (p42 "5 g3. s ...
+    # Bd6"); with neither, the reading stays as it was
+    assert runs("5 exdS looks logical, when after s ... 'ifxds 6 tt:Jc3 i.b4")[1] == (
+        5, True, [("'ifxds", 5, True), ("tt:Jc3", 6, False), ("i.b4", 6, True)])
+    assert runs("After so ... 'ii'el+ 51 tLlfl there are no checks")[0][2] == [
+        ("'ii'el+", 50, True), ("tLlfl", 51, False)]
+    assert runs("4 ... lbc6 5 g3. s ... i.d6 Note that")[1] == (5, True, [("i.d6", 5, True)])
+    assert runs("8 ... Nc6 and so ... Bd6 Note that")[1] == (80, True, [("Bd6", 80, True)])
+    # a knight's junk and a capture, all small letters ("ltlxas" for Nxa5,
+    # kia p154), is a move, so that the game goes on to "so" (50) after it
+    assert runs("48 i..c4 lbxa2 49 ltlxas ltlb4 so ltlb3 .i.c6 51 :d2")[0][2][2:6] == [
+        ("ltlxas", 49, False), ("ltlb4", 49, True), ("ltlb3", 50, False), (".i.c6", 50, True)]
+    assert runs("he relaxes his grip") == []
+
+
 def test_narrow_table_layout():
     # the number on its own line, the move on the next; the number repeated
     # before Black's reply; a glyph that starts with a dot (".t" for a bishop)
@@ -168,7 +186,12 @@ def make_dotless_book(path, pages=PAGES):
         y = 70
         for kind, text in lines:
             font, size = STYLE[kind]
-            p.insert_text((40, y), text, fontsize=size, fontname=font)
+            # a line set in both fonts: (kind, [(kind, text), ...])
+            x = 40
+            for k2, part in (text if isinstance(text, list) else [(kind, text)]):
+                f2, s2 = STYLE[k2]
+                p.insert_text((x, y), part, fontsize=s2, fontname=f2)
+                x += pymupdf.get_text_length(part, f2, s2)
             y += size + 9
     doc.save(path)
     return path
@@ -255,6 +278,41 @@ def test_narrow_table_book(tmp_path):
     assert [book["nodes"][i]["san"] for i in ids] == [
         "e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1"]
     assert ["b5", "Bb3", "Bc5"] in _variations(book, ids[9])
+
+
+def test_a_note_move_set_in_the_move_font_after_its_number(tmp_path):
+    """OCR sets a move of a note in the move font now and then, its number
+    before it and the move after it in the body font ("Also possible is 8
+    Nh4 Bd7 (or 8 ... Bc7!?) 9 f4", kia p43): the move is the note's, so the
+    note reads on from its number and the main line does not take the move
+    as Black's reply (8...Nb4)."""
+    pages = [[(k, t) if "next chapter" not in t else
+              ("n", [("n", "In the next chapter we examine 5 "), ("m", "Bb5"),
+                     ("n", " Nd4 6 Nxd4, which is popular.")]) for k, t in PAGES[0]]]
+    pdf = make_dotless_book(tmp_path / "mixed.pdf", pages)
+    book = assemble.build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    games = [l for l in book["lines"] if l["start_fen"] == chess.STARTING_FEN]
+    ids = _main(book, games[0])
+    assert [book["nodes"][i]["san"] for i in ids][8:12] == ["Bc4", "e6", "f5", "Nge7"]
+    assert ["Bb5", "Nd4", "Nxd4"] in _variations(book, ids[8])
+
+
+def test_a_note_number_read_as_ocr_prints_it_where_the_line_has_a_place_for_it(tmp_path):
+    """OCR prints 5 as "s", which reads as 8 too ("s ... Bd6", kia p43,
+    p122): the note that the numbering around it does not settle goes where
+    one of its readings has a place in the line and its moves read there
+    (5...d6, not 8...d6 that the line never reaches)."""
+    pages = [[(k, t) for k, t in PAGES[0] if not t.startswith(("5 ... d6", "3 ... e6"))]]
+    k = pages[0].index(("m", "5 ... e6"))
+    pages[0][k + 1:k + 1] = [("n", "3 ... e6 transposes to 2 ... e6 3 f4 Nc6 in Chapter Three."),
+                             ("n", "Here s ... d6 is dubious, as Black loses a tempo.")]
+    pdf = make_dotless_book(tmp_path / "s.pdf", pages)
+    book = assemble.build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    games = [l for l in book["lines"] if l["start_fen"] == chess.STARTING_FEN]
+    ids = _main(book, games[0])
+    assert book["nodes"][ids[9]]["san"] == "e6"
+    assert ["d6"] in _variations(book, ids[9])
+    assert not any("d6" in u["text"] for u in book["unattached"])
 
 
 HEADING_PAGES = [

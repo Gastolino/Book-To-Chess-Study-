@@ -1279,9 +1279,13 @@ def _shape(w: str) -> Optional[str]:
         pre = core[:m.start()]
         if not (pre.isalpha() and pre.islower() and len(pre) >= 4):
             return "strong"
-    if core.isalpha() and core.islower() and (len(core) >= 6 or core[-1] in "acdefgh" or (
-            len(core) >= 4 and not re.search(r"[a-h£tqo][lIiSsBbGZz]$", core))):
-        return None          # a lowercase word ("and", "mate"), unless it ends like a square ("ttlel")
+    if core.isalpha() and core.islower() and (core[-1] in "acdefgh" or (
+            len(core) >= 4 and not re.search(r"[a-h£tqo][lIiSsBbGZz]$", core)) or (
+            len(core) >= 6 and not re.fullmatch(r"[^aeiouy]+x[a-h][lIiSsBbGZz]", core))):
+        # a lowercase word ("and", "mate"), unless it ends like a square
+        # ("ttlel"); a long one also, unless it is a glyph's junk and a
+        # capture, which have no vowel ("ltlxas" for Nxa5)
+        return None
     if (core.isalpha() and len(core) >= 3 and core[0].isupper() and core[1:].islower()
             and not _PIECE_WORD_RE.match(core)):
         return None          # a capitalised word, unless it reads as "Rel" (Re1) or "Ncb" (Nc6)
@@ -1588,13 +1592,34 @@ def _scan_number(text, pieces, i, st: Optional[_TokState], dotless: bool = False
     if not vals:
         return None
     num = vals[0]
+    black, known = _side(text, groups, rest)
     if st is not None and st.in_seq:
         exp_n, _ = st.expect()
         if exp_n in vals:
             num = exp_n
-    black, known = _side(text, groups, rest)
+    elif len(vals) > 1:
+        num = _fitting_value(text, pieces, j, rest, vals, black, st) or num
     start, end = digit_spans[0][0], groups[-1][1]
     return Token("number", text[start:end], start, end, num, black, known), j, rest
+
+
+def _fitting_value(text, pieces, j, rest, vals, black, st) -> Optional[int]:
+    """Which of a number's readings ("s" is 8 or 5, "so" 80 or 50) the text
+    around it gives, outside a run: the number printed after the move (or
+    after Black's reply to it) is the next one ("after s ... Qxd5 6 Nc3": 5),
+    or else the numbering of the last run goes on ("5 exd5 looks logical,
+    when after s ... Qxd5": 5). None when neither tells."""
+    k = j - 1 if rest is not None else j          # the piece of the move
+    nxt = _successor(text, pieces, k if black else k + 1, vals)
+    if nxt is not None:
+        return nxt
+    if st is not None and st.last_num is not None:
+        exp_n, exp_b = st.expect()
+        ply = 2 * (exp_n - 1) + int(exp_b)        # the move expected next, or the one after
+        fit = [v for v in vals if 0 <= 2 * (v - 1) + int(black) - ply <= 1]
+        if len(fit) == 1:
+            return fit[0]
+    return None
 
 
 MAX_DOTLESS = 200      # highest move number read without a dot
