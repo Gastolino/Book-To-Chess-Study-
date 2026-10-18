@@ -216,6 +216,71 @@ def test_partial_picture_is_skipped(tmp_path):
     assert res["p1-1"]["status"] == "partial" and res["p1-1"]["fen"] is None
 
 
+def test_board_drawn_partly_as_glyphs_over_its_picture(tmp_path):
+    """ClearScan (Brunthaler) keeps a scanned board as a picture and draws
+    part of it, grey squares and pieces, as glyphs of a font over the
+    picture, which then lacks them: p29's Day 91 picture holds neither its
+    queens nor most grey squares, and 41 of the book's boards were skipped
+    as partial. The board is what the page shows: the program reads the
+    page there. Here the pictures lose their grey squares, which the page
+    draws over them as grey glyphs of a font."""
+    rng = random.Random(4)
+    fens = []
+    for fen in positions(12, seed=11):
+        # the pieces stand on light squares only, so that the picture
+        # without its grey squares still shows every piece
+        b = chess.Board(fen + " w - - 0 1")
+        light = lambda s: (chess.square_file(s) + chess.square_rank(s)) % 2 == 1
+        others = [s for s in chess.SQUARES if b.piece_at(s) and b.piece_at(s).piece_type != chess.KING]
+        for s in rng.sample(others, max(0, len(others) - 12)):
+            b.remove_piece_at(s)            # a middlegame's pieces, not a full board
+        for s in chess.SQUARES:
+            if b.piece_at(s) and not light(s):
+                p = b.remove_piece_at(s)
+                free = [t for t in chess.SQUARES if light(t) and not b.piece_at(t)
+                        and not (p.piece_type == chess.PAWN and chess.square_rank(t) in (0, 7))]
+                b.set_piece_at(rng.choice(free), p)
+        fens.append(b.board_fen())
+    normal = positions(12, seed=12)
+    doc = pymupdf.open()
+    recs = []
+    n = 8 * SQ + 12
+    for k, fen in enumerate(normal + fens):
+        if k % 4 == 0:
+            page = doc.new_page(width=420, height=640)
+        glyphs = k >= len(normal)
+        img = draw_board(fen)
+        if glyphs:
+            img[img == 150] = 255           # the picture without its grey squares
+        ok, png = cv2.imencode(".png", img)
+        col, row = k % 2, (k % 4) // 2
+        rect = pymupdf.Rect(30 + 190 * col, 40 + 290 * row, 30 + 190 * col + 170, 40 + 290 * row + 170)
+        page.insert_image(rect, stream=png.tobytes())
+        if glyphs:
+            # ZapfDingbats "n" is a filled square 0.68 em wide
+            s = SQ * rect.width / n
+            fs = s / 0.66
+            for r in range(8):
+                for c in range(8):
+                    if (r + c) % 2:
+                        x = rect.x0 + (6 + c * SQ) * rect.width / n
+                        y = rect.y0 + (6 + r * SQ) * rect.width / n
+                        page.insert_text((x - 0.03 * fs - 0.2, y + s + 0.2), "n", fontname="zadb",
+                                         fontsize=fs, color=(150 / 255,) * 3)
+        recs.append({"page": doc.page_count, "rect": [round(v, 1) for v in rect],
+                     "pixels": [img.shape[1], img.shape[0]]})
+    pdf = tmp_path / "glyphs.pdf"
+    doc.save(pdf)
+    res = boards.read_book_boards(pdf, recs)
+    ids = [f"p{k // 4 + 1}-{k % 4 + 1}" for k in range(len(recs))]
+    over = {i: res[i] for i in ids[len(normal):]}
+    assert all(r["status"] != "partial" for r in over.values()), [r["status"] for r in over.values()]
+    sq, whole = score({f"p{k // 4 + 1}-{k % 4 + 1}": res[i] for k, i in enumerate(ids[len(normal):])}, fens)
+    assert sq >= 0.99 and whole >= 0.8, (sq, whole)
+    sq, whole = score(res, normal)
+    assert sq >= 0.995 and whole >= 0.9, (sq, whole)
+
+
 def test_wide_picture_of_a_whole_board_is_a_board(tmp_path):
     """ClearScan keeps a board with a white margin and its rank digits on the
     left as one picture wider than tall (The Art of Planning p32: 161.7 x

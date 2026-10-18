@@ -17,7 +17,7 @@ OCR's slips of shape that change no move ("cs" for c5, "Khl" for Kh1,
 "£4" for f4, "o-o" for castling, a space inside a square: "Ng4-e 3+", and
 ClearScan's signs for f3 and f1 after a figurine: "tLlo", "tLlfJ", "tLln")
 read as the square they show, and so does "C4" for c4 (the gpa and KIA
-text layers). In the scanned books (Planning, KIA, the Primer), a letter
+text layers). In the scanned books (Planning, KIA, the Primer, Brunthaler), a letter
 that OCR prints for a file but that is no file ("t", "H" or "U" for f, "k"
 for c) reads as that file only where the print, read literally, is no legal move in the position
 and the twin leaves the program's move as the one legal move it shows; a
@@ -118,7 +118,7 @@ def agrees(raw, san):
 
 # The scanned books, whose text layer is OCR's: only there may a letter be
 # another letter's twin.
-TWIN_BOOKS = {"planning", "kia", "primer"}
+TWIN_BOOKS = {"planning", "kia", "primer", "brunthaler"}
 
 # OCR's slips that change a square's letter into another square's letter
 # (b/h and c/e in ClearScan, "t" for f, "C" for c, "l" for 1, 2 or 7): such a
@@ -171,7 +171,7 @@ def glyph_pieces(book):
     return out
 
 
-def twin_agrees(raw, san, glyphs=None):
+def twin_agrees(raw, san, glyphs=None, frm=None):
     raw = _joined(_norm(raw)).replace("'", "")
     # a check's "t" and the marks after it ("i.xflt!") are no square, where
     # the print shows a square before them
@@ -186,7 +186,11 @@ def twin_agrees(raw, san, glyphs=None):
     if re.match(r"[a-h][1-8xsSlIiBZz]", raw) and not san[:1].islower():
         return False
     if re.match(r"[KQRBN][a-hx]", raw) and raw[:1] != (san[:1] if san[:1] in "KQRBN" else ""):
-        return False
+        # Brunthaler's text layer sets "K" for the bishop's figurine (p154
+        # prints "3.Bd2-f4#" where it reads "Kd2-f4#"): a bishop's move,
+        # where the print names the square the bishop comes from (frm)
+        if not (raw[0] == "K" and san[:1] == "B" and frm and raw[1:4] in (frm + "-", frm + "x")):
+            return False
     piece = san[:1] if san[:1] in "KQRBN" else "P"
     core = raw.rstrip("!?+#t ")
     if not squares(core) and re.search(r"[1-8]$", core):
@@ -215,9 +219,11 @@ def agrees_here(raw, san, fen, glyphs=None):
     import chess
     try:
         board = chess.Board(fen if len(fen.split()) > 4 else fen + " - 0 1")
-        legal = [board.san(m) for m in board.legal_moves]
+        moves = list(board.legal_moves)
+        legal = [board.san(m) for m in moves]
     except ValueError:
         return False
+    frm = {m: chess.square_name(mv.from_square) for m, mv in zip(legal, moves)}
     # a move the print shows literally blocks the twin readings, unless the
     # figurine's junk names another piece ("i.h6t", a bishop's, is no pawn's h6)
     sq = squares(_joined(_norm(raw)).replace("'", ""))
@@ -225,7 +231,7 @@ def agrees_here(raw, san, fen, glyphs=None):
     if any(agrees(raw, m) and (not want or (m[:1] if m[:1] in "KQRBN" else "P") == want)
            for m in legal):
         return False
-    return [m for m in legal if twin_agrees(raw, m, glyphs)] == [san]
+    return [m for m in legal if twin_agrees(raw, m, glyphs, frm[m])] == [san]
 
 
 def score(book, twins=False):

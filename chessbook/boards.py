@@ -58,6 +58,8 @@ import pymupdf
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 MAX_SIDE = 720         # larger pictures are scaled down to this shorter side first
+RENDER_SIDE = 560      # shorter side at least of a part of the page rendered as a board picture
+RENDER_BLUR = 0.2      # points: the blur of such a rendering
 N = 64                 # pixels per square in the normalised board
 G = 32                 # pixels per square side of a drawing's grouping feature
 TYPES = "PNBRQK"
@@ -107,6 +109,7 @@ class Pictures:
     def __init__(self, doc):
         self.doc = doc
         self.pages = {}
+        self.glyphs = {}
 
     def images(self, pno):
         if pno not in self.pages:
@@ -114,10 +117,29 @@ class Pictures:
             self.pages[pno] = list(imgs.values())
         return self.pages[pno]
 
-    def gray(self, rec):
+    def overdrawn(self, pno, r):
+        """True when the page prints visible glyphs (their middle) inside
+        the rect r, over the picture there: OCR's invisible text does not
+        count."""
+        if pno not in self.glyphs:
+            boxes = []
+            try:
+                spans = self.doc[pno - 1].get_texttrace()
+            except (RuntimeError, ValueError, AttributeError):
+                spans = []
+            for s in spans:
+                if s.get("type") == 3 or s.get("opacity", 1) == 0:
+                    continue
+                boxes.extend(ch[3] for ch in s.get("chars") or ())
+            self.glyphs[pno] = boxes
+        return any(r.x0 <= (b[0] + b[2]) / 2 <= r.x1 and r.y0 <= (b[1] + b[3]) / 2 <= r.y1
+                   for b in self.glyphs[pno])
+
+    def gray(self, rec, render=False):
         """The part of the page that rec["rect"] covers, as a grey array at
         about the resolution of the embedded picture (at most MAX_SIDE pixels
-        on its shorter side)."""
+        on its shorter side). With render, the page as it is printed there,
+        whatever it draws over the picture."""
         r = pymupdf.Rect(rec["rect"])
         px = list(rec.get("pixels") or [0, 0])
         page = self.doc[rec["page"] - 1]
@@ -153,6 +175,16 @@ class Pictures:
                         x1, y1 = int(min(W, round((r.x1 - box.x0) * kx))), int(min(H, round((r.y1 - box.y0) * ky)))
                         if x1 - x0 > 8 and y1 - y0 > 8:
                             g = full[y0:y1, x0:x1]
+        if g is not None and render:
+            # that part of the page rendered at the picture's resolution at
+            # least, and finer where the picture is coarse: the glyphs drawn
+            # over it have hairline outlines, which a coarse rendering greys
+            h, w = g.shape
+            zoom = max(w / max(1.0, r.width), h / max(1.0, r.height), RENDER_SIDE / max(1.0, min(r.width, r.height)))
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=r, colorspace=pymupdf.csGRAY)
+            # a light blur merges the dots of a stippled grey square, as
+            # the scanned picture's own grey squares are smooth
+            g = cv2.GaussianBlur(_gray_from_pixmap(pix), (0, 0), RENDER_BLUR * zoom)
         if g is None:
             # a rotated or unusual picture: render that part of the page
             zoom = (px[0] / max(1.0, r.width)) if px[0] else 3.0
@@ -929,7 +961,30 @@ def picture_cells(pics, rec):
         g = pics.gray(rec)
     except (RuntimeError, ValueError):
         g = None
-    return board_cells(g)
+    r = board_cells(g)
+    if g is None:
+        return r
+    # ClearScan draws part of a scanned board (pieces, grey squares) as a
+    # font over the picture it leaves behind: where the page prints glyphs
+    # over the board (or over the picture, where it shows no whole board),
+    # the board is what the page shows there
+    box = pymupdf.Rect(rec["rect"])
+    if r["grid"] is not None:
+        x0, y0, s = r["grid"]
+        h, w = g.shape
+        kx, ky = box.width / w, box.height / h
+        box = pymupdf.Rect(box.x0 + x0 * kx, box.y0 + y0 * ky,
+                           box.x0 + (x0 + 8 * s) * kx, box.y0 + (y0 + 8 * s) * ky)
+    else:
+        box = pymupdf.Rect(box.x0 + 3, box.y0 + 3, box.x1 - 3, box.y1 - 3)
+    if pics.overdrawn(rec["page"], box):
+        try:
+            r2 = board_cells(pics.gray(rec, render=True))
+        except (RuntimeError, ValueError):
+            r2 = None
+        if r2 is not None and r2["grid"] is not None:
+            r = dict(r2, rendered=True)
+    return r
 
 
 def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None, cells=None):
@@ -1002,7 +1057,13 @@ def read_book_boards(pdf, diagrams, known=None, ids=None, progress=None, cells=N
                        "known": Counter()})
     pieces = [g for g in groups if g["kind"] == "piece"]
     if pieces:
-        thr = _otsu_split([g["white_share"] for g in pieces], [len(g["members"]) for g in pieces])
+        # the divide between White's and Black's drawings is learnt from the
+        # book's own pictures; boards rendered from the page (picture_cells)
+        # follow it, so that they do not move it
+        own = [sum(1 for b, _ in g["members"] if not boards[b].get("rendered")) for g in pieces]
+        if not sum(own):
+            own = [len(g["members"]) for g in pieces]
+        thr = _otsu_split([g["white_share"] for g in pieces], own)
     else:
         thr = 0.5
     for g in groups:
