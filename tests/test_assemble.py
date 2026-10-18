@@ -672,6 +672,43 @@ def test_a_black_move_that_ocr_set_in_the_body_font_after_its_number(tmp_path):
     assert all(book["nodes"][i]["status"] == "ok" for i in ids)
 
 
+def test_a_note_with_one_unreadable_move_is_placed(tmp_path):
+    """A note run of three moves with one move that OCR left as junk
+    ("7...Zq9", kia p22 "20 'iWh5 i.xg5 21 i.f5!!") stood in no line for that
+    one move. Only 7...Kg6 lets 8.Bd3+ Kh6 follow, at the one place the run's
+    numbering gives: the run is placed, the junk move failed (red) and
+    assumed to be Kg6, and the moves after it read as printed."""
+    pdf = make_book(tmp_path / "little.pdf", ocr=True, note7="Or 7...Zq9 8.Bd3+ Kh6, and White wins.")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    assert not [u for u in book["unattached"] if "Zq9" in u["text"]], book["unattached"]
+    bad = next(n for n in book["nodes"].values() if n.get("raw") == "Zq9")
+    assert bad["status"] == "failed" and bad["assumed"] == "Kg6" and not bad["main"]
+    after = book["nodes"][bad["children"][0]]
+    assert (after["san"], after["status"]) == ("Bd3+", "ok")
+    last = book["nodes"][after["children"][0]]
+    assert (last["san"], last["status"]) == ("Kh6", "ok")
+    assert book["nodes"][bad["parent"]]["san"] == "Qf3+"
+
+
+def test_a_note_with_one_unreadable_move_and_two_places_stays_out(tmp_path):
+    """The same kind of run stays out where its unreadable move would make it
+    read at two places: "7...Zq9 8.Qxf6+ gxf6" reads after 7.Qf3+ of the game
+    (7...Qf6) and after 6...Ke7 7.Qf3 of the variation before it (7...Nf6),
+    and which one the book means the junk cannot tell. Nor does it go where
+    the square printed in the junk ("Zqh2") is not the one move that the
+    rest reads on from (7...Kg6), and no move goes to that square."""
+    for k, note7 in enumerate(("6...Ke7 7.Qf3 Be6; 7...Zq9 8.Qxf6+ gxf6",
+                               "Or 7...Zqh2 8.Bd3+ Kh6, and White wins.")):
+        sub = tmp_path / str(k)
+        sub.mkdir()
+        pdf = make_book(sub / "little.pdf", ocr=True, note7=note7)
+        book = build_book(pdf, output_dir=sub / "output", books_dir=sub / "books")
+        junk = note7.split("7...")[-1].split()[0]
+        assert [u for u in book["unattached"] if junk in u["text"]], note7
+        assert not [n for n in book["nodes"].values() if n.get("raw") == junk]
+        assert not [n for n in book["nodes"].values() if not n["main"] and n.get("number") == 8]
+
+
 def test_a_black_move_printed_without_its_number_after_a_heading(tmp_path):
     """A book of questions and answers resumes the game after the answer with
     Black's move alone, in the move font, its number left out ("QUESTION:

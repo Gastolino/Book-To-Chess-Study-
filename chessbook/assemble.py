@@ -1319,6 +1319,67 @@ def _fit(decs):
     return (2, failed, mean)
 
 
+def _reads_with(decs):
+    """True when decs, the moves of a run but its unreadable one, read as
+    they would let the run be placed were that move readable (see place,
+    _fit): none failed, at most 2.0 dear on average, and no printed capture
+    read as a quiet move."""
+    moves = [d for d in decs if d.status != "joined"]
+    if not moves or any(d.status == "failed" for d in moves):
+        return False
+    if any(d.capture_mark and d.san and "x" not in d.san for d in moves):
+        return False
+    return sum(d.cost for d in moves) / len(moves) <= 2.0
+
+
+def _sure(decs):
+    """True when decs, the moves of a run but its unreadable one, each read
+    as printed, but for a slip of a sign (a check or capture mark): one
+    reading at most 1.0 dear, with the piece glyph printed."""
+    return _reads_with(decs) and all(
+        d.status == "joined" or (d.status == "ok" and d.cost <= 1.0 and not d.glyph_lost)
+        for d in decs)
+
+
+# the square that ends a move token, with OCR's usual slips of its rank
+# ("hs" for h5, "gl" for g1; not S or B, read as 5 or 8) and the signs after it
+_END_SQUARE_RE = re.compile(r"([a-h£])([1-8lIs])[+#!?t]*$")
+_RANK_SLIPS = str.maketrans({"l": "1", "I": "1", "s": "5"})
+
+
+def _end_square(raw):
+    """The destination square printed at the end of a move token, or None."""
+    m = _END_SQUARE_RE.search((raw or "").strip())
+    if not m:
+        return None
+    return chess.parse_square(m.group(1).replace("£", "f") + m.group(2).translate(_RANK_SLIPS))
+
+
+def _numbers_fit(fen, moves, decs):
+    """True when the printed move numbers of moves fall on the plies that
+    decs, played from fen, give them (by one shift, for a line whose
+    position carries no move number of its own)."""
+    board = chess.Board(fen)
+    shift = None
+    for t, d in zip(moves, decs):
+        if d.status == "joined":
+            continue
+        if t.number is not None:
+            s = board.ply() - ((t.number - 1) * 2 + int(bool(t.black)))
+            if shift is None:
+                shift = s
+            elif s != shift:
+                return False
+        san = d.san or (d.alternatives[0] if d.alternatives else None)
+        if san is None:
+            return d is decs[-1]
+        try:
+            board.push_san(san)
+        except ValueError:
+            return False
+    return True
+
+
 class _Builder:
     def __init__(self, doc, fonts, chapters, diagrams, selection, decoder, diagram_fens=None,
                  dotless=False, readings=None, fix=None, shapes=None):
@@ -4094,10 +4155,14 @@ class _Builder:
                 if f[0] == 1 and (best is None or f < best[0]):
                     best = (f, parent, decs)
             if best is None:
-                return False, self.unread_reason(L, run, tried)
-            _, parent, decs = best
-            if not self.replaying:
-                self.dec.accepted.append(decs)
+                hit = self.repair_place(run, cands)
+                if hit is None:
+                    return False, self.unread_reason(L, run, tried)
+                parent, decs = hit
+            else:
+                _, parent, decs = best
+                if not self.replaying:
+                    self.dec.accepted.append(decs)
             nodes = self.insert_decoded(L, parent, run, decs)
         plies = {}
         for nid in nodes:
@@ -4120,6 +4185,77 @@ class _Builder:
             return (f"the program could not read its move \"{_shown(bad.raw)}\"{where} of the "
                     f"line \"{L.title}\"")
         return None
+
+    # A note run of three moves or more with one move that cannot be read
+    # (OCR's junk, "'iWh5") reads nowhere cleanly, and would stand in no line
+    # for that one move. It is placed, the unreadable move failed (red), only
+    # where the evidence is strong: its other moves read as printed and fall
+    # where their numbers put them, exactly one legal move in its place (to
+    # the square it prints, where that square is legible) lets the moves
+    # after it read on, and no other place of the run reads so. A token that
+    # reads as a move, only not a legal one there, says the place is wrong.
+    def repair_place(self, run, cands):
+        """(parent, decoded moves) for a note run that reads at exactly one of
+        its candidate places with one unreadable move (see repair_run), or None."""
+        if len(run.moves) < 3:
+            return None
+        hits = {}
+        for parent, _ in cands:
+            fen = self.nodes[parent]["fen"]
+            if fen is None or parent in hits:
+                continue
+            fixed = self.repair_run(run, fen, self.dec.run(fen, run.tokens))
+            if fixed is not None:
+                hits[parent] = fixed
+                if len(hits) > 1:
+                    return None
+        return next(iter(hits.items()), None)
+
+    def repair_run(self, run, fen, decs):
+        """decs, decoded from fen, with its one unreadable move given the one
+        legal move that the rest of the run reads on from as its alternative
+        (the node assumes it, and stays failed): None unless the run reads so
+        beyond doubt. As the run's last move, the unreadable move assumes the
+        one legal move to the square it prints, or none."""
+        bad = [i for i, d in enumerate(decs) if d.status == "failed"]
+        if len(bad) != 1 or len(decs) != len(run.moves):
+            return None
+        i = bad[0]
+        if _plain_move(decs[i].raw) or readable_move(decs[i].raw, self.dec.glyphs, self.dec.letters):
+            return None             # a move that reads, only not here: the place is wrong
+        head = decs[:i]
+        if not _sure(head + decs[i + 1:]):
+            return None
+        board = chess.Board(fen if i == 0 else decs[i - 1].fen)
+        tok = run.moves[i]
+        at = next(k for k, t in enumerate(run.tokens) if t is tok)
+        tail = run.tokens[at + 1:]
+        legible = _end_square(tok.raw)
+        if not any(t.kind == "move" for t in tail):
+            # the run's last move: a move only where it prints a square, and
+            # one legal move goes there ("hits f7" and "mates" are words)
+            reps = [board.san(m) for m in board.legal_moves
+                    if legible is not None and m.to_square == legible]
+            if i < 2 or len(reps) != 1 or len(tok.raw.split()) != 1:
+                return None
+            out = head + [replace(decs[i], alternatives=reps)]
+            return out if _numbers_fit(fen, run.moves, out) else None
+        if _reads_with(head + self.dec.run(board.fen(), tail, keep=False)):
+            return None             # the token may be no move at all
+        reps = {}
+        for m in board.legal_moves:
+            if legible is not None and m.to_square != legible:
+                continue
+            board.push(m)
+            after = self.dec.run(board.fen(), tail, keep=False)
+            board.pop()
+            if _reads_with(head + after):
+                reps[board.san(m)] = after
+        if len(reps) != 1:
+            return None             # no move, or several, that the rest reads on from
+        (san, after), = reps.items()
+        out = head + [replace(decs[i], alternatives=[san])] + after
+        return out if _sure(after) and _numbers_fit(fen, run.moves, out) else None
 
     def insert_waiting(self, L, parent, run):
         """Waiting moves under parent. Moves that repeat the line's moves (the
