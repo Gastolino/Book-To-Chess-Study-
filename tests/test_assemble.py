@@ -83,6 +83,19 @@ class _Writer:
             x += pymupdf.get_text_length(text, font, 10)
         self.y += 13
 
+    def number_apart(self, number, rest):
+        """A move number and the rest of its printed line ("5." / ". . . Nxd5")
+        that the text layer holds as two lines: OCR set the dots in a font of
+        their own, under the number's trailing space (primer p271 "41. ••
+        gg8"). The rest is written first, so that the number, written after
+        it and to its left, starts a line of its own."""
+        x = self.x0 + pymupdf.get_text_length(number + " ", "tibo", 10) - 2
+        self.pg.insert_text((x, self.y), "\u2022 \u2022 ", fontname="helv", fontsize=4)
+        x += pymupdf.get_text_length("\u2022 \u2022 ", "helv", 4)
+        self.pg.insert_text((x, self.y), rest, fontname="tibo", fontsize=10)
+        self.pg.insert_text((self.x0, self.y), number + " ", fontname="tibo", fontsize=10)
+        self.y += 13
+
     def prose(self, n=None, until=None):
         k = 0
         while (n is None or k < n) and (until is None or self.y < until):
@@ -129,6 +142,8 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
     def put(text, bold, indent=0):
         if isinstance(text, str):
             w.line(text, bold=bold, indent=indent)
+        elif isinstance(text, tuple):
+            w.number_apart(*text)
         else:
             w.mixed(text, indent)
 
@@ -666,6 +681,22 @@ def test_a_black_move_printed_without_its_number_after_a_heading(tmp_path):
     game = ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5", "Nxd5 6.Nxf7 Kxf7 7.Qf3+ Ke6",
             "8.Nc3"]
     pdf = make_book(tmp_path / "little.pdf", game=game, note5="ANSWER:")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    g = line_titled(book, "Smith - Jones")
+    ids = main_line(book, g)
+    assert sans(book, ids) == MAIN_SAN
+    assert all(book["nodes"][i]["status"] == "ok" for i in ids)
+
+
+def test_a_black_move_number_whose_dots_the_text_layer_sets_apart(tmp_path):
+    """OCR sets the dots of Black's move number in a font of their own, which
+    the text layer holds as a line apart from the number ("41." / "• • gg8
+    42.ge6", primer p271; "21." / "• • £5", p316): the number alone on its
+    line is a move number, not the number of an exercise, and the move after
+    the dots goes into the main line, which would else break there."""
+    game = ["1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6", "4.Ng5 d5 5.exd5",
+            ("5.", "Nxd5 6.Nxf7 Kxf7 7.Qf3+ Ke6"), "8.Nc3"]
+    pdf = make_book(tmp_path / "little.pdf", game=game)
     book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
     g = line_titled(book, "Smith - Jones")
     ids = main_line(book, g)
