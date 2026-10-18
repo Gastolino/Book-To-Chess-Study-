@@ -1953,6 +1953,14 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
             st.in_seq, st.prev = False, "result"
             i += 1
             continue
+        if (w == ":" and st.in_seq and st.prev == "move" and i + 1 < len(pieces)
+                and _shape(text[pieces[i + 1][0]:pieces[i + 1][1]]) == "strong"):
+            # a colon set apart between two moves joins them ("13.dxc5!? :
+            # Nxc3! The knight ... 14.bxc3"): the reply printed after it
+            # without its number is the run's next move
+            other(s, e, layout=True)
+            i += 1
+            continue
         if w in "([{)]}" or (len(w) == 1 and w.isalpha() and text[e:e + 1] == ")"
                              and (s == 0 or text[s - 1] in " \n(")):
             other(s, e)                          # a label of a list of lines: "A) 8.Be4"
@@ -2153,6 +2161,10 @@ def uses_dotless_numbers(texts: Iterable[str]) -> bool:
 # Sequences
 # ---------------------------------------------------------------------------
 _PAREN_LIFE = 600
+# A square bracket set apart holds a long note, often a page of prose and
+# lines ("[ Topalov may have been better off ... ] 13...cxd4"): it stays open
+# longer (one glued to a word may be OCR's "[f" for "If").
+_SQUARE_LIFE = 3000
 
 
 def _number_values(tok: Token) -> list:
@@ -2195,11 +2207,15 @@ def find_sequences(text: str, lenient: bool = False, dotless: bool = False,
     toks = tokenize(text, lenient, dotless, exact)
     seqs: list[Sequence] = []
     opens: list[int] = []        # offsets of open parentheses
+    kinds: list[str] = []        # their characters
+    lives: list[int] = []        # how long each stays open
     cur: Optional[dict] = None
 
     def depth_at(pos):
-        while opens and pos - opens[-1] > _PAREN_LIFE:
+        while opens and pos - opens[-1] > lives[-1]:
             opens.pop()
+            kinds.pop()
+            lives.pop()
         return len(opens)
 
     def close():
@@ -2231,12 +2247,23 @@ def find_sequences(text: str, lenient: bool = False, dotless: bool = False,
                 close()
                 depth_at(t.start)
                 opens.append(t.start)
+                kinds.append(t.raw)
+                lives.append(_SQUARE_LIFE if t.raw == "[" and text[t.end:t.end + 1].isspace()
+                             else _PAREN_LIFE)
                 continue
             if t.raw in ")]}":
                 close()
+                # a closing bracket closes its own kind, and any left open
+                # inside it ("[ ... ( ... ]")
+                want = "([{"[")]}".index(t.raw)]
+                k = len(kinds) - 1 - kinds[::-1].index(want) if want in kinds else len(kinds) - 1
                 if opens:
-                    opens.pop()
+                    del opens[k:], kinds[k:], lives[k:]
                 continue
+            if "]" in t.raw and "[" not in t.raw and "[" in kinds:
+                # a square bracket closed on a word ("[of his game ... 1957].")
+                k = len(kinds) - 1 - kinds[::-1].index("[")
+                del opens[k:], kinds[k:], lives[k:]
             close()
             continue
         if t.kind == "result":

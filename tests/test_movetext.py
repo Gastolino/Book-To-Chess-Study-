@@ -336,6 +336,27 @@ def test_nested_parentheses():
                    (12, True, 0)]
 
 
+def test_a_long_square_bracket_stays_open_and_a_colon_joins_moves():
+    """A note in square brackets runs on for a page (alekhine p27: "[ Topalov
+    may have been better off entering the firestorm with 13.dxc5!? : Nxc3!
+    ... 16.Qxe1 ( ... ) 16...Qxd3 17.Ne5! ... ]"): its runs keep their depth
+    past a long comment and a closed parenthesis; and a colon set apart
+    between two moves joins them."""
+    prose = "The knight addresses the white queen with offensive brashness. " * 12
+    text = (f"13.Be4 [ 13.dxc5!? : Nxc3! {prose} 14.bxc3 Bxc3 15.Bh6 Bxe1 16.Qxe1 "
+            f"( 16.Bxf8 Kxf8 ) 16...Qxd3 17.Ne5! ] 13...cxd4")
+    got = [(s.first_number, s.black_first, s.depth, [t.raw for t in s.moves])
+           for s in find_sequences(text)]
+    assert got == [
+        (13, False, 0, ["Be4"]),
+        (13, False, 1, ["dxc5!?", "Nxc3!"]),
+        (14, False, 1, ["bxc3", "Bxc3", "Bh6", "Bxe1", "Qxe1"]),
+        (16, False, 2, ["Bxf8", "Kxf8"]),
+        (16, True, 1, ["Qxd3", "Ne5!"]),
+        (13, True, 0, ["cxd4"]),
+    ]
+
+
 def test_run_side_settled_by_later_number():
     # "37.." could be either side; "3 8." two moves later shows it was White
     text = "37..1':!:d7 l:txd7 3 8.Axc4 bc4"

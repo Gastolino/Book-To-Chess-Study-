@@ -363,8 +363,14 @@ _MOVE_ONE_RE = re.compile(r"^(?:[0-9lI]{1,3} ?[.…•·]|[0-9lI]{1,2}$|[1lI]J[^
 # than moves played or recommended: such runs are not variations.
 _THREAT_RE = re.compile(
     r"\b(?:threat\w*|prepar(?:es|ing|ed) to|wants? to|wanting to|plans?|planning|"
-    r"intend\w*(?! to (?:play|continue|answer|meet))|resulting from|with the idea|aim\w* (?:at|to))\b", re.I)
+    r"intend(?!ed\b)\w*(?! to (?:play|continue|answer|meet))|resulting from|with the idea|aim\w* (?:at|to))\b", re.I)
 THREAT_REASON = "the text gives these moves as a threat or a plan, not as moves played"
+# The words that make "plan" a verb before it ("Black plans 12...Nd7"); after
+# any other word it is the noun, and the numbered moves right after it
+# ("falls in with White's plans: 12 Qh4 f6", "the normal plan 11...Bg4") are
+# the line the plan is, read as moves (see is_threat).
+_PLAN_SUBJECTS = {"white", "black", "he", "she", "who", "i", "we", "they", "it", "which", "that",
+                  "and", "also", "now", "then", "still"}
 # A threat the text says was made before the move it follows ("White was
 # threatening", "the threat was", "White threatened"), or that the move
 # answers ("Black meets the threat of 34 Nxe7 mate").
@@ -392,6 +398,11 @@ _BARE_CUE_RE = re.compile(
 # goes on after it ("b5, and then 11.Bb3", "b5 and if 11.Bb3").
 _BARE_JOIN_WORDS = {"and", "then", "now", "if", "when", "after", "followed", "by", "with",
                     "next", "whereupon", "where", "e.g.", "eg", "say"}
+# The clause between a bare move after "if" and the numbered run that answers
+# it: "If Ke2 White can play 70.Kxc4!" (see bare_move_before).
+_BARE_REPLY_RE = re.compile(r"\s(?:White|Black|he|she)\s+(?:(?:can|could|may|might|should|must|will|"
+                            r"would)\s+)?(?:play|plays|reply|replies|answer|answers|continue|"
+                            r"continues|respond|responds|draws|wins)(?:\s+with)?\s*$")
 # Words that tie a run without a move number to the move it replaces.
 _ALT_CUE_RE = re.compile(r"\b(?:instead|better|stronger|weaker|preferable|worse|"
                          r"alternatively|or)\b", re.I)
@@ -2445,6 +2456,10 @@ class _Builder:
         if not hits:
             return False
         tail = lead[hits[-1].end():]
+        if hits[-1].group().lower() in ("plan", "plans") and tail.strip() in ("", ":"):
+            before = lead[:hits[-1].start()].split()
+            if before and before[-1].lower().strip(",;") not in _PLAN_SUBJECTS:
+                return False             # the noun: "White's plans: 12 Qh4 f6"
         if ")" in tail:
             return False                 # the threat was given in brackets before the run
         if _MOVE_STOP_RE.search(tail):
@@ -4626,6 +4641,13 @@ class _Builder:
         k = len(words) - 1
         while k >= 0 and words[k].group().lower().strip(",;") in _BARE_JOIN_WORDS:
             k -= 1
+        reply = _BARE_REPLY_RE.search(text[lo:hi])
+        if reply is not None:
+            # "If Ke2 White can play 70.Kxc4!": the clause names who answers
+            # the bare move, which a word such as "if" puts before it
+            k = sum(1 for w in words if w.start() < reply.start()) - 1
+            if k < 1 or words[k - 1].group().lower() not in ("if", "after", "when"):
+                return None
         if k < 0:
             return None
         w = words[k].group()

@@ -787,6 +787,58 @@ def test_a_threat_that_no_longer_reads_stays_in_no_line(tmp_path):
     assert len(qf7) == 1 and book["nodes"][qf7[0]]["parent"] == ids[13]
 
 
+def _variation_after(book, parent, want):
+    """The moves of want (SAN) as a chain of nodes from parent, or None."""
+    nodes, cur = book["nodes"], parent
+    for san in want:
+        kids = [k for k in nodes[cur]["children"] if nodes[k].get("san") == san]
+        if len(kids) != 1 or nodes[kids[0]]["status"] != "ok":
+            return None
+        cur = kids[0]
+    return cur
+
+
+@pytest.mark.parametrize("note5", [
+    # alekhine p27 "13.dxc5!? : Nxc3! The knight addresses ... 14.bxc3"
+    "Safer is 5...Na5 6.Bb5+ : c6 and Black holds.",
+    # alekhine p10 "69.Ra1! and Black can't make progress. If Ke2 White can play 70.Kxc4!"
+    "Safer is 5...Na5 6.Bb5+ and the bishop pins. If c6 White can play",
+    # gpa p45 "11...0-0 ... falls in with White's plans: 12 Qh4 f6"
+    "Safer is 5...Na5, which falls in with White's plans: 6.Bb5+ c6",
+])
+def test_an_unnumbered_reply_or_a_plan_goes_on_with_its_variation(tmp_path, note5):
+    """A reply printed without its number, set after a colon ("6.Bb5+ : c6")
+    or after "if" with the side that answers it ("If c6 White can play
+    7.dxc6"), is the variation's next move, so that the numbered moves after
+    it go on from it; and numbered moves right after the noun "plans" are
+    the line the plan is, not a threat that stays in no line."""
+    pdf = make_book(tmp_path / "little.pdf", note5=note5)
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN
+    assert _variation_after(book, ids[8], ["Na5", "Bb5+", "c6", "dxc6", "bxc6"]), \
+        [(u["text"], u["reason"]) for u in book["unattached"]]
+
+
+def test_moves_a_player_intended_are_a_variation_and_a_plan_stays_out(tmp_path):
+    """Moves the text says a player intended ("Fischer probably intended
+    29.hxg6 hxg6", tangborn p17) are a variation from where they would have
+    been played, while a plan that skips the replies ("White's plan is 9.d4
+    and 10.Bf4") stays in no line."""
+    pdf = make_book(tmp_path / "little.pdf", note7="Black probably intended 7...Kg8 8.Qxd5+.")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    ids = main_line(book, line_titled(book, "Smith - Jones"))
+    assert sans(book, ids) == MAIN_SAN
+    assert _variation_after(book, ids[12], ["Kg8", "Qxd5+"])
+    pdf = make_book(tmp_path / "plan.pdf", note7="White's plan is 9.d4 and 10.Bf4.")
+    book = build_book(pdf, output_dir=tmp_path / "output2", books_dir=tmp_path / "books2")
+    assert sans(book, main_line(book, line_titled(book, "Smith - Jones"))) == MAIN_SAN
+    sans_all = [n.get("san") for n in book["nodes"].values()]
+    assert "Bf4" not in sans_all
+    reasons = {u["text"]: u["reason"] for u in book["unattached"]}
+    assert any("10.Bf4" in t and "plan" in r for t, r in reasons.items()), reasons
+
+
 CHAPTER_GAMES = [GAME_EN,
                  ["1.d4 d5 2.c4 e6 3.Nc3 Nf6", "4.Bg5 Be7 5.e3 O-O", "6.Nf3 Nbd7 7.Rc1 c6",
                   "8.Bd3"],
