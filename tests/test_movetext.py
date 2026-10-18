@@ -631,3 +631,24 @@ def test_bench_smoke(tmp_path):
         st2 = results[(notation, "medium")][2]
         assert st2["games"] == 20
         assert st2["correct"] / st2["moves"] >= 0.97
+
+
+def test_a_number_glued_to_the_junk_of_a_knight():
+    """KIA's OCR glues a move number to the knight's junk, which starts with
+    an "l" ("16lL'lf6+!" for 16 Nf6+!): the number is 16, not 161, and so
+    for "3oJ:k5!" (30 Rc5!) where the run expects 30."""
+    from chessbook.movetext import tokenize
+    toks = tokenize("Answer: 16lL'lf6+! when if 16 ... gxf6? 17 exf6", dotless=True)
+    assert [(t.kind, t.raw, t.number) for t in toks[1:3]] == [
+        ("number", "16", 16), ("move", "lL'lf6+!", 16)]
+    toks = tokenize("29 h4 a5 3oJ:k5!", dotless=True)
+    assert [(t.raw, t.number) for t in toks[-2:]] == [("3o", 30), ("J:k5!", 30)]
+
+
+def test_a_queen_move_with_its_mark_read_as_l():
+    """"26 Wbsl" (26 Qb5!, the 5 read as "s" and the "!" as "l") is a move,
+    so the run goes on to it and the move before it (".iLcs", Bc5) is kept."""
+    from chessbook.movetext import tokenize
+    toks = tokenize("24 h4 1Le7 25 lZlce3 .iLcs 26 Wbsl\n\n  ", dotless=True, lenient=True)
+    assert [(t.kind, t.raw) for t in toks[-3:]] == [("move", ".iLcs"), ("number", "26"),
+                                                    ("move", "Wbsl")]
