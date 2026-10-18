@@ -295,6 +295,9 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 VERSION = 1
 
 STATUSES = ("ok", "guessed", "ambiguous", "failed", "inserted", "waiting")
+# A move read through a slip of its square or capture mark (Decoded.slip) is
+# doubtful when the line went wrong, or began at a diagram, this many plies before it.
+SLIP_DOUBT_PLIES = 4
 _LINE_RANK = {"ok": 0, "inserted": 1, "guessed": 1, "ambiguous": 2, "failed": 3}
 NOTE_BREAK = "¶"           # stands where main-font words were blanked from the notes
 WAIT_REASON = "needs the diagram position (Stage 3)"
@@ -3546,6 +3549,11 @@ class _Builder:
             if d.alternatives:
                 self.nodes[nid]["alternatives"] = list(d.alternatives[:4])
             said = self.misread_move(tok) if tok.prefer == d.san else None
+            if d.status == "ok" and d.slip and not said and not tok.forced \
+                    and self.doubt_before(L, parent):
+                # a misread square or capture mark where the line may have gone
+                # wrong: the move the print names may be the line's, not this
+                self.nodes[nid]["status"] = "guessed"
             if said:
                 # a diagram after it chose the move: a guess against the text
                 self.nodes[nid].update(status="guessed", alternatives=[said])
@@ -3575,6 +3583,25 @@ class _Builder:
             self.nodes[nid]["key"] = fixes.token_key(page, box, tok.raw)
         out.append(nid)
         return out, False
+
+    def doubt_before(self, L, nid, plies=SLIP_DOUBT_PLIES):
+        """True when line L up to its node nid may have gone wrong: one of its
+        last plies moves is failed, assumed, guessed or ambiguous, or it starts
+        from a diagram's position (whose squares or side to move may be
+        misread) fewer moves before."""
+        for _ in range(plies):
+            n = self.nodes.get(nid)
+            if n is None:
+                return False
+            if n["parent"] is None:
+                if n["line"] != L.id:
+                    L = next((x for x in self.lines if x.id == n["line"]), None)
+                return bool(L is not None and L.diagram)
+            if n["status"] in ("failed", "guessed", "ambiguous") or n.get("assumed") \
+                    or n.get("corrected") == "assumed":
+                return True
+            nid = n["parent"]
+        return False
 
     def child_with(self, parent, san):
         for c in self.nodes[parent]["children"]:

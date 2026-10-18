@@ -540,6 +540,27 @@ def test_type_set_book_keeps_its_printed_squares(tmp_path):
                    for n in book["nodes"].values())
 
 
+def test_misread_square_after_a_doubtful_move_is_not_certain(tmp_path):
+    """OCR's slip of a square ("Qf8+" read as Qf3+, the 8 for a 3) or of a
+    capture mark is a reading of the move, but where the line went doubtful
+    a few moves before it ("xd5", Nxd5 guessed), the move the print names
+    may be the line's, and the line may have gone wrong: the move is shown
+    guessed, not ok. The same slip in a line read without doubt stays ok."""
+    def statuses(tmp, fifth):
+        tmp.mkdir()
+        game = [GAME_EN[0], "4.Ng5 d5 5.exd5 " + fifth, "6.Nxf7 Kxf7 7.Qf8+ Ke6", GAME_EN[3]]
+        pdf = make_book(tmp / "little.pdf", game=game, ocr=True)
+        book = build_book(pdf, output_dir=tmp / "output", books_dir=tmp / "books")
+        ids = main_line(book, line_titled(book, "Smith - Jones"))
+        assert sans(book, ids) == MAIN_SAN
+        return [book["nodes"][i]["status"] for i in ids]
+    doubted = statuses(tmp_path / "a", "xd5")
+    assert doubted[9] == "guessed" and doubted[12] == "guessed"
+    assert doubted[10] == doubted[11] == doubted[13] == "ok"
+    clear = statuses(tmp_path / "b", "Nxd5")
+    assert clear[12] == "ok" and all(st == "ok" for st in clear)
+
+
 def test_text_drawn_by_ocr_is_not_exact(tmp_path):
     # an OCR layer: the text is drawn invisibly over the picture of the page
     w = _Writer()

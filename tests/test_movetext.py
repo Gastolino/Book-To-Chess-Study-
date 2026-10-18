@@ -225,6 +225,35 @@ def test_capture_mark_after_glyph_junk_stays_a_capture():
     (d,) = decode(b, find_sequences("24...E:xflt")[0].tokens)
     assert d.san == "Rf1+" and d.capture_mark is True
 
+def test_slip_of_a_named_square_or_capture_mark():
+    # a file letter or rank digit read as another square, or a capture mark
+    # on a move that takes nothing, is a slip (Decoded.slip); OCR's shapes
+    # that name no square ("s" for 5, "l" for 1) are none
+    b = chess.Board("4q1k1/r4p1p/P3b1p1/R1b1p3/4P2P/6P1/3Q1P1K/8 b - - 0 40")
+    (d,) = decode(b, find_sequences("40...Qc7")[0].tokens)
+    assert (d.san, d.slip) == ("Qe7", True)
+    (d,) = decode(b, find_sequences("40...Qe7")[0].tokens)
+    assert (d.san, d.slip) == ("Qe7", False)
+    b = chess.Board("4r1k1/5ppp/8/8/8/8/5PPP/3R2K1 b - - 0 31")
+    (d,) = decode(b, find_sequences("31...Rxe1+")[0].tokens)
+    assert (d.san, d.slip) == ("Re1+", True)
+    b = chess.Board("6k1/5ppp/8/8/7P/8/5PP1/6K1 w - - 0 1")
+    (d,) = decode(b, find_sequences("1.hs")[0].tokens)
+    assert (d.san, d.slip) == ("h5", False)
+    # an "o" whose rank was lost is no a-file square: the Primer's "go",
+    # printed for Rf1, is no rook move to a1
+    glyphs = GlyphModel()
+    glyphs.learn([("g", "R")] * 10)
+    b = chess.Board("5k2/2R2pp1/7p/4PK2/p7/2P3PP/5P2/4r3 w - - 0 42")
+    decs = decode(b, find_sequences("42.h4 go 43.f4", lenient=True)[0].tokens, glyphs=glyphs)
+    assert decs[1].raw == "go" and decs[1].san != "Ra1"
+    # ... and a file whose rank the print lacks is read through a slip ("ga",
+    # printed for Rf3, read as a rook move to the a-file)
+    b = chess.Board("5k2/2R2pp1/7p/4PK2/7P/r1P3P1/5P2/8 b - - 0 43")
+    (d,) = decode(b, find_sequences("43...ga", lenient=True)[0].tokens, glyphs=glyphs)
+    assert d.san[:2] == "Ra" and d.slip
+
+
 def test_bang_read_as_1_after_a_square():
     # "c41?" is c4!? and "d3l" d3! with the "!" read as 1 or l, not a move to
     # the first rank ("Kh1", "Ne1") with "c4" read as junk

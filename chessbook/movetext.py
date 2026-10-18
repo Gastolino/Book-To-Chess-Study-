@@ -279,7 +279,12 @@ class Decoded:
     contradicts a piece glyph printed in the token: a pawn move read from a
     token with a piece glyph or with a file letter before a non-capture
     ("gg4" read as g4), or a piece letter of the notation read as another
-    piece.
+    piece. slip is True when the reading takes a character of the print for
+    another square than the one it names (a "c" read as the e-file, a "7" as
+    the first rank) or supplies a rank the print lacks, or reads a capture
+    mark the print shows for a move that takes nothing, or a capture for a
+    move printed with no mark: the print, read literally, is another move. OCR's slips of shape that name no square
+    ("s" for 5, "l" for 1) are no such slip.
     """
     raw: str
     start: int
@@ -298,6 +303,7 @@ class Decoded:
     missing_before: Optional[str] = None
     capture_mark: Optional[bool] = None
     glyph_lost: bool = False
+    slip: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -786,8 +792,10 @@ def _enumerate_parses(core: str) -> list:
             rank_opts.append((RANK_READ[head[-1]], head[-1], head[:-1]))
         elif is_long and head[-1] in LONG_RANK_EXTRA:
             rank_opts.append((LONG_RANK_EXTRA[head[-1]], head[-1], head[:-1]))
-        elif head[-1] in FILE_READ and not head[-1].isupper():
-            rank_opts.append((None, None, head))          # rank missing
+        elif head[-1] in FILE_READ and not head[-1].isupper() and head[-1] != "o":
+            # rank missing; an "o" is no file whose rank was lost (the Primer's "go",
+            # printed for Rf1, is no rook move to the a-file)
+            rank_opts.append((None, None, head))
         for rread, rch, before in rank_opts:
             b = before.rstrip(NOISE_CHARS) if rread is not None else before
             file_opts = []
@@ -2716,6 +2724,33 @@ def _parted_worse(node, best) -> bool:
     return theirs is not None and first[4] >= theirs + OLD_WORSE
 
 
+def _names_other(prs, raw, m, pt, is_cap, scorer) -> bool:
+    """True when the reading prs of move m (of piece type pt; is_cap: it
+    captures) from the token raw takes the print for another move than it
+    names: a file letter, or a rank digit after its file letter, read as
+    another file or rank, a file letter that ends the print, its rank lacking (the
+    Primer's "ga", printed for Rf3, is no rook move to a3), an "x" on a move that
+    takes nothing, or a capture printed with no mark (Decoded.slip). A rank
+    printed with no file before it may be OCR's shape for the square ("6"
+    for f3 in the Primer), and a ":" a figurine's junk: they are no slip."""
+    if prs is None or prs.whole:
+        return False
+    if prs.fch is not None and prs.fch in "abcdefgh" and prs.rch is None \
+            and raw.rstrip("!?+# ").endswith(prs.fch):
+        return True     # (a "t" after the file may be its rank, a 1, read as a check)
+    if prs.fch is not None and prs.fch in "abcdefgh" and \
+            "abcdefgh".index(prs.fch) != chess.square_file(m.to_square):
+        return True
+    if prs.fch is not None and prs.rch is not None and prs.rch in "12345678" and \
+            int(prs.rch) - 1 != chess.square_rank(m.to_square):
+        return True
+    if prs.cap is True and not is_cap and any(c in raw for c in "xX×"):
+        return True
+    return bool(is_cap and prs.cap is None and pt != PAWN
+                and not (prs.prefix and prs.prefix[-1] in "xX×")
+                and not scorer.implies_capture(prs.prefix))
+
+
 def _has_failure(node) -> bool:
     while node is not None:
         node, entry = node
@@ -2941,11 +2976,12 @@ def _decode(board: chess.Board, tokens: list, scorer: _Scorer, lookahead: int, b
                     and not (prs.dfile is not None and prs.drank is not None))
             elif prs.prefix in scorer.letters:
                 lost = scorer.letters[prs.prefix] != pt
+        slip = _names_other(prs, tok.raw, m, pt, is_cap, scorer)
         san = b.san(m)
         b.push(m)
         sq = (prs.fch, prs.rch) if prs is not None else (None, None)
         cap_mark = (prs.cap is True) if prs is not None else None
         out.append(Decoded(tok.raw, tok.start, tok.end, tok.number, tok.black, san, m.uci(),
                            b.fen(), status, alts, round(mine_c, 3), glyph,
-                           _annotation(parsed, prs), sq, missing, cap_mark, lost))
+                           _annotation(parsed, prs), sq, missing, cap_mark, lost, slip))
     return out
