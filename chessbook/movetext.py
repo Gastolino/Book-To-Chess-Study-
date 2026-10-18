@@ -2349,7 +2349,8 @@ def _with_glyph(gmap, glyph, pt, scorer):
 
 
 OLD_AGE = 12          # tokens after which a parted hypothesis counts as old
-OLD_KEEP = 4          # old hypotheses kept in the beam
+OLD_KEEP = 4          # old hypotheses kept in the beam ...
+OLD_WORSE = 0.5       # ... unless they read the token they parted at dearer by this much
 RETRY_FACTOR = 4      # beam multiplier for the second search of a run with failures
 WILD_MARGIN = 2.5     # a failed-token expansion must come this close to the best reading
 WILD_HYPS = 3         # only the best few hypotheses expand a failed token
@@ -2591,7 +2592,7 @@ def _prune(kids: list, beam: int, old_keep: int) -> list:
             break
         anc.add(id(node))
         node = node[0]
-    out, old = [kids[0]], 0
+    out, old, best_path = [kids[0]], 0, None
     for h in kids[1:]:
         node, d = h.node, 0
         while node is not None and id(node) not in anc and d <= OLD_AGE:
@@ -2600,11 +2601,46 @@ def _prune(kids: list, beam: int, old_keep: int) -> list:
         if d > OLD_AGE or (node is None and anc):
             if old >= old_keep:
                 continue
+            if best_path is None:
+                best_path = _parting_costs(kids[0].node)
+            if _parted_worse(h.node, best_path):
+                continue
             old += 1
         out.append(h)
         if len(out) >= beam:
             break
     return out
+
+
+def _parting_costs(node) -> dict:
+    """{id of a node on the path: None} and {token index: reading cost} of
+    the moves along the path that ends at node, for _parted_worse."""
+    ids, costs = set(), {}
+    while node is not None:
+        ids.add(id(node))
+        node, entry = node
+        if entry[1] in ("move", "long"):
+            costs[entry[0]] = entry[4]
+    return {"ids": ids, "costs": costs}
+
+
+def _parted_worse(node, best) -> bool:
+    """True when the path that ends at node parted from the best path (best:
+    _parting_costs of it) by reading the token where they parted dearer than
+    the best path reads it, by OLD_WORSE or more: the old reading lost on
+    that token itself ("a5" for a clear "a6"), and is not kept against a
+    misreading much later that it might explain more cheaply (a "Na8" for
+    Ba8 that a knight on a6 would explain). An old reading that parted on
+    an equal or cheaper reading of the token, set aside for a move after it,
+    is still kept."""
+    first = None
+    while node is not None and id(node) not in best["ids"]:
+        node, entry = node
+        first = entry
+    if first is None or first[1] not in ("move", "long"):
+        return False
+    theirs = best["costs"].get(first[0])
+    return theirs is not None and first[4] >= theirs + OLD_WORSE
 
 
 def _has_failure(node) -> bool:

@@ -853,6 +853,46 @@ def test_game_does_not_skip_its_unread_moves_after_a_diagram(tmp_path):
     assert not [x for x in book["lines"] if x["start_fen"] == GIUOCO_FEN]
 
 
+ADAMS_GAME = ["1.e4 c5 2.Nf3 d6 3.d4 cxd4 4.Nxd4 Nf6", "5.Nc3 a6 6.Be3 e6 7.Be2 Qc7",
+              "8.Qd2 b5 9.a3 Bb7 10.f3 Nc6", "11.O-O-O b4 12.axb4 Nxb4 13.g4 Be7",
+              "14.g5 Nd7 15.h4 Nc5 16.Kb1 Rb8", "17.h5 O-O 18.g6 Bf6 19.Rdg1 Na8",
+              "20.gxh7+ Kh8"]
+
+
+def test_late_misprint_does_not_reread_a_clear_early_move(tmp_path):
+    """Adams - Kasparov, Linares 2005, in an OCR text with 19...Ba8 read "Na8"
+    (as the Art of Planning's OCR gives it): no knight reaches a8, but one from c5
+    could reach a6 had the a-pawn gone to a5, so a reading of the clear
+    "5...a6" as a5, set aside thirty moves before, came back to explain the
+    misprint, and the game read wrongly from its fifth move. A reading that
+    lost on the token it parted at does not come back so: 5...a6 is read as
+    printed, and the moves after it as well."""
+    w = _Writer()
+    w.page(head=False)
+    w.pg.insert_text((80, 120), "A Little Chess Book", fontname="tiro", fontsize=26)
+    w.page()
+    w.prose(n=3)
+    w.mixed([("Adams - Kasparov, ", True), ("Linares 2005", False)])
+    for part in ADAMS_GAME:
+        w.line(part, bold=True)
+    w.line("0-1", bold=True)
+    w.prose(until=H - 60)
+    w.col(1)
+    w.prose(until=H - 60)
+    w.doc.set_metadata({"producer": OCR_PRODUCER})      # an OCR text: squares may be misread
+    w.save(tmp_path / "little.pdf")
+    book = build_book(tmp_path / "little.pdf", output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books")
+    nodes = book["nodes"]
+    game = line_titled(book, "Adams - Kasparov")
+    got = sans(book, main_line(book, game))
+    assert got[9] == "a6", got
+    marks = {m["raw"]: m for m in book["pages"][1]["marks"]}
+    assert marks["a6"]["status"] == "ok"
+    for raw in ("Be3", "Nxb4", "Kb1", "Rdg1"):
+        assert marks[raw]["status"] == "ok" and nodes[marks[raw]["node"]]["san"] == raw
+
+
 # a game with Black's sixth move missing from the text ("6.Nb3 7.Qe2")
 LOST_REPLY = ["1.e4 c5 2.Nf3 e6 3.d4 cxd4", "4.Nxd4 a6 5.Bd3 Bc5", "6.Nb3 7.Qe2 d6 8.Be3 Nf6",
               "9.Bxa7 Rxa7"]
