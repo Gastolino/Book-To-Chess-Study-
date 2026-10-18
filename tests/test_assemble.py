@@ -137,7 +137,7 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
     for a game printed as OCR's junk (test_corrections.GARBLED). tail: lines
     (text, bold) printed right after the result of the first game. A line of
     the game or note5 may be a list of (text, bold) parts, for a line set in
-    both fonts."""
+    both fonts. note7 may be a list of lines."""
     w = _Writer()
 
     def put(text, bold, indent=0):
@@ -177,7 +177,8 @@ def make_book(path, game=GAME_EN, note7="The king has to walk into the open.", s
     w.line("7.dxc6 bxc6.")
     w.col(1)
     put(game[2], True)
-    w.line(note7, indent=8)
+    for text in [note7] if isinstance(note7, str) else note7:
+        w.line(text, indent=8)
     put(game[3], True)
     w.line("White has a strong attack.", indent=8)
     w.line("1-0", bold=True)
@@ -835,6 +836,20 @@ def test_a_threat_that_no_longer_reads_stays_in_no_line(tmp_path):
     ids = main_line(book, line_titled(book, "Smith - Jones"))
     qf7 = [i for i, n in book["nodes"].items() if n.get("san") == "Qf7+"]
     assert len(qf7) == 1 and book["nodes"][qf7[0]]["parent"] == ids[13]
+
+
+def test_game_named_in_a_note_across_a_line_break_is_no_header(tmp_path):
+    # Alekhine p103: "The position is unclear as in S." over "Lakatos-D.Majer,
+    # correspondence 2009" over "since White ...": the sentence names a game
+    # and runs on; its second line is no game header, and the game's moves
+    # after the note stay in the game.
+    pdf = make_book(tmp_path / "cite.pdf", note7=[
+        "The king walks out, as in S.", "Lakatos-D.Majer, correspondence 2009",
+        "where White won quickly."])
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books")
+    assert not any("Lakatos" in (ln.get("title") or "") for ln in book["lines"])
+    g = line_titled(book, "Smith - Jones")
+    assert sans(book, main_line(book, g)) == MAIN_SAN
 
 
 def _variation_after(book, parent, want):

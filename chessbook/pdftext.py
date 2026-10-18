@@ -1285,6 +1285,24 @@ def page_lines(doc, page_index, fonts=None):
         else:
             role[k] = "blank"
 
+    # A game named in a sentence that runs over a line break ("The position
+    # is unclear as in S." over "Lakatos-D.Majer, correspondence 2009" over
+    # "since White ..."): the line set right under a line of the same
+    # paragraph that breaks off (no full stop, or a player's initial) is the
+    # sentence going on, no game header, when the names are in the body font.
+    for k, rl in enumerate(rls):
+        if role[k] != "game_header" or not _names_font_is_body(rl, ctx):
+            continue
+        x0, y0, x1, _ = rl["bbox"]
+        for j, rj in enumerate(rls):
+            bj = rj["bbox"]
+            if (j != k and role[j] in ("text", "moves") and -0.3 * bs <= y0 - bj[3] <= 0.4 * bs
+                    and abs(bj[0] - x0) <= bs and min(x1, bj[2]) - max(x0, bj[0]) > 0
+                    and len(rj["text"]) >= 25
+                    and re.search(r"(?:\b[A-Z][a-z]?\.|[^.!?:;)\]\s])\s*$", rj["text"])):
+                role[k] = "text"
+                break
+
     # Without a moves font, a line that opens with an unnumbered move right
     # under a sentence that breaks off mid-way ("... well placed after 22.Ne2"
     # over "Qe5 23.f4 Qf6 or 23...Qc5.") continues that sentence.

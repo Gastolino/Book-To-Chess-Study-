@@ -721,3 +721,11 @@ def test_long_notation_with_the_rank_left_split_off():
     board = chess.Board("4B1k1/5p1p/5pp1/p2Pn3/3QP3/7P/5PPK/1q6 b - - 0 1")
     assert sans("1 ... 'iVb I -b8 2.ie8-a4 tZle5-f3+ 3.'1iih2-hl 'ilfb8-h2#", board) == [
         "Qb8", "Ba4", "Nf3+", "Kh1", "Qh2#"]
+
+
+def test_initial_in_a_text_set_in_type_is_no_move_number():
+    # Alekhine p103 "as in S. Lakatos-D.Majer": OCR may print 8 as "S", but
+    # in a text set in type "S." is a player's initial
+    text = "as in S. Lakatos-D.Majer, correspondence 2009"
+    assert [t.kind for t in tokenize(text, exact=True)].count("number") == 0
+    assert [t.raw for t in tokenize(text) if t.kind == "number"] == ["S."]

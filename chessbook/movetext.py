@@ -1975,6 +1975,8 @@ def tokenize(text: str, lenient: bool = False, dotless: bool = False,
             other(s, e)
             i += 1
             continue
+        if r is not None and exact and re.fullmatch(r"[A-Z]\.", text[s:r[0].end]):
+            r = None                     # "as in S. Lakatos-D.Majer": in type, "S." is an initial
         if r is not None:
             tok, j, rest = r
             number(tok)
