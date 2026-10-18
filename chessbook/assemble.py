@@ -364,6 +364,19 @@ _MOVE_ONE_RE = re.compile(r"^(?:[0-9lI]{1,3} ?[.…•·]|[0-9lI]{1,2}$|[1lI]J[^
 _THREAT_RE = re.compile(
     r"\b(?:threat\w*|prepar(?:es|ing|ed) to|wants? to|wanting to|plans?|planning|"
     r"intend\w*(?! to (?:play|continue|answer|meet))|resulting from|with the idea|aim\w* (?:at|to))\b", re.I)
+THREAT_REASON = "the text gives these moves as a threat or a plan, not as moves played"
+# A threat the text says was made before the move it follows ("White was
+# threatening", "the threat was", "White threatened"), or that the move
+# answers ("Black meets the threat of 34 Nxe7 mate").
+_PAST_THREAT_RE = re.compile(
+    r"\b(?:was|were|had been)\s+(?:\w+\s+)?(?:threat|plan|intend|prepar|aim|want)\w*|"
+    r"\b(?:threat|plan|idea|intention)s?\s+(?:was|were|had been)\b|"
+    r"(?<!the )\b(?:threatened|intended|planned|wanted)\b|"
+    r"\b(?:meet|met|deal|dealt|parr[iy]|prevent|stop|avoid|defend|answer|counter|neutrali[sz]|"
+    r"ward|guard|cop|fac)\w*\b(?:\s+\w+){0,4}?\s+(?:threat|plan|idea)", re.I)
+# A move that ends its sentence ("Threat: ...Bg4. 14.h3"): a cue before it
+# does not reach the moves after it.
+_MOVE_STOP_RE = re.compile(r"(?:[a-h][1-8]|[+#])[!?]*\.(?:\s|$)")
 # Words that may stand between such a cue and the moves it introduces.
 _CONNECT_WORDS = {"and", "then", "followed", "by", "or", "with", "of", "the", "a", "an",
                   "to", "carry", "out", "play", "playing", "double", "move", "moves", "after",
@@ -2434,10 +2447,150 @@ class _Builder:
         tail = lead[hits[-1].end():]
         if ")" in tail:
             return False                 # the threat was given in brackets before the run
+        if _MOVE_STOP_RE.search(tail):
+            return False                 # "Threat: ...Bg4. 14.h3 b5": the sentence ended
         words = [w.strip("(),;:").lower() for w in tail.split(" ")]
         if "if" in words or "when" in words or "on" in words:
             return False                 # "..., and if 1...Re1 then 2.Rg7+": a variation
-        return not [w for w in words if len(w) > 1 and w.isalpha() and w not in _CONNECT_WORDS]
+        if [w for w in words if len(w) > 1 and w.isalpha() and w not in _CONNECT_WORDS]:
+            return False
+        prev = self.prev_run(run)
+        if (prev is not None and run.ply is not None and prev.moves
+                and not _THREAT_RE.search(self.st.orig_text[prev.end:run.start])):
+            first = self.token_ply(prev.moves[0])
+            if first is not None and 0 < first - run.ply <= 2:
+                # "threatens 15.Qd8+! 14...Qxf6 15.Rhe1+": the numbering goes
+                # back a move, to the moves played after the threat was named
+                # (a number further back is OCR's or another sentence's)
+                return False
+        return True
+
+    def prev_run(self, run):
+        """The run printed right before run in its chapter, or None."""
+        if run.ci != self.ci or not self.all_runs:
+            return None
+        k = bisect.bisect_left(self.run_starts, run.start)
+        return next((r for r in reversed(self.all_runs[:k]) if r.end <= run.start
+                     and r is not run), None)
+
+    @staticmethod
+    def token_ply(t):
+        if t.number is None:
+            return None
+        return 2 * (t.number - 1) + int(bool(t.black))
+
+    def threat_anchor(self, L, run, state, blocks):
+        """Where a numbered run that the text gives as a threat or a plan is
+        printed: ("main",) after a move of the line's own text, ("last",)
+        right after a variation of its note, or None (see do_threat)."""
+        if L.waiting or run.ci != self.ci:
+            return None
+        block = bisect.bisect_left(blocks, run.start)
+        mt = L.main_tok[block - 1][1] if 0 < block <= len(L.main_tok) else None
+        # (a main run spans the notes printed among its moves)
+        k = bisect.bisect_left(self.run_starts, run.start)
+        prev = next((r for r in reversed(self.all_runs[:k]) if r.kind != "main"
+                     and r.end <= run.start and r is not run), None)
+        if prev is not None and (mt is None or prev.start > mt):
+            if state["last"] is not None and state.get("last_start") == prev.start:
+                return ("last",)
+            return None
+        return ("main",) if mt is not None else None
+
+    def do_threat(self, L, run, block, state, anchor, past=False):
+        """Place a numbered run that the text gives as a threat or a plan
+        ("25.Qh5, threatening 26.Qxh7#") as a variation from where it is
+        printed, after the move A it follows (the move of the line, or the
+        last move of the variation right before it): its first move is the
+        next move after A ("25...g6, and White was threatening 26.Bxh7+"),
+        or the next move of A's side ("25.Qh5 threatening 26.Qxh7#"), an
+        alternative to the line's own move at that number, from the position
+        after the reply that the line gives. The second only when the moves
+        read the same with the reply passed over: the threat still stands
+        as the text gives it. The line must go on past the place, so that
+        the run is shown as a variation, and every move must read as printed
+        (threat_reads), with no square, capture or piece read for another."""
+        if anchor[0] == "last":
+            rec = state["last"]
+            if rec is None:
+                return False
+            A = rec["last"]
+        elif 0 < block <= len(L.main_tok):
+            A = L.main_tok[block - 1][2]
+        else:
+            return False
+        a = self.node_ply(A)
+        if a is None or run.ply is None:
+            return False
+        kids = self.nodes[A]["children"]
+        if not kids:
+            return False
+        if run.ply == a + 1:
+            parent = A
+        elif run.ply == a + 2:
+            main = L.ply_node.get(a + 1) if anchor[0] == "main" else None
+            parent = main if main in kids else kids[0]
+            if not self.nodes[parent]["children"]:
+                return False
+        else:
+            return False
+        fen = self.nodes[parent]["fen"]
+        if fen is None:
+            return False
+        decs = self.dec.run(fen, run.tokens)
+        if not self.threat_reads(decs):
+            return False
+        # the moves must read the same with a move passed over: the reply
+        # the line gives (the threat still stands after it), or A itself
+        # when the text says the threat was made before it ("29...Nd7 White
+        # was threatening 30.Nxf6 gxf6 31.Qxf6+ Rg7 32.Rg4 Qd7"): before is
+        # the node whose position comes before that move
+        before = A if parent != A else (self.nodes[A]["parent"] if past else None)
+        if parent == A and past and before is None:
+            return False
+        if before is not None:
+            afen = self.nodes[before]["fen"] if before in self.nodes else None
+            if afen is None:
+                return False
+            board = chess.Board(afen)
+            if board.is_check():
+                return False
+            board.push(chess.Move.null())
+            alone = self.dec.run(board.fen(), run.tokens)
+            if not self.threat_reads(alone) or [d.san for d in alone] != [d.san for d in decs]:
+                return False
+        if not self.replaying:
+            self.dec.accepted.append(decs)
+        nodes = self.insert_decoded(L, parent, run, decs)
+        L.variations += 1
+        if before is not None:
+            # placed with a move passed over: the position differs from the
+            # one the text means ("26.Rh3, threatening 27.fxg6. If then
+            # 27...hxg6", but 26...f6 changed what recaptures), so the moves
+            # printed after the threat do not go on from it
+            state["last"] = None
+            return True
+        plies = {}
+        for nid in nodes:
+            ply = self.node_ply(nid)
+            if ply is not None:
+                plies[ply] = nid
+        vars_ = state["vars"][block]
+        vars_.append({"depth": run.depth, "plies": plies, "last": nodes[-1] if nodes else parent,
+                      "next": (max(plies) + 1) if plies else None, "bracket": run.bracket,
+                      "end": run.end})
+        state["last"] = vars_[-1]
+        state["last_start"] = run.start
+        return True
+
+    @staticmethod
+    def threat_reads(decs):
+        """True when every move of a threat reads as printed: one reading,
+        no square or capture mark taken for another, no glyph lost and no
+        move supplied (a threat is placed only on its own evidence)."""
+        return bool(decs) and _fit(decs)[0] == 0 and not any(
+            d.status != "ok" or d.slip or d.glyph_lost or d.missing_before
+            or (d.capture_mark and d.san and "x" not in d.san) for d in decs)
 
     def inline_run(self, run):
         """True for main-font moves inside a sentence of body text ("should White
@@ -3819,9 +3972,15 @@ class _Builder:
             self.do_long(L, op, state)
             return
         if self.is_threat(run):
-            op = ("unplaced", run, "the text gives these moves as a threat or a plan, not as "
-                                   "moves played")
-            self.tidy(L, run)
+            anchor = self.threat_anchor(L, run, state, blocks) if run.ply is not None else None
+            if anchor is None:
+                op = ("unplaced", run, THREAT_REASON)
+                self.tidy(L, run)
+            else:
+                # shown as a variation from where it is printed (see do_threat)
+                past = bool(_PAST_THREAT_RE.search(self.lead_text(run.start)))
+                op = ("note", run, as_main, bisect.bisect_left(blocks, run.start), False, False,
+                      False, ("threat", anchor, past))
         elif (lambda ref: ref and ref[1] and ref[1] != L.diagram)(self.referenced_diagram(run)):
             ref = self.referenced_diagram(run)
             self.detached_line(run, ref[1], ref[0])
@@ -3847,7 +4006,7 @@ class _Builder:
         if placed == "handed":
             L.ops.pop()                 # the run is the next line's note
             return
-        if placed and op[0] == "note":
+        if placed and op[0] == "note" and len(op) <= 7:
             tail = self.bare_tail(L, run, state, op[3])
             if tail is not None:
                 # a move without its number that ends the variation
@@ -4086,6 +4245,13 @@ class _Builder:
         _, run, as_main, block, cue, side = op[:6]
         if self.replaying:
             run = self.forced(run)
+        if len(op) > 7 and op[7] and op[7][0] == "threat":
+            if self.do_threat(L, run, block, state, op[7][1], op[7][2]):
+                return True
+            self.unplaced(run, THREAT_REASON, src=L)
+            if base:
+                self.tidy(L, run)
+            return False
         if len(op) > 6 and op[6]:
             # the run begins with a move printed without its number
             # (bare_lead): it goes on with the line when the moves confirm it,
