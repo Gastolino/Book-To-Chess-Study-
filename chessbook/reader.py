@@ -1078,10 +1078,14 @@ function stageAt(clip){
   document.body.append(st);
   return st;
 }
+// (a page fitted to the window's height ends at its own foot, which may differ a little from the
+// last page's: the stage carries on at the taller of the two)
 function sameClip(st, clip){
   const r = st.getBoundingClientRect();
-  return Math.abs(r.left - clip.left) < 1 && Math.abs(r.top - clip.top) < 1 && Math.abs(r.width - (clip.right - clip.left)) < 1 &&
-    Math.abs(r.height - (clip.bottom - clip.top)) < 1;
+  if (!(Math.abs(r.left - clip.left) < 1 && Math.abs(r.top - clip.top) < 1 && Math.abs(r.width - (clip.right - clip.left)) < 1))
+    return false;
+  if (clip.bottom - clip.top > r.height) st.style.height = (clip.bottom - clip.top) + "px";
+  return true;
 }
 function putOn(st, clip, part){
   const s = part.el.style;
