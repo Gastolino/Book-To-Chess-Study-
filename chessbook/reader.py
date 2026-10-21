@@ -364,7 +364,7 @@ height:0;border-top:1px solid var(--fail);transform:rotate(-45deg)}
 /* buttons at the page's edges that turn it (wide layout only; a phone swipes) */
 .pagewrap{position:relative}
 .edgeturn{display:none;position:absolute;top:50%;z-index:6;width:28px;height:56px;margin-top:-28px;
-padding:0;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:14px;
+padding:0;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:2px;
 background:var(--bg);color:var(--fg);opacity:.75;cursor:pointer}
 .edgeturn:hover{opacity:1}
 .edgeturn:disabled{visibility:hidden}
