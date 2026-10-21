@@ -314,6 +314,11 @@ body:not(.reading) .rtool{display:none}
    same way in both modes); in the compact layout they appear in a strip under the bar (below). */
 @media (min-width:701px) and (orientation:landscape),(min-width:1101px){
 .tools .rtool{order:-1}
+/* the fitted page fits the window's height too, so that the whole page shows at once
+   (--pagetop: the page's top in the column; --pageratio: its width over its height) */
+.pagescroll:not(.zoom) .pagebox{margin:0 auto;
+max-width:calc((100vh - var(--pagetop,180px) - 24px) * var(--pageratio,0.7))}
+.pagewrap .edgeturn{display:flex}
 body:not(.reading) .tools .rtool{display:inline-block;visibility:hidden}}
 .pnav{display:flex;align-items:center}
 .pnav .ib{padding:4px 6px}
@@ -356,6 +361,16 @@ height:0;border-top:1px solid var(--fail);transform:rotate(-45deg)}
 .pagescroll.zoom{overflow-x:auto}
 .pagescroll.zoom::after{content:"";display:block;width:200%;height:1px;margin-top:-1px;pointer-events:none}
 .pagebox{position:relative;width:100%;outline:1px solid var(--line)}
+/* buttons at the page's edges that turn it (wide layout only; a phone swipes) */
+.pagewrap{position:relative}
+.edgeturn{display:none;position:absolute;top:50%;z-index:6;width:28px;height:56px;margin-top:-28px;
+padding:0;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:14px;
+background:var(--bg);color:var(--fg);opacity:.75;cursor:pointer}
+.edgeturn:hover{opacity:1}
+.edgeturn:disabled{visibility:hidden}
+.edgeturn svg{width:16px;height:16px}
+#edgeprev{left:-24px}
+#edgenext{right:-30px}
 .pagescroll.zoom .pagebox{width:200%}
 .pagebox img{display:block;width:100%;height:auto;user-select:none;-webkit-user-select:none}
 /* the picture that comes while its place shows fades in over that place */
@@ -1279,6 +1294,8 @@ function showPage(p){
   $("pagetotal").textContent = "of " + LAST;
   $("prevpage").disabled = p <= 1;
   $("nextpage").disabled = p >= D.pageCount;
+  $("edgeprev").disabled = p <= 1;
+  $("edgenext").disabled = p >= D.pageCount;
   wantPictures(p);
   dropFar();
   pageState();
@@ -1692,6 +1709,15 @@ function barHeight(){
   // page shows between them)
   const h = $("mbar").getBoundingClientRect().height;
   if (h) document.documentElement.style.setProperty("--barh", (h - 1) + "px");
+}
+
+let overPage = false;       // the pointer is over the page: the left and right arrows turn it
+function fitPage(){
+  // the fitted page's height fits the window (wide layout): its shape, and where its top is
+  const img = $("pageimg"), ps = $("pagescroll"), root = document.documentElement.style;
+  if (img.naturalWidth && img.naturalHeight)
+    root.setProperty("--pageratio", (img.naturalWidth / img.naturalHeight).toFixed(4));
+  if (ps) root.setProperty("--pagetop", Math.max(0, ps.getBoundingClientRect().top + window.scrollY) + "px");
 }
 
 /* ---------------------------------------------------------------- moves */
@@ -2552,6 +2578,14 @@ function init(){
   })();
   $("prevpage").addEventListener("click", () => turnPage(-1));
   $("nextpage").addEventListener("click", () => turnPage(1));
+  $("edgeprev").addEventListener("click", () => turnPage(-1));
+  $("edgenext").addEventListener("click", () => turnPage(1));
+  // with the pointer over the page, the left and right arrows turn it
+  const col = document.querySelector(".pagecol");
+  col.addEventListener("pointerenter", () => { overPage = true; });
+  col.addEventListener("pointerleave", () => { overPage = false; });
+  $("pageimg").addEventListener("load", fitPage);
+  fitPage();
   $("pagenum").addEventListener("keydown", (e) => { if (e.key === "Enter") { typedPage(); e.preventDefault(); } });
   $("pagenum").addEventListener("change", typedPage);
   $("pagenum").addEventListener("focus", () => $("pagenum").select());
@@ -2595,7 +2629,9 @@ function init(){
   document.addEventListener("keydown", (e) => {
     const tag = (e.target.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea" || tag === "select" || e.altKey || e.ctrlKey || e.metaKey) return;
-    if (e.key === "ArrowRight") { step(1); e.preventDefault(); }
+    if (overPage && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+      turnPage(e.key === "ArrowRight" ? 1 : -1); e.preventDefault(); }
+    else if (e.key === "ArrowRight") { step(1); e.preventDefault(); }
     else if (e.key === "ArrowLeft") { step(-1); e.preventDefault(); }
     else if (e.key === "ArrowDown") { sideStep(1); e.preventDefault(); }
     else if (e.key === "ArrowUp") { sideStep(-1); e.preventDefault(); }
@@ -2610,7 +2646,7 @@ function init(){
     cancelAnimationFrame(resizing);
     resizing = requestAnimationFrame(() => {
       // (an open sheet sits above the bar, which a turned tablet may have changed)
-      sizeCoords(document); layoutPanel(false); barHeight(); placeSheet();
+      sizeCoords(document); layoutPanel(false); barHeight(); placeSheet(); fitPage();
       // the window grew or shrank just after a turn (the app's top bar went away as the page
       // scrolled to its place): the page lands again in the space it has now
       if (landed && performance.now() < landed.until) land(landed.dir, landed.zoom, landed.y);
@@ -2699,11 +2735,15 @@ __PGNBTN__
 <p class="offpage small" id="offpage"></p>
 <p class="diagnote small muted" id="diagnote"></p>
 <p class="provnote small muted" id="provnote">The program is still reading the book. The moves of this chapter are a first reading, made with what the program had learnt when it reached them. When it has read the whole book, the final reading replaces them here, and the page and the chosen move stay where they are.</p>
+<div class="pagewrap">
+<button class="edgeturn" id="edgeprev" type="button" aria-label="Previous page" title="Previous page (← over the page)">__ICON_BACK__</button>
+<button class="edgeturn" id="edgenext" type="button" aria-label="Next page" title="Next page (→ over the page)">__ICON_FWD__</button>
 <div class="pagescroll" id="pagescroll">
 <div class="pagebox" id="pagebox"><img class="scan" id="pageimg" alt=""><div class="ov" id="ov"></div>
 <button class="ribbon" id="ribbon" type="button" hidden aria-label="Bookmark on this page: a tap removes it" title="This page holds a bookmark. A tap removes it."><svg viewBox="0 0 20 64" aria-hidden="true"><polygon points="0,0 20,0 20,64 10,54 0,64"/></svg></button>
 <p class="bmnote small" id="bmnote" role="status"></p>
 <ul class="symmenu small" id="symmenu" role="menu" hidden></ul></div>
+</div>
 </div>
 <div class="key small muted">
 <div class="help"><p class="mouse">A click on a move or a diagram shows it in the panel. The left and right arrow keys step through the moves, the up and down arrow keys switch between the moves the book gives at a branch, and Page Up and Page Down turn the pages.</p>
