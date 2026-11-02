@@ -175,7 +175,7 @@ body.library #drop .small{max-width:46em}
 <main id="start">
 <h1>Chess Book Reader</h1>
 <div id="intro">
-<p>This page turns a chess book in PDF form into a reader: the book's pages beside a
+<p>This page turns a chess book in PDF or EPUB form into a reader: the book's pages beside a
 live board that follows the moves and variations.</p>
 <p>Your book stays on this device. The page reads it here and sends it nowhere.</p>
 </div>
@@ -186,10 +186,10 @@ live board that follows the moves and variations.</p>
 reads it once, and every device you sign in on opens it at once.</p>
 <p id="libspace" hidden></p>
 </section>
-<div id="drop" tabindex="0" role="button" aria-label="Choose a chess book PDF">
+<div id="drop" tabindex="0" role="button" aria-label="Choose a chess book (PDF or EPUB)">
 <div class="big">Drop a chess book here</div>
-<div class="small">or click to choose a PDF file</div></div>
-<input id="file" type="file" accept="application/pdf,.pdf,.chessbook,application/zip,.zip">
+<div class="small">or click to choose a PDF or EPUB file</div></div>
+<input id="file" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub,.chessbook,application/zip,.zip">
 <p id="resume" hidden><span></span><button type="button">Library</button></p>
 <div id="loader" class="on">__BOOK__<div id="bar" class="on" role="progressbar" aria-label="Progress"><i></i><b></b></div></div>
 <div id="status">Preparing the reader. The first visit downloads about 40 MB; later visits
@@ -495,7 +495,7 @@ worker.onmessage = (e) => {
     prepared = {};
     // the top bar names the book (the library has taken the reading's title by now)
     bookTitle(LIB.on && LIB.current ? LIB.titleOf(LIB.current.book)
-                                    : m.title || lastName.replace(/\\.pdf$/i, "").replace(/_+/g, " ").trim());
+                                    : m.title || lastName.replace(/(\\.epub)?\\.pdf$/i, "").replace(/_+/g, " ").trim());
     // the words of the work: a book opened from the library has none, and the body's data-book
     // says how it came (for the tests)
     $("took").textContent = m.restored ? "" : "Reading the book";
@@ -947,10 +947,28 @@ window.addEventListener("message", (e) => {
 });
 // A book the user chose: added to the library first (the site's, or the one
 // in this browser), which takes a book file saved from a library as well.
+// With no library, an EPUB is laid out into a PDF (LIB.convert) and read.
 async function take(file) {
   if (!file || busy) return;
   if (LIB.on) { LIB.add(file); return; }
-  if (!/\\.pdf$/i.test(file.name)) { status("Please choose a PDF file.", true); return; }
+  let raw = new Uint8Array(0);
+  try { raw = new Uint8Array(await file.slice(0, 58).arrayBuffer()); } catch (e) { raw = new Uint8Array(0); }
+  if (LIB.isEpub(raw, file.name)) {
+    busy = true;
+    working(true);
+    let pdf;
+    try { pdf = await LIB.convert(file); }
+    catch (err) {
+      busy = false;
+      working(false);
+      status("The program could not open this EPUB book (" + String(err.message).replace(/\\.$/, "") + ").", true);
+      return;
+    }
+    busy = false;
+    read(pdf, pdf.name);
+    return;
+  }
+  if (!/\\.pdf$/i.test(file.name)) { status("Please choose a PDF or EPUB file.", true); return; }
   read(file, file.name);
 }
 // The program reads the book (file, a File or Blob, named fileName).
@@ -970,7 +988,7 @@ async function read(file, fileName, partial) {
     // no library: the record names the file, and the book opens at the place when it is chosen again
     const r = SESSION.pending();
     const same = !!(r && !r.id && r.name === name);
-    SESSION.begin({ name, title: same && r.title ? r.title : fileName.replace(/\\.pdf$/i, "") }, same ? r : null);
+    SESSION.begin({ name, title: same && r.title ? r.title : fileName.replace(/(\\.epub)?\\.pdf$/i, "") }, same ? r : null);
     if (same && !resuming) resumeStart(r);
   }
   const p = partial instanceof Uint8Array ? partial : null;

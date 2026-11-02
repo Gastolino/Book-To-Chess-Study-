@@ -3,7 +3,8 @@
 The worker writes the uploaded PDF to /books and calls start(); it then
 calls step() again and again, and between two steps it answers the reader
 (chapter(), index(), correct()), so that the book can be read while it is
-assembled (chessbook/progressive.py). The contents page shows as soon as
+assembled (chessbook/progressive.py); an EPUB is first laid out into a PDF
+(convert()), which the app then adds as any PDF. The contents page shows as soon as
 the chapters are known, every chapter opens at once as pages, and the
 moves appear chapter by chapter; when the whole book is read, the open
 chapter receives the final reading as a patch.
@@ -973,3 +974,21 @@ def cover(path):
     zoom = COVER_WIDTH / max(page.rect.width, 1)
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csRGB, alpha=False)
     return pix.tobytes("jpg", jpg_quality=70)
+
+
+def convert(path):
+    """An EPUB the reader added, laid out into a PDF (chessbook/epub.py):
+    /books/<name>.epub.pdf, for the worker to read and remove; the EPUB is
+    removed. JSON: {"path": the PDF} or {"error": what the reader is told}."""
+    from chessbook import epub
+    src = Path(path)
+    try:
+        pdf = epub.convert(src.read_bytes())
+    except epub.EpubError as e:
+        return json.dumps({"error": str(e)})
+    finally:
+        src.unlink(missing_ok=True)
+    out = src.with_name(src.name[:-5] + ".epub.pdf" if src.name.lower().endswith(".epub")
+                        else src.name + ".epub.pdf")
+    out.write_bytes(pdf)
+    return json.dumps({"path": str(out)})

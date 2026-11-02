@@ -284,6 +284,7 @@ import chess
 import pymupdf
 
 from . import corrections as fixes
+from . import epub
 from . import figurines
 from . import pdftext as pt
 from . import region
@@ -7876,8 +7877,10 @@ def build_book(pdf_path, output_dir=None, books_dir=None, letters=None, passes=3
     corrected piece symbol reads as its piece throughout the book, and a
     sequence placed in no line goes where the reader tied it.
 
-    build_steps does the same work in small steps (the browser app).
+    build_steps does the same work in small steps (the browser app). An
+    EPUB is read from the PDF that epub.as_pdf lays it out into.
     """
+    pdf_path = epub.as_pdf(Path(pdf_path))
     book = _drain(build_steps(pdf_path, output_dir, books_dir, letters, passes, diagram_fens,
                               progress, boards, readings, corrections, state, shapes=shapes))
     if write:
@@ -7916,7 +7919,7 @@ def build_steps(pdf_path, output_dir=None, books_dir=None, letters=None, passes=
     """
     ctx = {} if ctx is None else ctx
     t0 = time.perf_counter()
-    pdf_path = Path(pdf_path)
+    pdf_path = epub.as_pdf(Path(pdf_path))
     out_root = Path(output_dir or OUTPUT_DIR)
     say = progress or (lambda *_: None)
     doc = pymupdf.open(pdf_path)
@@ -8379,7 +8382,7 @@ def page_marks(b, page):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="Assemble the games of a chess book PDF.")
-    ap.add_argument("pdf", type=Path)
+    ap.add_argument("pdf", type=Path, help="chess book PDF or EPUB")
     ap.add_argument("--letters", default=None)
     ap.add_argument("--passes", type=int, default=3)
     args = ap.parse_args(argv)

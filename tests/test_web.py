@@ -373,6 +373,31 @@ def test_the_library_uses_the_server_only_when_the_site_answers(tmp_path):
     assert "if (books) store = serverStore;" in lib and "store = deviceStore();" in lib
 
 
+def test_the_app_takes_an_epub(tmp_path):
+    """An EPUB chosen or dropped is laid out into a PDF by the worker (driver.convert) and
+    then added or read as a PDF named <name>.epub.pdf; the library knows it again by its
+    PDF's id or by the EPUB's own hash."""
+    import zipfile
+    page = build(tmp_path)
+    assert ('accept="application/pdf,.pdf,application/epub+zip,.epub,.chessbook,application/zip,.zip"'
+            in page)
+    assert "a chess book in PDF or EPUB form" in page and 'aria-label="Choose a chess book (PDF or EPUB)"' in page
+    assert "or click to choose a PDF or EPUB file" in page and "Please choose a PDF or EPUB file." in page
+    assert "if (LIB.isEpub(raw, file.name)) {" in page and "pdf = await LIB.convert(file);" in page
+    assert page.count('replace(/(\\.epub)?\\.pdf$/i, "")') == 2
+    lib = (tmp_path / "site" / "library.js").read_text(encoding="utf-8")
+    for text in ('type: "convert"', 'm.type === "converted"', '"mimetypeapplication/epub+zip"',
+                 '"chessbook-source:"', 'replace(/(\\.epub)?\\.pdf$/i, "")', "if (isEpub(raw, file.name)) return addEpub(file);",
+                 "Laid out from an EPUB file, so its page numbers differ from the printed book.",
+                 "Please choose a chess book PDF or EPUB, or a book file saved from a library."):
+        assert text in lib, text
+    # the EPUB test comes before the book file's: both are zips
+    assert lib.index("return addEpub(file)") < lib.index("return addBookFile(file)")
+    worker = (tmp_path / "site" / "worker.js").read_text(encoding="utf-8")
+    assert 'msg.type === "convert"' in worker and 'type: "converted"' in worker
+    assert "chessbook/epub.py" in zipfile.ZipFile(tmp_path / "site" / "app.zip").namelist()
+
+
 def test_the_icons_are_the_revolving_book_at_their_sizes():
     """The app's icons (tools/make_icons.py) are the revolving book that
     chessbook/style.py draws: web/icon.svg is that drawing, still, on the page

@@ -25,6 +25,13 @@ their method page by page:
   ClearScan) and each diagram is a separate embedded picture.
 - **text**: typeset pages whose diagrams are drawn from shapes or a chess font.
 
+An EPUB book has no pages of its own: the program first lays it out into PDF
+pages (`chessbook/epub.py`, written beside it as `<name>.epub.pdf`, the same
+bytes each time) and then reads that PDF like any other. Its pages are about
+60 characters wide, so their numbers differ from the printed book's; a board
+given as a picture (PNG, JPEG or SVG) becomes a board picture on the page. An
+EPUB locked by its seller (DRM) cannot be read.
+
 A diagram printed as text in a chess diagram font (as ChessBase and Fritz
 export them, and as the Chess Merida, Chess Alpha and similar fonts print
 them) holds its position in the text layer. Stage 1 reads such a diagram
@@ -99,7 +106,7 @@ figurines from books that name their figurines well;
 ## Using the app
 
 Open the published site (<https://gastolino.github.io/Book-To-Chess-Study-/>),
-choose **Add a book** and pick a chess book PDF, and read it beside a live
+choose **Add a book** and pick a chess book PDF or EPUB, and read it beside a live
 board. The book is processed in your own browser (Python runs there through
 Pyodide) and is never uploaded. The first visit downloads about 40 MB; later
 visits start at once.
