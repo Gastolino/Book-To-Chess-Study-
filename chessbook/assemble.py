@@ -2325,8 +2325,15 @@ class _Builder:
         # exercises printed in turn (1, 62, 123, ..., 2, 63, ...)
         found = [(i, did) for i, (doff, did) in enumerate(self.diagram_events)
                  if doff <= off and self.diag_info[did].get("label") == label]
-        if len(found) == 1 and sum(d.get("label") == label for d in self.diag_info.values()) == 1:
+        named = [did for did, d in self.diag_info.items() if d.get("label") == label]
+        if len(found) == 1 and len(named) == 1:
             return found[0][1]
+        # a label that names one diagram of the book, in an earlier chapter: the
+        # solutions printed in a chapter of their own (a puzzle book's
+        # "Solutions" at the back)
+        if not found and len(named) == 1 and self.diagram_at.get(named[0], (self.ci,))[0] < self.ci \
+                and self.diagram_selected(named[0]):
+            return named[0]
         if n is None:
             return None
         groups, cur = [], None
@@ -2696,6 +2703,8 @@ class _Builder:
                   display_title(self.section), header, self.line_start_offset(run.start),
                   start_ply, fen, born)
         L.first_offset = run.start
+        # the number of the exercise whose solution the line is (puzzle_index)
+        L.exercise = str(self.exercise[0]) if self.exercise else None
         L.spec = {"fen": fen, "diagram": diagram, "ply": start_ply}
         root = self.new_node(L, fen=fen, status="waiting" if waiting else "root", main=True,
                              page=page)
@@ -7650,7 +7659,8 @@ class _Builder:
                 "header": ({k: h.get(k) for k in ("text", "white", "black", "event", "site", "year")}
                            if h else None),
                 "result": L.result, "moves": moves, "variations": L.variations,
-                "start_note": L.start_note, "_offset": L.first_offset})
+                "start_note": L.start_note, "exercise": getattr(L, "exercise", None),
+                "_offset": L.first_offset})
         return out
 
 
@@ -8256,6 +8266,7 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
             "chapter": chapter_of.get(p), "selected": b.selection.page_selected(p),
             "diagrams": [{"id": did, "rect": d["rect"], "label": d.get("label"),
                           "kind": kinds.get(did), "selected": b.selection.diagram_selected(did),
+                          "side": d.get("side"), "series": d.get("series"),
                           **_diagram_reading(did, b.fix_diagrams.get(did) or b.diagram_fens.get(did),
                                              (readings or {}).get(did), did in fix["diagrams"]),
                           "after_node": b.after_node.get(did), "checked": did in b.checked,
@@ -8326,7 +8337,7 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
     total["line_status"] = dict(total["line_status"])
     total["corrected"] = dict(total["corrected"])
     total["corrected"]["symbols"] = len(fix["glyphs"])
-    return {
+    out = {
         "version": VERSION,
         "title": _book_title(doc, structure, pdf_path),
         "pdf": pdf_path.name,
@@ -8349,6 +8360,8 @@ def _book_dict(pdf_path, doc, chapters, diagrams, selection, b, glyphs, structur
         "corrections": fix,
         "stats": total,
     }
+    puzzle_index(out, b)
+    return out
 
 
 def _empty_counts():
@@ -8372,6 +8385,137 @@ def public_list(entries):
         return (u.get("chapter") or 0, u.get("page") or 0, round(box[1]), round(box[0]),
                 u.get("text") or "", u.get("line") or "")
     return [_public(u) for u in sorted(entries, key=key)]
+
+
+# ---------------------------------------------------------------- puzzle books
+
+SOLUTIONS_RE = re.compile(r"solution|answer|\bkey\b", re.I)
+PUZZLE_PLIES = 12           # the moves of a solution kept for the reader's check
+PUZZLE_MIN = 8              # the puzzles a book needs before the reader is asked
+_SAN_MARKS_RE = re.compile(r"[+#!?]+$")
+
+
+def _main_of(c, nodes):
+    """The move that continues the line from node c (the main move after a
+    main move), as the reader's cont() finds it."""
+    n = nodes[c]
+    kids = n.get("children") or []
+    if n.get("main"):
+        return next((k for k in kids if nodes[k].get("main")), None)
+    return kids[0] if kids else None
+
+
+def _move_pair(n):
+    """[san, uci] of a node: the move read, or the printed move of a line that
+    waits for its position (uci None then; the reader compares the SAN)."""
+    if n.get("san"):
+        return [n["san"], n.get("uci")]
+    raw = n.get("raw") or n.get("assumed")
+    return [raw, None] if raw else None
+
+
+def _solution_line(L, nodes):
+    main, nid = [], L["root"]
+    while len(main) < PUZZLE_PLIES:
+        nid = _main_of(nid, nodes)
+        if nid is None:
+            break
+        pair = _move_pair(nodes[nid])
+        if pair is None:
+            break
+        main.append(pair)
+    root = nodes.get(L["root"]) or {}
+    first = _main_of(L["root"], nodes) if root else None
+    alts = [p for p in (_move_pair(nodes[c]) for c in root.get("children") or [] if c != first) if p]
+    return {"line": L["id"], "page": L["page"], "chapter": L["chapter"], "status": L["status"],
+            "main": main, "alts": alts}
+
+
+def _note_san(text):
+    """The words of a solution in words that read as moves ("9. Nf6+ wins")."""
+    out = []
+    for w in text.split():
+        w = re.sub(r"^\d+\.(\.\.)?", "", w.strip(".,;:()[]"))
+        if not w or not re.search(r"[a-h][1-8]|O-O", w):
+            continue
+        toks = tokenize("1." + w)
+        if len(toks) == 2 and toks[1].kind == "move" and toks[1].raw == w:
+            out.append(w)
+    return out
+
+
+def puzzle_index(book, b=None):
+    """book["puzzles"]: whether the book is likely a book of puzzles, and its
+    puzzles with the solutions the program found for them.
+
+    A board diagram (a whole board, selected, with a label) is a puzzle when
+    no line reached it (no after_node, not checked) and no line starts from
+    it on its own page. Its solution is the first line from it on a later
+    page (a line whose exercise number or title gives its label first), or
+    else a sentence on a later page placed in no line that starts with the
+    label and a dot ("9. Nf6+ wins": a note solution, with the moves that
+    read as moves in "san"). The book is likely a puzzle book when it has
+    PUZZLE_MIN puzzles at least and half its board diagrams are puzzles or
+    half its puzzles have a solution; a chapter or section of solutions
+    ("Solutions", "Answers", "Key") only adds to the score.
+
+        {"likely", "score", "reasons": {"boards", "puzzles", "tied", "sections"},
+         "items": [{"diagram", "label", "page", "chapter", "side", "start_fen",
+                    "solution": {"line", "page", "chapter", "status", "main": [[san, uci]],
+                                 "alts": [[san, uci]]}
+                              | {"note", "page", "san"} | None}]}
+
+    A line still waiting for its position gives its printed moves with uci
+    None. b (the builder) gives the sequences placed in no line with their
+    text; without it, book["unattached"] does."""
+    nodes = book.get("nodes") or {}
+    lines = {L["id"]: L for L in book.get("lines") or []}
+    loose = (b.unattached if b is not None else None) or book.get("unattached") or []
+    boards, items = 0, []
+    for pg in book.get("pages") or []:
+        for d in pg.get("diagrams") or []:
+            lab = d.get("label")
+            if d.get("kind") not in ("board", "board_plus") or not d.get("selected") or not lab:
+                continue
+            boards += 1
+            own = [lines[i] for i in d.get("lines") or [] if i in lines]
+            if d.get("after_node") or d.get("checked") or any(L["page"] == pg["page"] for L in own):
+                continue
+            later = [L for L in own if L["page"] > pg["page"]]
+            ends = re.compile(r"(?<![0-9A-Za-z])" + re.escape(lab) + r"$")
+            pick = next((L for L in later if L.get("exercise") == lab or ends.search(L.get("title") or "")),
+                        later[0] if later else None)
+            solution = _solution_line(pick, nodes) if pick else None
+            if solution is None:
+                head = f"{lab}."
+                u = next((u for u in loose if (u.get("page") or 0) > pg["page"]
+                          and (u.get("text") or "").lstrip().startswith(head)), None)
+                if u is not None:
+                    text = re.sub(r"\s+", " ", u["text"]).strip()
+                    solution = {"note": text, "page": u["page"], "san": _note_san(text[len(head):])}
+            items.append({"diagram": d["id"], "label": lab, "page": pg["page"],
+                          "chapter": pg.get("chapter"), "side": d.get("side"),
+                          "start_fen": (pick or {}).get("start_fen") or d.get("fen"),
+                          "solution": solution})
+    sections = sum(1 for c in book.get("chapters") or [] if SOLUTIONS_RE.search(c.get("title") or ""))
+    sections += len({L.get("section") for L in lines.values() if SOLUTIONS_RE.search(L.get("section") or "")})
+    sections += sum(1 for L in lines.values() if SOLUTIONS_RE.search(L.get("title") or "")
+                    and not SOLUTIONS_RE.search(L.get("section") or ""))
+    puzzles = len(items)
+    tied = sum(1 for it in items if it["solution"])
+    likely = puzzles >= PUZZLE_MIN and (puzzles / max(boards, 1) >= 0.5 or tied >= puzzles / 2)
+    score = (0.4 * min(1.0, puzzles / PUZZLE_MIN) + 0.3 * (puzzles / boards if boards else 0)
+             + 0.2 * (tied / puzzles if puzzles else 0) + 0.1 * (1 if sections else 0))
+    book["puzzles"] = {"likely": bool(likely), "score": round(min(score, 1.0), 2),
+                       "reasons": {"boards": boards, "puzzles": puzzles, "tied": tied,
+                                   "sections": sections},
+                       "items": items}
+    return book["puzzles"]
+
+
+def same_san(a, b):
+    """Two moves in SAN are the same move, check and comment marks aside."""
+    return bool(a and b) and _SAN_MARKS_RE.sub("", a) == _SAN_MARKS_RE.sub("", b)
 
 
 def page_marks(b, page):
