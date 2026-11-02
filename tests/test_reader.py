@@ -852,7 +852,8 @@ def test_design_guide(little):
             assert v.strip() in ("none", "transparent", "var(--bg)") or v.strip().startswith("var(--ok)") \
                 or v.strip() in ("var(--doubt)", "var(--fail)", "var(--muted)") \
                 or v.strip() in ("var(--board-light)", "var(--board-dark)") \
-                or v.strip() == "var(--line)", (name, v)          # a page whose picture is on its way
+                or v.strip() == "var(--line)" \
+                or v.strip() == "var(--page)", (name, v)  # a page on its way; the cover of a hidden move
         # prose sets 1.5 and the move list 1.7
         for v in re.findall(r"line-height:([^;}]+)", low):
             assert v.strip() in ("1.5", "1.7", "1.35", "1.3", "1.25", "0"), (name, v)
@@ -864,6 +865,59 @@ def test_design_guide(little):
             assert v.strip() in ("400", "500"), (name, v)
         assert "bold" not in low, name
         assert style.base_css() in css and style.tokens_css() in css, name
+
+
+HIDE_SENTENCE = ("While Hide next moves is on, a plain box in the paper colour with a 1px dotted outline "
+                 "covers each printed move the reader has not reached.")
+
+
+def test_hide_controls(little):
+    """Hide next moves has its icon, its buttons beside Show reading (the panel's
+    and the phone bar's), the cover drawn in the paper colour, its stored
+    setting, and the sentence of DESIGN.md that allows the cover."""
+    out, _, _ = little
+    assert "hide" in style.ICONS and "page" in style.TOKENS
+    text = (out / "ch01.html").read_text(encoding="utf-8")
+    assert 'id="bhide"' in text and 'id="mhide"' in text and "__ICON_" not in text
+    assert style.icon("hide") in text
+    assert ".mark.hid" in reader.CHAPTER_CSS and '"chessbook-hide"' in reader.CHAPTER_JS
+    guide = re.sub(r"\s+", " ", (ROOT / "DESIGN.md").read_text(encoding="utf-8"))
+    assert HIDE_SENTENCE in guide
+
+
+HIDE_CHECKS = ("hide button", "tree hidden", "page covers", "wrong move", "try again", "right move",
+               "reply played", "right arrow reveals", "end stops at uncovered", "hidden click goes before",
+               "reload keeps mode", "page turn keeps covers", "inverted cover", "analysis off",
+               "off shows all", "no console errors")
+
+
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_hide_next_moves_in_chromium(little):
+    """Hide next moves (tests/hide_e2e.js), from the start of the first game: the
+    moves after the current one are covered in the move list and on the page; a
+    wrong move on the board is refused and Try again brings the board back; the
+    book's move uncovers itself and the book's reply is played; the right arrow
+    shows the book's move; End stops at the last move uncovered; a click on a
+    covered move goes to the position before it; the mode outlasts a reload and
+    the covers a page turn; the inverted page inverts the covers; the engine's
+    moves are hidden; turning the mode off shows every move. Screenshots in the
+    light and dark schemes and on an iPhone 13."""
+    out, _, _ = little
+    screens = ROOT / "output" / "screens"
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    from test_assemble import MAIN_SAN
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "hide_e2e.js"), str(out / "ch01.html"), str(screens),
+                           json.dumps(MAIN_SAN)], capture_output=True, text=True, env=env, timeout=600)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    assert res["errors"] == []
+    done = {c["name"] for c in res["checks"] if c["ok"]}
+    assert set(HIDE_CHECKS) <= done, set(HIDE_CHECKS) - done
+    for name in ("hide_1280_light.png", "hide_1280_dark.png", "hide_390_light.png"):
+        assert (screens / name).stat().st_size > 10000, name
 
 
 STAGE1_REPORT = ROOT / "output" / "primer" / "stage1" / "inspect.html"

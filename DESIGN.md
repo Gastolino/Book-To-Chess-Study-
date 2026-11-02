@@ -48,6 +48,9 @@ chess notation.
   the current move the accent outline, and shows the tools that correct the
   reading (the pencil, Read a section, Review); outside reading mode those
   tools are hidden.
+- While Hide next moves is on, a plain box in the paper colour with a 1px
+  dotted outline covers each printed move the reader has not reached. It is
+  the one filled shape over the page, and it carries no text.
 
 ## Colour
 
@@ -69,6 +72,7 @@ Give `body` an explicit background.
 | `--board-light` | `#ecebe6` | `#b9b8b2` | light squares |
 | `--board-dark` | `#bdbab2` | `#8f8d87` | dark squares |
 | `--bookmark` | `#f2b705` | `#f2b705` | the bookmark icon when set, the ribbon, and the current move on the page outside reading mode |
+| `--page` | `#fff` | `#d6d6d6` | the paper of the page picture (dimmed in dark mode as the picture is), for the cover of a hidden move |
 
 The warm yellow marks the bookmark (the icon when set and the ribbon) and the
 current move on the page outside reading mode, and nothing else. It keeps the

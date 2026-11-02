@@ -1162,6 +1162,8 @@ function pageEyes(){
     b.style.left = pct(m.bbox[0] - w * 0.15, P.w); b.style.top = pct(m.bbox[1] - h * 0.35, P.h);
     b.style.width = pct(w, P.w); b.style.height = pct(h, P.h);
     b.innerHTML = EYE;
+    // (none on a hidden move: Hide next moves)
+    if (m.node && hidden(m.node)) b.classList.add("hid");
     const t = "Unreadable piece symbol “" + shown(m.symbol) + "”: choose the piece it stands for";
     b.title = t; b.setAttribute("aria-label", t); b.setAttribute("aria-haspopup", "menu");
     ov.appendChild(b);

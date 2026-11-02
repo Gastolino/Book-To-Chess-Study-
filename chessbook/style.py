@@ -41,6 +41,9 @@ TOKENS = {
     # under the current move outside reading mode, and nothing else: one sharp
     # warm yellow in both schemes, so that it stands out
     "bookmark": ("#f2b705", "#f2b705"),
+    # the paper of the page picture, for the box that covers a hidden move (Hide next moves): white,
+    # and in the dark scheme the white of the picture as DIM leaves it
+    "page": ("#fff", "#d6d6d6"),
 }
 
 
@@ -173,6 +176,8 @@ ICONS = {
     "gear": "<circle cx='10' cy='10' r='3'/><path d='M10 2.5v3M10 14.5v3M3.5 6.25l2.6 1.5M13.9 12.25l2.6 1.5"
             "M3.5 13.75l2.6-1.5M13.9 7.75l2.6-1.5'/>",
     "bookmark": "<path d='M5.5 3.5h9v13l-4.5-3.3-4.5 3.3z'/>",
+    # an eye struck through: the next moves hidden (Hide next moves)
+    "hide": "<path d='M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5zM4 16L16 4'/>",
     # a circle, the left half filled: the page shown in reverse
     "invert": "<circle cx='10' cy='10' r='6.5'/><path d='M10 3.5a6.5 6.5 0 0 0 0 13z' fill='currentColor' stroke='none'/>",
     # two filled squares, the second up and to the right of the first, overlapping by a quarter:

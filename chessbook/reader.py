@@ -298,7 +298,7 @@ CHAPTER_CSS = r"""
 .where .book{color:var(--muted);min-width:0;overflow-wrap:anywhere}
 .where h1{font-size:17px;line-height:1.35;min-width:0;overflow-wrap:anywhere}
 .tools{display:flex;align-items:center;gap:24px;flex:none}
-#showread[aria-pressed="true"]{color:var(--accent)}
+#showread[aria-pressed="true"],#bhide[aria-pressed="true"]{color:var(--accent)}
 /* A touch screen keeps a tapped button in :hover until the next tap elsewhere, which would paint a
    switch just turned off in the accent colour of a switch that is on */
 @media (hover:none){.ib[aria-pressed="false"]:not(:disabled):hover{color:var(--fg)}}
@@ -401,6 +401,12 @@ body:not(.reading) .mark.current{border-bottom:2px solid var(--bookmark)}
 .reading .mark.st-unattached{outline:1px dashed var(--muted)}
 .reading .mark:hover,.reading .diag:hover{outline:1px solid var(--accent)}
 .reading .mark.current,.reading .diag.current{outline:1.5px solid var(--accent)}
+/* Hide next moves: a move the reader has not reached is covered by a plain box in the paper colour
+   (DESIGN.md), over any outline of its status, and in the move list it shows as a dotted blank */
+body.hiding .mark.hid{background:var(--page);outline:1px dotted var(--muted);cursor:pointer}
+body.hiding .mark.hid::after,body.hiding .eye.hid{display:none}
+.tree .mv.hid .san{color:var(--muted)}
+.tree .mv.hid{border-bottom:1px dotted var(--muted)}
 .mark:focus-visible,.diag:focus-visible,.reading .mark:focus-visible,.reading .diag:focus-visible{
 outline:1.5px solid var(--accent);outline-offset:1px;z-index:4}
 .pagefoot{margin-top:16px;display:grid;gap:8px}
@@ -547,7 +553,7 @@ padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mtxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
 .mbar .ib{padding:8px 6px}
-#mboard[aria-pressed="true"],#mzoom[aria-pressed="true"],#mread[aria-pressed="true"]{color:var(--accent)}
+#mboard[aria-pressed="true"],#mzoom[aria-pressed="true"],#mread[aria-pressed="true"],#mhide[aria-pressed="true"]{color:var(--accent)}
 /* the bar's magnifier enlarges the page: the button under the page is for wider screens */
 #zoom{display:none}
 /* The board follows the page picture (the script moves it there from the panel) and, while
@@ -621,6 +627,13 @@ window.READER = D;
 const $ = (id) => document.getElementById(id);
 const S = {page: null, node: null, line: null, flip: false, diagram: null, mini: null,
   at: null, last: null, wanted: null};
+// Hide next moves: on; the side the reader plays ("first": the side to move at the line's start,
+// "w", "b" or "both"); seen: the moves reached, which show (not stored: a reload covers the rest)
+const HM = {on: false, side: "first", seen: new Set(), timer: 0};
+// a move is hidden while the mode is on and the reader has not reached it; a line's start never is
+// (the puzzles reuse the rule)
+function hidden(id){ const n = D.nodes[id]; return HM.on && !!n && n.parent != null && !HM.seen.has(id); }
+function seedSeen(){ for (let id = S.node; id != null && D.nodes[id]; id = D.nodes[id].parent) HM.seen.add(id); }
 // mini: the "Board" button of the phone's bar (null: on while a move or diagram is shown)
 // at: the box the reader is on, {page, key} (the key of a printed move, which a new reading keeps),
 // or null; last: the last box lit, from which the arrows go on after a step that lit none
@@ -1246,6 +1259,19 @@ function diagramName(d, p){
   if (d.label) return "Diagram " + d.label;
   return "Unnumbered diagram on " + pageName(p);
 }
+// the words of a box on the page, as its tooltip and its name; a hidden move says only that it is
+function markTitle(b, m){
+  const n = m.node ? D.nodes[m.node] : null;
+  let t = n ? (n.san || n.assumed || "“" + shown(m.raw) + "”") : "“" + shown(m.raw) + "”";
+  t += ": " + lcfirst(m.auto || (n && n.auto) ? D.words.auto : m.corrected || (n && n.corrected) ? D.words.corrected :
+    (D.words[m.status] || m.status));
+  if (m.reason) t += ", because " + m.reason;
+  t += ".";
+  if (m.ref && n) t = "“" + shown(m.raw) + "” names " + moveText(m.node, true) + ", a move the line has played.";
+  if (b.classList.contains("hid")) t = "A hidden move";
+  b.title = t;
+  b.setAttribute("aria-label", t);
+}
 function showPage(p){
   const P = D.pages[p];
   S.page = p;
@@ -1274,15 +1300,8 @@ function showPage(p){
     if (m.node) b.dataset.node = m.node;
     if (m.seq) b.dataset.seq = m.seq;
     b.dataset.mark = i;
-    const n = m.node ? D.nodes[m.node] : null;
-    let t = n ? (n.san || n.assumed || "“" + shown(m.raw) + "”") : "“" + shown(m.raw) + "”";
-    t += ": " + lcfirst(m.auto || (n && n.auto) ? D.words.auto : m.corrected || (n && n.corrected) ? D.words.corrected :
-      (D.words[m.status] || m.status));
-    if (m.reason) t += ", because " + m.reason;
-    t += ".";
-    if (m.ref && n) t = "“" + shown(m.raw) + "” names " + moveText(m.node, true) + ", a move the line has played.";
-    b.title = t;
-    b.setAttribute("aria-label", t);
+    if (m.node && hidden(m.node)) b.classList.add("hid");
+    markTitle(b, m);
     ov.appendChild(b);
   });
   pageEyes();
@@ -1301,6 +1320,7 @@ function showPage(p){
   pageState();
   renderChips();
   highlightMark(false);
+  hideRefresh();
   if (S.diagram && !P.diagrams.some(d => d.id === S.diagram)) closeDiagram();
   setState();
 }
@@ -1440,6 +1460,29 @@ function highlightMark(scroll){
   if (!el) return;
   el.classList.add("current");
   if (scroll) revealMark(el);
+}
+// Hide next moves: the moves of the move list and the boxes of the page that are hidden (hidden())
+// are covered, the others show; only what changed is drawn again
+function hideRefresh(){
+  let changed = false;
+  for (const el of $("tree").querySelectorAll(".mv[data-node]")) {
+    const id = el.dataset.node;
+    if (!D.nodes[id] || el.classList.contains("hid") === hidden(id)) continue;
+    // (a hidden move keeps whether it shows its number, for when it shows again)
+    el.outerHTML = mvHtml(id, el.dataset.need === "1" || !!el.querySelector(".mn"));
+    changed = true;
+  }
+  if (changed) markTreeCurrent(false);
+  const P = S.page ? D.pages[S.page] : null;
+  if (!P) return;
+  for (const el of $("ov").querySelectorAll(".mark[data-node]")) {
+    const hid = hidden(el.dataset.node);
+    if (el.classList.contains("hid") === hid) continue;
+    el.classList.toggle("hid", hid);
+    markTitle(el, P.marks[parseInt(el.dataset.mark, 10)]);
+    const eye = $("ov").querySelector(".eye[data-eye='" + el.dataset.mark + "']");
+    if (eye) eye.classList.toggle("hid", hid);
+  }
 }
 
 // Keep the current move in the part of the screen that is free: above the
@@ -1895,6 +1938,9 @@ function moveText(id, needNumber){ return moveNumber(id, needNumber) + moveBody(
 function moveHtml(id, needNumber){ return esc(moveNumber(id, needNumber)) + moveBodyHtml(id); }
 function mvHtml(id, needNumber){
   const n = D.nodes[id];
+  // a hidden move: a blank, its move never written into the page
+  if (hidden(id)) return "<button class='mv hid' tabindex='-1' data-node='" + id + "'" + (needNumber ? " data-need='1'" : "") +
+    " title='A hidden move'><span class=san>…</span></button>";
   let tip = n.auto ? (n.corrected === "assumed" ? D.words.inserted : D.words.auto) : n.corrected === "added" ? D.words.added :
     n.corrected ? D.words.corrected : (D.words[n.status] || n.status);
   if (n.status === "failed" && n.assumed) tip += "; the program assumed " + n.assumed;
@@ -1983,6 +2029,7 @@ function renderTree(){
   $("linemeta").innerHTML = lineMeta(L);
   for (const a of $("linemeta").querySelectorAll(".dlink"))
     a.addEventListener("click", (e) => { e.preventDefault(); showDiagram(a.dataset.diagram); });
+  hideRefresh();
 }
 function fitTree(){
   // on wide screens the move list gives way to the comment, but keeps at least three rows, and it
@@ -2121,6 +2168,8 @@ function selectNode(id, opts){
       !(RV.edit.kind === "thread" && TH.self)) closeFix();
   const lineChanged = S.line !== n.line;
   S.node = id; S.line = n.line;
+  seedSeen();
+  clearTimeout(HM.timer);
   if (!opts.keepWanted) S.wanted = null;   // the reader chose a move: the wanted place is forgotten
   const box = "at" in opts ? opts.at : placeFor(id, !!opts.fromPage);
   S.at = placeOf(box);
@@ -2137,6 +2186,7 @@ function selectNode(id, opts){
   setState();
   // the moves of a section being read go with the move chosen
   regionFollow(id);
+  hideRefresh();
 }
 // the address of the place: "#at=PAGE:NODE:KEY", the key of the box lit (encoded)
 function placeHash(){
@@ -2191,6 +2241,11 @@ function toEnd(dir){
   }
   S.last = placeOf(P.last);
   selectNode(P.node, {at: P.at, scrollPage: true});
+}
+// a click on a hidden move: the position before it (a line's first move: the start position)
+function hiddenClick(id){
+  selectNode(D.nodes[id].parent, {at: null, scrollPage: true});
+  say("This move is hidden. Find it on the board, or press the right arrow to see the book's move.");
 }
 function governing(){
   // a line that began on an earlier page and goes on here: [line, its last move before this page]
@@ -2384,6 +2439,33 @@ function setReading(on){
   closeSymMenu();
 }
 
+// Hide next moves: the moves after the one reached are covered until the reader plays them on the
+// board (boardMove) or shows the book's move with the right arrow
+function setHide(on, quiet){
+  HM.on = on;
+  document.body.classList.toggle("hiding", on);
+  const name = on ? "Show next moves" : "Hide next moves";
+  for (const b of [$("bhide"), $("mhide")]) {
+    if (!b) continue;
+    b.setAttribute("aria-pressed", String(on));
+    b.setAttribute("aria-label", name);
+    b.title = name;
+  }
+  $("bfwd").title = on ? "Show the book's move (right arrow)" : "Next move (right arrow)";
+  try { localStorage.setItem("chessbook-hide", on ? "1" : "0"); } catch (e) { /* no storage */ }
+  HM.seen.clear();
+  seedSeen();
+  clearTimeout(HM.timer);
+  hideRefresh();
+  // (the engine's moves would tell the next move)
+  if (EV.on) evRenderNow();
+  if (!quiet) say(on ? "The next moves are hidden. Play your move on the board." : "Every move is shown.");
+}
+function setHideSide(v){
+  HM.side = v;
+  try { localStorage.setItem("chessbook-hide-side", v); } catch (e) { /* no storage */ }
+}
+
 function setInverted(on){
   document.body.classList.toggle("inverted", on);
   $("invbtn").setAttribute("aria-pressed", String(on));
@@ -2466,6 +2548,9 @@ function init(){
       if (box) b = box;
     }
     S.wanted = null;
+    // a hidden move: the position before it, where the reader may find it on the board (a pencil's
+    // tap included, which would show the move in its corrector)
+    if (b.dataset.node && b.classList.contains("mark") && hidden(b.dataset.node)) { hiddenClick(b.dataset.node); return; }
     if (penClick(b)) return;
     if (b.dataset.eye) { openSymMenu(b); return; }
     if (RV.edit && RV.edit.kind === "seq" && b.dataset.node) {
@@ -2498,6 +2583,7 @@ function init(){
     if (t && t.dataset.node && PEN.connect) { finishConnect(t.dataset.node); return; }
     // (the move a box in no line follows, while the thread asks for its move)
     if (t && t.dataset.node && threadTree(t.dataset.node)) return;
+    if (t && t.dataset.node && hidden(t.dataset.node)) { hiddenClick(t.dataset.node); return; }
     if (t && t.dataset.node) {
       selectNode(t.dataset.node, {scrollTree: false, scrollPage: true});
       openIfFailed(t.dataset.node);
@@ -2591,6 +2677,7 @@ function init(){
   $("pagenum").addEventListener("focus", () => $("pagenum").select());
   // (the bar at the foot of a phone's window holds it too: the row under the board follows the page
   // there, out of view until a move is chosen)
+  for (const b of [$("bhide"), $("mhide")]) b.addEventListener("click", () => setHide(!HM.on));
   for (const b of [$("showread"), $("mread")]) b.addEventListener("click", () => {
     const on = !reading();
     setReading(on);
@@ -2639,6 +2726,7 @@ function init(){
     else if (e.key === "End") { toEnd(1); e.preventDefault(); }
     else if (e.key === "PageDown") { turnPage(1); e.preventDefault(); }
     else if (e.key === "PageUp") { turnPage(-1); e.preventDefault(); }
+    else if (e.key === "h") { setHide(!HM.on); e.preventDefault(); }
   });
   window.addEventListener("hashchange", fromHash);
   let resizing = 0;
@@ -2664,6 +2752,11 @@ function init(){
   let rd = false;
   try { rd = localStorage.getItem("chessbook-reading") === "1"; } catch (e) { rd = false; }
   setReading(rd);
+  { let hd = false, side = "first";
+    try { hd = localStorage.getItem("chessbook-hide") === "1"; side = localStorage.getItem("chessbook-hide-side") || side; }
+    catch (e) { hd = false; }
+    HM.side = ["first", "w", "b", "both"].includes(side) ? side : "first";
+    setHide(hd, true); }
   // (the pencil is the tool reading mode starts with, as when the reader turns it on)
   if (rd && !PEN.on) setPencil(true, true);
   // the moves of the sections read on the pages that the book does not hold yet (the reader opened
@@ -2784,6 +2877,7 @@ __PGNBTN__
 <button class="ib" id="bend" title="End of the line (End)" aria-label="End of the line">__ICON_END__</button>
 <span class="gap"></span>
 <button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
+<button class="ib" id="bhide" aria-pressed="false" aria-label="Hide next moves" title="Hide next moves">__ICON_HIDE__</button>
 <span class="gap"></span>
 <button class="ib" id="bflip" title="Turn the board round" aria-label="Turn the board round">__ICON_FLIP__</button>
 <button class="ib" id="bcpu" aria-pressed="false" title="Analysis with Stockfish" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
@@ -2813,6 +2907,7 @@ __PGNBTN__
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
 <div class="mside"><span class="mtxt" id="mtxt"></span><span class="meval small" id="mevalnum"></span>
 <span class="mbtns"><button class="ib" id="mread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
+<button class="ib" id="mhide" aria-pressed="false" aria-label="Hide next moves" title="Hide next moves">__ICON_HIDE__</button>
 <button class="ib rtool" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
 <button class="ib rtool" id="mregion" aria-pressed="false" aria-label="Read a section of the page that the program missed">__ICON_SECTION__</button>
 <button class="ib" id="mcpu" aria-pressed="false" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
@@ -3005,6 +3100,7 @@ def chapter_html(book, ch, images, pgn_text, pgn_info, engine=False):
         "__ICON_GEAR__": style.icon("gear"),
         "__ICON_BOOKMARK__": style.icon("bookmark"),
         "__ICON_INVERT__": style.icon("invert"),
+        "__ICON_HIDE__": style.icon("hide"),
         "__PIECES__": _pieces_defs(),
         "__EYE__": EYE_SVG,
         "__SELJS__": SELECTION_JS,
