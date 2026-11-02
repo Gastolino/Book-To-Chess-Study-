@@ -50,6 +50,8 @@ const LIB = (() => {
   const RETRY = 30000;
   const META = "chessbook-library:";
   const HINT = "chessbook-homehint";
+  // "chessbook-source:<an EPUB's hash>" names the id of the PDF it was laid out into (addEpub)
+  const SOURCE = "chessbook-source:";
   // what the reader keeps in localStorage under "chessbook-<kind>:<file>:<pages>"
   const KINDS = ["corrections", "selection", "bookmarks"];
   let readyWaiters = [];
@@ -634,7 +636,7 @@ const LIB = (() => {
   function titleOf(b) {
     if (b.title) return b.title;
     // until the program has read the book: its file name, in words
-    return b.fileName.replace(/\.pdf$/i, "").replace(/[_]+/g, " ").trim() || "A chess book";
+    return b.fileName.replace(/(\.epub)?\.pdf$/i, "").replace(/[_]+/g, " ").trim() || "A chess book";
   }
   function day(ms) {
     const d = new Date(ms), now = new Date();
@@ -729,6 +731,12 @@ const LIB = (() => {
       m.className = "meta";
       m.textContent = describe(b);
       words.append(t, m);
+      if (/\.epub\.pdf$/i.test(b.fileName)) {
+        const e = document.createElement("span");
+        e.className = "meta epub";
+        e.textContent = "Laid out from an EPUB file, so its page numbers differ from the printed book.";
+        words.append(e);
+      }
       open.append(cover, words);
       open.setAttribute("aria-label", "Open " + titleOf(b) + ". " + describe(b) + ".");
       open.addEventListener("click", () => api.open(b));
@@ -833,15 +841,15 @@ const LIB = (() => {
     $("drop").querySelector(".big").textContent = "Add a book";
     if (store.kind === "device") {
       $("drop").querySelector(".small").textContent =
-        "Choose a chess book PDF, or a book file saved from a library, or drop one here. The program reads " +
-        "a PDF once and keeps it on this device.";
-      $("drop").setAttribute("aria-label", "Add a chess book PDF or a book file to your library");
+        "Choose a chess book PDF or EPUB, or a book file saved from a library, or drop one here. The program " +
+        "reads a book once and keeps it on this device.";
+      $("drop").setAttribute("aria-label", "Add a chess book PDF or EPUB, or a book file, to your library");
       $("libempty").textContent = "Your library on this device holds no books yet. Add a chess book below: " +
         "the program reads it once and keeps it here, so that it opens at once the next time.";
     } else {
       $("drop").querySelector(".small").textContent =
-        "Choose a chess book PDF, or drop one here. The program reads it once and keeps it in your library.";
-      $("drop").setAttribute("aria-label", "Add a chess book PDF to your library");
+        "Choose a chess book PDF or EPUB, or drop one here. The program reads it once and keeps it in your library.";
+      $("drop").setAttribute("aria-label", "Add a chess book PDF or EPUB to your library");
     }
     $("another").textContent = "Library";
     homeHint();
@@ -908,19 +916,72 @@ const LIB = (() => {
   }
 
   // ---------------------------------------------------------------- adding and opening
-  // A file the user chose: a PDF, or a book file saved from a library.
+  // A file the user chose: a PDF, an EPUB, or a book file saved from a library.
   api.add = async function (file) {
     if (busy) return;
-    let head = "";
-    try { head = String.fromCharCode(...new Uint8Array(await file.slice(0, 5).arrayBuffer())); }
-    catch (e) { head = ""; }
+    let raw = new Uint8Array(0);
+    try { raw = new Uint8Array(await file.slice(0, 58).arrayBuffer()); }
+    catch (e) { raw = new Uint8Array(0); }
+    const head = String.fromCharCode(...raw.subarray(0, 5));
+    if (isEpub(raw, file.name)) return addEpub(file);
     if (head.startsWith("PK\u0003\u0004")) return addBookFile(file);
     if (head !== "%PDF-" && !/\.pdf$/i.test(file.name)) {
-      say("Please choose a chess book PDF, or a book file saved from a library.", true);
+      say("Please choose a chess book PDF or EPUB, or a book file saved from a library.", true);
       return;
     }
     return addPdf(file);
   };
+  // An EPUB (chessbook/epub.py is_epub): a zip whose first entry is its stored mimetype, or a
+  // file named .epub. raw: the file's first 58 bytes.
+  api.isEpub = isEpub;
+  function isEpub(raw, name) {
+    return (String.fromCharCode(...raw.subarray(0, 4)) === "PK\u0003\u0004" &&
+            String.fromCharCode(...raw.subarray(30, 58)) === "mimetypeapplication/epub+zip") ||
+      /\.epub$/i.test(name || "");
+  }
+  // An EPUB, laid out into pages by the worker (driver.convert): a PDF File named
+  // <name>.epub.pdf, so that it never stands for the reader's own <name>.pdf.
+  let converting = null;
+  api.convert = convertEpub;
+  async function convertEpub(file) {
+    await whenReady();
+    say("Preparing the EPUB book for reading.");
+    const bytes = await file.arrayBuffer();
+    const m = await new Promise((resolve) => {
+      converting = resolve;
+      worker.postMessage({ type: "convert", name: safeName(file.name), bytes }, [bytes]);
+    });
+    if (m.error) throw new Error(m.error);
+    return new File([m.bytes], file.name.replace(/\.epub$/i, "") + ".epub.pdf", { type: "application/pdf" });
+  }
+  // The PDF of an EPUB is added as any PDF. The same EPUB gives the same PDF, so its id knows
+  // the book again on any device; the EPUB's own hash (SOURCE) knows it again on this one after
+  // a new program has laid it out differently.
+  async function addEpub(file) {
+    busy = true;
+    working(true);
+    let src, pdf;
+    try {
+      src = await sha256(await file.arrayBuffer());
+      let id = null;
+      try { id = localStorage.getItem(SOURCE + src); } catch (e) { id = null; }
+      const known = id && api.books.find((b) => b.id === id);
+      if (known) {
+        busy = false;
+        say("This book is already in your library.");
+        return api.open(known);
+      }
+      pdf = await convertEpub(file);
+    } catch (err) {
+      busy = false;
+      working(false);
+      say("The program could not open this EPUB book (" + String(err.message).replace(/\.$/, "") + ").", true);
+      return;
+    }
+    busy = false;
+    await addPdf(pdf);
+    try { localStorage.setItem(SOURCE + src, await sha256(await pdf.arrayBuffer())); } catch (e) { /* no storage */ }
+  }
   async function addPdf(file) {
     busy = true;
     working(true);
@@ -1183,6 +1244,12 @@ const LIB = (() => {
       readyWaiters = [];
       setTimeout(() => w.forEach((f) => f()), 0);
       return false;
+    }
+    if (m.type === "converted") {
+      const done = converting;
+      converting = null;
+      if (done) done(m);
+      return true;
     }
     if (!api.on) return false;
     const cur = api.current;

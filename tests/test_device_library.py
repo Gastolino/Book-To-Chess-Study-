@@ -65,7 +65,7 @@ def test_the_shell_offers_the_library_everywhere(tmp_path):
                    check=True, capture_output=True)
     page = (site / "index.html").read_text(encoding="utf-8")
     assert '<link rel="manifest" href="manifest.webmanifest">' in page
-    assert 'accept="application/pdf,.pdf,.chessbook,application/zip,.zip"' in page
+    assert 'accept="application/pdf,.pdf,application/epub+zip,.epub,.chessbook,application/zip,.zip"' in page
     assert 'id="libspace"' in page and 'id="libhint"' in page
     manifest = json.loads((site / "manifest.webmanifest").read_text(encoding="utf-8"))
     assert manifest["display"] == "standalone"
