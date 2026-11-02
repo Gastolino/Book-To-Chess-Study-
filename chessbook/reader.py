@@ -630,17 +630,18 @@ window.READER = D;
 const $ = (id) => document.getElementById(id);
 const S = {page: null, node: null, line: null, flip: false, diagram: null, mini: null,
   at: null, last: null, wanted: null};
+// mini: the "Board" button of the phone's bar (null: on while a move or diagram is shown)
+// at: the box the reader is on, {page, key} (the key of a printed move, which a new reading keeps),
+// or null; last: the last box lit, from which the arrows go on after a step that lit none
+// wanted: the place the hash asked for that this reading does not hold yet, {page, node, key}
 // Hide next moves: on; the side the reader plays ("first": the side to move at the line's start,
-// "w", "b" or "both"); seen: the moves reached, which show (not stored: a reload covers the rest)
+// "w", "b" or "both"); seen: the moves reached, which show (not stored: a reload covers the rest);
+// timer: the book's reply to come
 const HM = {on: false, side: "first", seen: new Set(), timer: 0};
 // a move is hidden while the mode is on and the reader has not reached it; a line's start never is
 // (the puzzles reuse the rule)
 function hidden(id){ const n = D.nodes[id]; return HM.on && !!n && n.parent != null && !HM.seen.has(id); }
 function seedSeen(){ for (let id = S.node; id != null && D.nodes[id]; id = D.nodes[id].parent) HM.seen.add(id); }
-// mini: the "Board" button of the phone's bar (null: on while a move or diagram is shown)
-// at: the box the reader is on, {page, key} (the key of a printed move, which a new reading keeps),
-// or null; last: the last box lit, from which the arrows go on after a step that lit none
-// wanted: the place the hash asked for that this reading does not hold yet, {page, node, key}
 const imgCache = {};
 const IMG_KEEP = 4;  // decoded page pictures kept for the diagram crops: the last few pages only
 // the compact layout (one column, the board at the foot of the window): phones, and tablets held

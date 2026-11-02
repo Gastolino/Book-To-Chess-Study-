@@ -2282,6 +2282,9 @@ function applyPatch(p){
   if (edit && edit.node && (ren[edit.node] || !D.nodes[edit.node])) edit.node = ren[edit.node] || null;
   if (S.node) S.line = D.nodes[S.node].line;
   else if (S.line && !D.lines[S.line]) S.line = null;
+  // (the moves reached, by their new ids: the one the reader is on and those before it)
+  HM.seen.clear();
+  seedSeen();
   // (the thread finds its moves again before the page names them)
   threadRebase();
   showPage(S.page);
