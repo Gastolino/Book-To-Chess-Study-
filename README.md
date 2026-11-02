@@ -28,9 +28,14 @@ their method page by page:
 An EPUB book has no pages of its own: the program first lays it out into PDF
 pages (`chessbook/epub.py`, written beside it as `<name>.epub.pdf`, the same
 bytes each time) and then reads that PDF like any other. Its pages are about
-60 characters wide, so their numbers differ from the printed book's; a board
-given as a picture (PNG, JPEG or SVG) becomes a board picture on the page. An
-EPUB locked by its seller (DRM) cannot be read.
+60 characters wide, so their numbers are the program's own and differ from
+any printed edition; a board given as a picture (PNG, JPEG or SVG) becomes a
+board picture on the page. An EPUB locked by its seller (DRM: Adobe's, Apple's,
+or an `encryption.xml` that encrypts the book's text) cannot be read; one that
+only hides its embedded fonts, as many publishers do in books with no lock, is
+read, in the program's own fonts. The PDF is laid out again when the EPUB, the
+page size or the version of MuPDF changes (the PDF carries a fingerprint of
+them), so that the command line and the app read the same pages.
 
 A diagram printed as text in a chess diagram font (as ChessBase and Fritz
 export them, and as the Chess Merida, Chess Alpha and similar fonts print
@@ -497,6 +502,25 @@ and they travel with the other corrections (part "added" of the
 corrections), through Read again, the book file and a new build. In a reader
 built from the command line the board shows your move at once, and the next
 run, with the corrections copied into the chat, adds it to the line.
+
+### Hide next moves
+
+The eye struck through under the board (and in the bar on a phone), or the
+H key, hides the moves after the one you are on: in the move list each is a
+dotted blank that keeps only its move number, and on the page each printed
+move is covered by a plain box in the paper colour with a dotted outline.
+Play the next move on the board: the book's move uncovers itself ("Right:
+1.e4 is the book's move.") and, when the other side's move comes next, the
+book plays it after a moment and the message names it. A variation the book
+gives is shown as one, and its main move stays hidden. Another move opens a
+short choice: **Try again**, **Show the book's move** and, in reading mode,
+**Correct the book's move**. Where the program could not read the book's
+move, the choice says so and does not name it. The Next move arrow (or the
+right arrow key) shows the book's move; End stops at the last move shown;
+a tap on a covered move goes to the position before it. Settings (the gear
+under the board) holds "Hide next moves: you play": the side to move first
+(the default, named when the mode comes on), White, Black or both sides. The
+mode outlasts a reload; the moves you uncovered do not.
 
 ## Analysis with Stockfish
 

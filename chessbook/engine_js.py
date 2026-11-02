@@ -571,17 +571,17 @@ function renderSettings(){
   const opt = (key, value, label) => "<button class='tb' data-set='" + key + "' data-value='" + esc(String(value)) + "' aria-pressed='" +
     String(s[key] === value) + "'>" + esc(label) + "</button>";
   const row = (label, opts) => "<div class='row'><span class='lab'>" + label + "</span><span class='opts'>" + opts + "</span></div>";
-  let h = row("Lines", [1, 2, 3, 4, 5].map(k => opt("lines", k, String(k))).join(""));
+  // the side whose moves the reader finds while Hide next moves is on (the book plays the other's)
+  const side = (v, label) => "<button class='tb' role='radio' data-set='hideside' data-value='" + v + "' aria-checked='" +
+    String(HM.side === v) + "'>" + esc(label) + "</button>";
+  let h = "<div class='row'><span class='lab' id='hmside'>Hide next moves: you play</span><span class='opts' role='radiogroup' " +
+    "aria-labelledby='hmside'>" + side("first", "The side to move first") + side("w", "White") + side("b", "Black") +
+    side("both", "Both sides") + "</span></div>";
+  h += row("Lines", [1, 2, 3, 4, 5].map(k => opt("lines", k, String(k))).join(""));
   h += row("Stop at", EV_LIMITS.map(l => opt("limit", l[0], l[1])).join(""));
   h += row("Analyse", opt("auto", true, "every position shown") + opt("auto", false, "only when the icon is pressed"));
   h += row("Arrow", opt("arrow", true, "best move on the board") + opt("arrow", false, "none"));
   h += row("Memory", opt("hash", 16, "16 MB") + opt("hash", 32, "32 MB"));
-  // the side whose moves the reader finds while Hide next moves is on (the book plays the other's)
-  const side = (v, label) => "<button class='tb' role='radio' data-set='hideside' data-value='" + v + "' aria-checked='" +
-    String(HM.side === v) + "'>" + esc(label) + "</button>";
-  h += "<div class='row'><span class='lab' id='hmside'>You play</span><span class='opts' role='radiogroup' " +
-    "aria-labelledby='hmside'>" + side("first", "The side to move first") + side("w", "White") + side("b", "Black") +
-    side("both", "Both sides") + "</span></div>";
   h += "<p class='evfoot small'>" + esc((EV.name || ENGINE.name) + " (" + ENGINE.build + "), free software under the GNU General " +
     "Public License, version 3") + (ENGINE_BASE ? " (<a href='" + esc(ENGINE_BASE + "Copying.txt") + "' target='_blank' rel='noopener'>licence</a>)" : "") +
     ". The engine runs on this device and sends nothing anywhere.</p>";

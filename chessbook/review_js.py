@@ -2283,9 +2283,11 @@ function applyPatch(p){
   if (edit && edit.node && (ren[edit.node] || !D.nodes[edit.node])) edit.node = ren[edit.node] || null;
   if (S.node) S.line = D.nodes[S.node].line;
   else if (S.line && !D.lines[S.line]) S.line = null;
-  // (the moves reached, by their new ids: the one the reader is on and those before it)
-  HM.seen.clear();
+  // (the moves reached, by their new ids; with the one the reader is on and those before it)
+  HM.seen = new Set([...HM.seen].map(id => ren[id] || id).filter(id => D.nodes[id]));
   seedSeen();
+  // (an open answer to a hidden move names moves of the old reading)
+  if (edit && edit.kind === "hidemove") hideAgain();
   // (the thread finds its moves again before the page names them)
   threadRebase();
   showPage(S.page);
@@ -2724,46 +2726,59 @@ function hideMove(src, m){
   const j = judgeMove(src.at, m[1]);
   if (j.hit) {
     if (!hidden(j.hit)) return false;
+    // (a variation is often the book's refutation of a move: it is no "right")
+    const still = j.verdict === "variation" && j.exp && hidden(j.exp);
     stepTo(j.hit);
-    say("Right: " + moveText(j.hit, true) + (j.verdict === "book" ? " is the book's move." : " is a variation in the book."));
-    hideReply();
+    const said = j.verdict === "book" ? "Right: " + moveText(j.hit, true) + " is the book's move."
+      : "The book gives " + moveText(j.hit, true) + " as a variation." + (still ? " Its main move here is still hidden." : "");
+    say(said);
+    hideReply(said);
     return true;
   }
   if (j.verdict === "end" || !hidden(j.exp)) return false;
-  if (j.verdict === "unread") {
-    say("The program could not read the book's next move here, so it cannot check yours.");
-    offBook(src, m);
-    return true;
-  }
-  hideWrong(src, m, j.exp);
+  // the book's move the program could not read: the sheet does not name it (moveText would give the
+  // text recognition's reading of it)
+  hideWrong(src, m, j.exp, j.verdict === "unread");
   return true;
 }
-function hideWrong(src, m, exp){
+function hideWrong(src, m, exp, unread){
   const n = D.nodes[exp];
   let h = "<div class=fh><h3>Your move <span class=n>" + esc(playedText(src, m)) + "</span></h3></div>";
-  h += "<p class='small muted'>The book plays another move here." + (n.status === "guessed" || n.status === "ambiguous" ?
-    " The program's reading of the book's move is in doubt, so check the page." : "") + "</p>";
+  h += "<p class='small muted'>" + (unread ? "The program could not read the book's next move here, so it cannot check yours." :
+    "The book plays another move here." + (n.status === "guessed" || n.status === "ambiguous" ?
+    " The program's reading of the book's move is in doubt, so check the page." : "")) + "</p>";
+  if (unread) say("The program could not read the book's next move here, so it cannot check yours.");
   h += "<div class=boardacts><button class=tb id=hmagain>Try again</button><button class=tb id=hmshow>Show the book's move</button>" +
     (reading() ? "<button class=tb id=hmfix>Correct the book's move</button>" : "") + "</div>";
   RV.edit = {kind: "hidemove"};
   showFix(h, "hidemove", false);
   preview(CJ.after(src.fen, m[1]), m[1], "");
   $("hmagain").addEventListener("click", hideAgain);
-  $("hmshow").addEventListener("click", () => { closeFix(); stepTo(exp); hideReply(); });
+  $("hmshow").addEventListener("click", () => {
+    closeFix(); stepTo(exp);
+    const said = "The book plays " + moveText(exp, true) + " here.";
+    say(said);
+    hideReply(said);
+  });
   if ($("hmfix")) $("hmfix").addEventListener("click", () => { closeFix(); offBook(src, m); });
   keepChooserInView();
 }
 // Try again (or Escape): the board shows the position before the move once more
 function hideAgain(){ closeFix(); preview(null); BM.pick = null; }
-// the book's reply, when the other side plays it, after a moment (at once with less motion)
-function hideReply(){
+// the book's reply, when the other side plays it, after a moment (at once with less motion); the
+// message (said) names it, for those who do not watch the board
+function hideReply(said){
   clearTimeout(HM.timer);
-  const L = S.line ? D.lines[S.line] : null;
-  const me = HM.side === "first" ? ((L && (L.start_fen || nodeFen(L.root))) || "- w").split(" ")[1] : HM.side;
+  const me = hideMe();
   const c = S.node ? cont(S.node) : null;
   if (me === "both" || !c || !decoded(D.nodes[c]) || (D.nodes[c].black ? "b" : "w") === me) return;
   const from = S.node;
-  HM.timer = setTimeout(() => { HM.timer = 0; if (HM.on && S.node === from && D.nodes[c]) stepTo(c); }, REDUCED.matches ? 0 : 500);
+  HM.timer = setTimeout(() => {
+    HM.timer = 0;
+    if (!(HM.on && S.node === from && D.nodes[c])) return;
+    stepTo(c);
+    say((said ? said + " " : "") + "The book answers " + moveText(c, true) + ".");
+  }, REDUCED.matches ? 0 : 500);
 }
 function keepChooserInView(){
   // on a wide screen the chooser sits below the board: the panel scrolls until it shows whole

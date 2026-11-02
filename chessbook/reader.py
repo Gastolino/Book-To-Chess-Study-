@@ -355,6 +355,13 @@ height:0;border-top:1px solid var(--fail);transform:rotate(-45deg)}
 .k.wait{border:1px dotted var(--muted)}
 .k.unatt{border:1px dashed var(--muted)}
 .k.off{width:12px;height:12px;border:1px dashed var(--muted)}
+.k.cover{border:1px dotted var(--muted);background:var(--page)}
+/* the cover's meaning shows while a mode covers moves, with or without reading mode */
+.legend .coverkey{display:none}
+.hiding .legend,.puzzling .legend{display:flex}
+.hiding .legend .coverkey,.puzzling .legend .coverkey{display:inline-flex}
+.hiding:not(.reading) .legend > span:not(.coverkey),.puzzling:not(.reading) .legend > span:not(.coverkey){display:none}
+body.hiding:not(.reading) .key,body.puzzling:not(.reading) .key{display:grid}
 /* the fitted page never scrolls sideways, so that a page sliding in during a turn adds no scroll
    bar; the enlarged page does, and a strip as wide as it keeps its scroll range while the page
    slides (otherwise the browser would shorten the range and hold the page still) */
@@ -457,7 +464,9 @@ body:not(.reading) .offpage{display:none}
 .dhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:8px}
 .links{list-style:none;margin:0;padding:0}
 .links li{margin:2px 0}
-.controls{display:flex;align-items:center;margin:8px -8px 4px}
+.controls{display:flex;flex-wrap:wrap;align-items:center;margin:8px -8px 4px}
+@media (max-width:400px){.controls .ib{padding:8px 6px}}
+@media (max-width:340px){.controls .ib{padding:8px 4px}}
 .controls .gap{flex:1}
 .controls #bgear svg{width:16px;height:16px}
 .ltitle{font-size:17px;line-height:1.35}
@@ -539,7 +548,7 @@ body:not(.reading) .rtools{display:none}
 .pagecol{padding:16px 16px 8px}
 .key > *{grid-area:auto}
 .legend{display:none;visibility:visible}
-.reading .legend{display:flex}
+.reading .legend,.hiding .legend,.puzzling .legend{display:flex}
 /* (an entry wider than a phone's window wraps rather than scroll the page sideways) */
 .legend > span{white-space:normal}
 .reading .key .help{display:none}
@@ -551,12 +560,13 @@ body{padding-bottom:64px}
 .mbar{display:flex;align-items:center;gap:16px;position:fixed;left:0;right:0;bottom:0;z-index:10;
 padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mside{flex:1;min-width:0;display:flex;align-items:center;gap:4px 12px}
-.mtxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mtxt{flex:1;min-width:5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* (the icons close together, as in the bar at the top, so that the current move keeps its room
    beside them; the words Board and Moves stand further apart) */
-.mbtns{display:flex;align-items:center;gap:0 4px;flex:none}
+.mbtns{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:0 4px;flex:0 1 auto;min-width:0}
 .mbtns .tb{margin-left:8px}
 .mbar .ib{padding:8px 6px}
+@media (max-width:420px){.mbar .ib{padding:8px 4px}}
 #mboard[aria-pressed="true"],#mzoom[aria-pressed="true"],#mread[aria-pressed="true"],#mhide[aria-pressed="true"]{color:var(--accent)}
 /* the bar's magnifier enlarges the page: the button under the page is for wider screens */
 #zoom{display:none}
@@ -1475,15 +1485,22 @@ function highlightMark(scroll){
 // Hide next moves: the moves of the move list and the boxes of the page that are hidden (hidden())
 // are covered, the others show; only what changed is drawn again
 function hideRefresh(){
-  let changed = false;
+  let changed = false, focused = null;
   for (const el of $("tree").querySelectorAll(".mv[data-node]")) {
     const id = el.dataset.node;
     if (!D.nodes[id] || el.classList.contains("hid") === hidden(id)) continue;
+    if (el === document.activeElement) focused = id;
     // (a hidden move keeps whether it shows its number, for when it shows again)
     el.outerHTML = mvHtml(id, el.dataset.need === "1" || !!el.querySelector(".mn"));
     changed = true;
   }
   if (changed) markTreeCurrent(false);
+  // (the button that had the focus is drawn again: its new one takes it, so that the reader keeps
+  // their place in the move list)
+  if (focused) {
+    const el = $("tree").querySelector(".mv[data-node='" + focused + "']");
+    if (el) el.focus({preventScroll: true});
+  }
   const P = S.page ? D.pages[S.page] : null;
   if (!P) return;
   for (const el of $("ov").querySelectorAll(".mark[data-node]")) {
@@ -1951,9 +1968,13 @@ function moveText(id, needNumber){ return moveNumber(id, needNumber) + moveBody(
 function moveHtml(id, needNumber){ return esc(moveNumber(id, needNumber)) + moveBodyHtml(id); }
 function mvHtml(id, needNumber){
   const n = D.nodes[id];
-  // a hidden move: a blank, its move never written into the page
-  if (hidden(id)) return "<button class='mv hid' tabindex='-1' data-node='" + id + "'" + (needNumber ? " data-need='1'" : "") +
-    " title='A hidden move'><span class=san>…</span></button>";
+  // a hidden move: a blank, its move never written into the page; its number shows, which tells
+  // nothing of the move and which covered move it is
+  if (hidden(id)) {
+    const hn = moveNumber(id, needNumber);
+    return "<button class='mv hid' tabindex='-1' data-node='" + id + "'" + (needNumber ? " data-need='1'" : "") +
+      " title='A hidden move'>" + (hn ? "<span class=mn>" + esc(hn) + "</span>" : "") + "<span class=san>…</span></button>";
+  }
   let tip = n.auto ? (n.corrected === "assumed" ? D.words.inserted : D.words.auto) : n.corrected === "added" ? D.words.added :
     n.corrected ? D.words.corrected : (D.words[n.status] || n.status);
   if (n.status === "failed" && n.assumed) tip += "; the program assumed " + n.assumed;
@@ -2195,6 +2216,9 @@ function selectNode(id, opts){
   if (lineChanged) { renderTree(); renderChips(); }
   renderBoard();
   renderInfo();
+  // (the moves reached show before the move list is marked and given the focus: drawn again after,
+  // the focused button would be taken away)
+  hideRefresh();
   layoutPanel(opts.scrollTree !== false);
   highlightMark(!!opts.scrollPage);
   if (treeFocus) { const el = $("tree").querySelector(".mv.cur"); if (el) el.focus({preventScroll: true}); }
@@ -2202,7 +2226,6 @@ function selectNode(id, opts){
   setState();
   // the moves of a section being read go with the move chosen
   regionFollow(id);
-  hideRefresh();
 }
 // the address of the place: "#at=PAGE:NODE:KEY", the key of the box lit (encoded)
 function placeHash(){
@@ -2267,7 +2290,10 @@ function toEnd(dir){
 function hiddenClick(id){
   if (pzHidden(id)) { puzzleHiddenClick(D.solNodes[id]); return; }
   selectNode(D.nodes[id].parent, {at: null, scrollPage: true});
-  say("This move is hidden. Find it on the board, or press the right arrow to see the book's move.");
+  // (the pointer is still over the page, where the arrow keys turn it: the next one steps the moves,
+  // as the message says, until the pointer comes back to the page)
+  overPage = false;
+  say("This move is hidden. Find it on the board, or use the Next move arrow under the board (or the right arrow key) to see the book's move.");
 }
 function governing(){
   // a line that began on an earlier page and goes on here: [line, its last move before this page]
@@ -2474,9 +2500,10 @@ function setHide(on, quiet){
     if (!b) continue;
     b.setAttribute("aria-pressed", String(on));
     b.setAttribute("aria-label", name);
-    b.title = name;
+    b.title = name + " (H)";
   }
   $("bfwd").title = on ? "Show the book's move (right arrow)" : "Next move (right arrow)";
+  $("bfwd").setAttribute("aria-label", on ? "Show the book's move" : "Next move");
   try { localStorage.setItem("chessbook-hide", on ? "1" : "0"); } catch (e) { /* no storage */ }
   HM.seen.clear();
   seedSeen();
@@ -2484,7 +2511,18 @@ function setHide(on, quiet){
   hideRefresh();
   // (the engine's moves would tell the next move)
   if (EV.on) evRenderNow();
-  if (!quiet) say(on ? "The next moves are hidden. Play your move on the board." : "Every move is shown.");
+  if (!quiet) say(on ? "The next moves are hidden. " + hideSideWords() + " Play your move on the board." : "Every move is shown.");
+}
+// the side the reader plays in this line: "w", "b" or "both" ("first": the side to move at its start)
+function hideMe(){
+  if (HM.side !== "first") return HM.side;
+  const L = S.line ? D.lines[S.line] : null;
+  return ((L && (L.start_fen || nodeFen(L.root))) || "- w").split(" ")[1] === "b" ? "b" : "w";
+}
+function hideSideWords(){
+  const me = hideMe();
+  return (me === "both" ? "You play both sides" : "You play " + (me === "b" ? "Black" : "White")) +
+    " (Settings, the gear under the board, changes it).";
 }
 function setHideSide(v){
   HM.side = v;
@@ -2574,8 +2612,11 @@ function init(){
     }
     S.wanted = null;
     // a hidden move: the position before it, where the reader may find it on the board (a pencil's
-    // tap included, which would show the move in its corrector)
-    if (b.dataset.node && b.classList.contains("mark") && hidden(b.dataset.node)) { hiddenClick(b.dataset.node); return; }
+    // tap included, which would show the move in its corrector). A tap that joins lines, anchors a
+    // section's moves or attaches a sequence names the move and shows nothing of it: it goes on, as
+    // in the move list
+    if (b.dataset.node && b.classList.contains("mark") && hidden(b.dataset.node) && !PEN.connect && !regionOpen() &&
+        !(RV.edit && RV.edit.kind === "seq")) { hiddenClick(b.dataset.node); return; }
     if (penClick(b)) return;
     if (b.dataset.eye) { openSymMenu(b); return; }
     if (RV.edit && RV.edit.kind === "seq" && b.dataset.node) {
@@ -2869,8 +2910,10 @@ __PGNBTN__
 <div class="key small muted">
 <div class="help"><p class="mouse">A click on a move or a diagram shows it in the panel. The left and right arrow keys step through the moves, the up and down arrow keys switch between the moves the book gives at a branch, and Page Up and Page Down turn the pages.</p>
 <p class="touch">A tap on a move or a diagram shows it on the board. A swipe across the page turns it.</p>
-<p>A piece moved on the board, by dragging it or by tapping it and then its new square, goes on with the line. A move that the line does not hold corrects the line or adds a variation, as you choose.</p></div>
+<p>A piece moved on the board, by dragging it or by tapping it and then its new square, goes on with the line. A move that the line does not hold corrects the line or adds a variation, as you choose.</p>
+<p>The H key (or the eye under the board) hides the next moves: a move on the board is then checked against the book's, which shows once you play it or ask for it.</p></div>
 <div class="legend" aria-label="What the outlines and marks mean">
+<span class="coverkey"><i class="k cover"></i>A move hidden until you play it (Hide next moves, the H key) or check your answer (Puzzles)</span>
 <span class="ls">A move with no outline is read without doubt.</span>
 <span><i class="k doubt"></i>Chosen from several readings</span>
 <span><i class="k fail"></i><i class="dot st-failed"></i>Not read</span>
@@ -2905,19 +2948,19 @@ __PGNBTN__
 <button class="ib" id="bend" title="End of the line (End)" aria-label="End of the line">__ICON_END__</button>
 <span class="gap"></span>
 <button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
-<button class="ib" id="bhide" aria-pressed="false" aria-label="Hide next moves" title="Hide next moves">__ICON_HIDE__</button>
+<button class="ib" id="bhide" aria-pressed="false" aria-label="Hide next moves" title="Hide next moves (H)">__ICON_HIDE__</button>
 <button class="ib" id="bpuzzle" aria-pressed="false" aria-label="Puzzles" title="Puzzles" hidden>__ICON_PUZZLE__</button>
 <span class="gap"></span>
 <button class="ib" id="bflip" title="Turn the board round" aria-label="Turn the board round">__ICON_FLIP__</button>
 <button class="ib" id="bcpu" aria-pressed="false" title="Analysis with Stockfish" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
-<button class="ib" id="bgear" aria-pressed="false" title="Analysis settings" aria-label="Analysis settings">__ICON_GEAR__</button>
+<button class="ib" id="bgear" aria-pressed="false" title="Settings" aria-label="Settings">__ICON_GEAR__</button>
 </div>
 </div>
 <section class="sec" id="evalsec" aria-label="Analysis" hidden>
 <div class="evhead"><p class="small muted evstatus" id="evstatus" role="status"></p><button class="tb small" id="evdeeper" hidden>Deeper</button></div>
 <ol class="evlines" id="evlines"></ol>
 </section>
-<section class="sec" id="evset" aria-label="Analysis settings" hidden></section>
+<section class="sec" id="evset" aria-label="Settings" hidden></section>
 <section class="sec" id="fix" aria-label="Correction" hidden></section>
 <section class="sec" id="pzsec" aria-label="My answers" hidden></section>
 <section class="sec" id="review" aria-label="Review" hidden>
@@ -2937,7 +2980,7 @@ __PGNBTN__
 <div class="mini" id="mini" aria-label="Small board"><div id="minibox"></div></div>
 <div class="mside"><span class="mtxt" id="mtxt"></span><span class="meval small" id="mevalnum"></span>
 <span class="mbtns"><button class="ib" id="mread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
-<button class="ib" id="mhide" aria-pressed="false" aria-label="Hide next moves" title="Hide next moves">__ICON_HIDE__</button>
+<button class="ib" id="mhide" aria-pressed="false" aria-label="Hide next moves" title="Hide next moves (H)">__ICON_HIDE__</button>
 <button class="ib" id="mpuzzle" aria-pressed="false" aria-label="Puzzles" title="Puzzles" hidden>__ICON_PUZZLE__</button>
 <button class="ib rtool" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
 <button class="ib rtool" id="mregion" aria-pressed="false" aria-label="Read a section of the page that the program missed">__ICON_SECTION__</button>

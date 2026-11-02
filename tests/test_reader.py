@@ -888,7 +888,13 @@ def test_hide_controls(little):
 HIDE_CHECKS = ("hide button", "tree hidden", "page covers", "wrong move", "try again", "right move",
                "reply played", "right arrow reveals", "end stops at uncovered", "hidden click goes before",
                "reload keeps mode", "page turn keeps covers", "inverted cover", "analysis off",
-               "off shows all", "no console errors")
+               "off shows all", "no console errors",
+               # the review of the mode: the unread move is never named, the moves reached outlast a
+               # patch, the focus stays in the move list, the arrow steps after a covered box, the
+               # numbers of covered moves, the room of the phone bar's current move
+               "an unread move stays hidden", "a patch keeps the moves reached", "focus stays in the move list",
+               "the arrow after a covered box steps", "covered moves keep their numbers",
+               "the current move fits the bar")
 
 
 @pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")

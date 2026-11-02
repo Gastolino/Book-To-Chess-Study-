@@ -10,10 +10,15 @@
 // brings the board back. The book's move (1.e4) steps to it and uncovers it, and the book's reply
 // (1...e5) is played and uncovered after a moment. The right arrow shows the book's next move; End
 // stops at the last move shown; a click on a covered move, in the move list or on the page, goes to
-// the position before it and says why. "You play" in the gear's sheet is stored. The mode outlasts
+// the position before it and says why; the arrow key then steps the moves, not the page. The
+// covered moves keep their numbers; the legend says what a cover is; the focus stays in the move
+// list as the arrows uncover moves; a new reading of the chapter (a patch) keeps the moves reached.
+// A book's move the program could not read is never named while it is covered. "You play" in the
+// gear's sheet is stored. The mode outlasts
 // a reload, the covers a turn of the page; on the inverted page the covers are inverted with it;
 // with the analysis on, the engine's moves are hidden; turning the mode off shows every move. On an
-// iPhone 13 the bar's button turns the mode on, and the page does not scroll sideways. Screenshots
+// iPhone 13 the bar's button turns the mode on, the page does not scroll sideways and the bar's
+// current move has room for "23…Qxf7+". Screenshots
 // in the light and dark schemes and on the phone. Prints one JSON object; the exit code is 1 when
 // a check fails.
 const { chromium, devices } = require("playwright");
@@ -92,8 +97,14 @@ function check(name, cond, detail) {
     const btn = await page.evaluate(() => ({ pressed: document.getElementById("bhide").getAttribute("aria-pressed"),
       label: document.getElementById("bhide").getAttribute("aria-label"), stored: localStorage.getItem("chessbook-hide"),
       fwd: document.getElementById("bfwd").title, msg: document.getElementById("pagemsg").textContent }));
+    const more = await page.evaluate(() => ({ title: document.getElementById("bhide").title,
+      fwdLabel: document.getElementById("bfwd").getAttribute("aria-label"),
+      key: (() => { const el = document.querySelector(".legend .coverkey"); return el && el.offsetParent ? el.textContent : null; })(),
+      others: [...document.querySelectorAll(".legend > span:not(.coverkey)")].filter(el => el.offsetParent).length }));
     check("hide button", btn.pressed === "true" && btn.stored === "1" && btn.label === "Show next moves" &&
-      btn.fwd === "Show the book's move (right arrow)" && /next moves are hidden/.test(btn.msg), btn);
+      btn.fwd === "Show the book's move (right arrow)" && /next moves are hidden\. You play White/.test(btn.msg) &&
+      more.title === "Show next moves (H)" && more.fwdLabel === "Show the book's move" &&
+      /hidden until you play it/.test(more.key || "") && more.others === 0, { btn, more });
 
     // every move of the game is a blank in the move list, and names no move
     let v = await view(page);
@@ -102,6 +113,10 @@ function check(name, cond, detail) {
       .map(el => el.classList.contains("hid")), G.line);
     check("tree hidden", lineMoves.length >= MAIN_SAN.length && lineMoves.every(Boolean) &&
       !MAIN_SAN.some(san => v.tree.indexOf(san) >= 0), { lineMoves, tree: v.tree });
+    // (each covered move keeps its number, which tells nothing of the move)
+    const nums = await page.evaluate((ids) => ids.map(id => {
+      const el = document.querySelector("#tree .mv.hid[data-node='" + id + "'] .mn"); return el ? el.textContent : null; }), [e4, nf3]);
+    check("covered moves keep their numbers", nums[0] === "1." && nums[1] === "2.", nums);
 
     // on the page each printed move of the game is covered, in the paper colour, and says nothing of itself
     const cover = await page.evaluate((sel) => {
@@ -138,6 +153,22 @@ function check(name, cond, detail) {
     v = await view(page);
     check("escape tries again", !v.open && v.id === G.root, v);
 
+    // a book's move the program could not read: the sheet says so and names neither it nor the
+    // text recognition's reading of it
+    const keep = await page.evaluate((id) => {
+      const n = READER.nodes[id], was = { san: n.san, status: n.status, raw: n.raw };
+      n.san = null; n.status = "failed"; n.raw = "e4t";
+      return was;
+    }, e4);
+    await drag(page, "a2", "a3");
+    await page.waitForSelector("#hmagain");
+    v = await view(page);
+    check("an unread move stays hidden", v.open && /could not read the book's next move/.test(v.fixText) &&
+      !/e4/.test(v.fixText) && /Try again/.test(v.fixText) && /Show the book's move/.test(v.fixText) &&
+      !/Add a new variation/.test(v.fixText) && v.hidTree.indexOf(e4) >= 0, v);
+    await page.click("#hmagain");
+    await page.evaluate(([id, was]) => Object.assign(READER.nodes[id], was), [e4, keep]);
+
     // the book's move steps to it and uncovers it; the book's reply follows
     await drag(page, "e2", "e4");
     v = await view(page);
@@ -145,14 +176,29 @@ function check(name, cond, detail) {
       v.msg === "Right: 1.e4 is the book's move.", v);
     await page.waitForFunction((id) => window.readerState.nodeId === id, e5, { timeout: 2000 });
     v = await view(page);
+    // (the message names the reply, for those who do not watch the board)
     check("reply played", v.id === e5 && v.hidTree.indexOf(e5) < 0 && v.hidPage.indexOf(e5) < 0 &&
-      v.hidTree.indexOf(nf3) >= 0, v);
+      v.hidTree.indexOf(nf3) >= 0 && v.msg === "Right: 1.e4 is the book's move. The book answers 1…e5.", v);
 
-    // the right arrow shows the book's move
+    // the right arrow shows the book's move; the focus stays on the move list as it does
+    await page.focus("#tree .mv.cur");
     await page.keyboard.press("ArrowRight");
     v = await view(page);
+    const focus = await page.evaluate(() => { const a = document.activeElement; return a.className + " " + (a.dataset.node || ""); });
     check("right arrow reveals", v.id === nf3 && v.hidTree.indexOf(nf3) < 0 && v.hidPage.indexOf(nf3) < 0 &&
       v.hidTree.indexOf(nc6) >= 0, v);
+    check("focus stays in the move list", focus === "mv cur " + nf3, focus);
+    await page.evaluate(() => document.activeElement.blur());
+
+    // a new reading of the chapter (a patch from the app) keeps the moves reached, the ones after
+    // the current move included
+    await page.keyboard.press("ArrowLeft");
+    const hidBefore = (await view(page)).hidTree.length;
+    await page.evaluate(() => window.applyPatch({}));
+    v = await view(page);
+    check("a patch keeps the moves reached", v.id === e5 && v.hidTree.length === hidBefore && v.hidTree.indexOf(nf3) < 0,
+      { hidBefore, v });
+    await page.keyboard.press("ArrowRight");
 
     // End goes to the last move shown, not to the end of the game
     await page.click("#bstart");
@@ -164,12 +210,19 @@ function check(name, cond, detail) {
     await page.click("#bstart");
     await page.click("#tree .mv[data-node='" + nc6 + "']");
     v = await view(page);
-    const said = "This move is hidden. Find it on the board, or press the right arrow to see the book's move.";
+    const said = "This move is hidden. Find it on the board, or use the Next move arrow under the board " +
+      "(or the right arrow key) to see the book's move.";
     check("hidden click in the move list goes before", v.id === nf3 && v.msg === said && v.hidTree.indexOf(nc6) >= 0, v);
     await page.click("#bstart");
     await page.click(markOf(nc6));
     v = await view(page);
     check("hidden click goes before", v.id === nf3 && v.msg === said && v.hidPage.indexOf(nc6) >= 0, v);
+    // the arrow key the message names steps the moves, though the pointer is still over the page
+    const pg = v.page;
+    await page.keyboard.press("ArrowRight");
+    v = await view(page);
+    check("the arrow after a covered box steps", v.id === nc6 && v.page === pg, v);
+    await page.keyboard.press("ArrowLeft");
     await page.mouse.move(5, 5);
 
     // the side the reader plays, in the gear's sheet
@@ -246,6 +299,13 @@ function check(name, cond, detail) {
     const ph = await pp.evaluate(() => ({ pressed: document.getElementById("mhide").getAttribute("aria-pressed"),
       hid: document.querySelectorAll("#ov .mark.hid").length, sw: document.documentElement.scrollWidth, w: window.innerWidth }));
     check("phone button", ph.pressed === "true" && ph.hid > 0 && ph.sw <= ph.w, ph);
+    // the bar's current move has room for an ordinary move
+    const fits = await pp.evaluate(() => {
+      const el = document.getElementById("mtxt");
+      el.innerHTML = "<span class=n>23…Qxf7+</span>";
+      return { sw: el.scrollWidth, cw: el.clientWidth };
+    });
+    check("the current move fits the bar", fits.sw <= fits.cw, fits);
     await shot(pp, "hide_390_light.png");
     await phone.close();
 
