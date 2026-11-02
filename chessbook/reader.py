@@ -3191,6 +3191,8 @@ border-bottom:1px solid var(--line)}
 .actions .msg{flex:1 1 280px;text-align:right}
 .actions .msg:empty{display:none}
 .summary{margin:24px 0 0}
+#pztoggle[aria-pressed="true"]{color:var(--accent)}
+.pzline[hidden]{display:none}
 .cols,.chapter summary{display:grid;grid-template-columns:24px minmax(0,1fr) repeat(5,72px);align-items:baseline}
 .cols{margin:24px 0 0;padding:0 64px 8px 30px}
 .cols span{text-align:right}
