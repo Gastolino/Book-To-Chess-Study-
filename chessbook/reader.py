@@ -3004,6 +3004,7 @@ def chapter_data(book, ch, pgn_text, engine=False):
     chapters = [{"index": c["index"], "title": c["title"], "start": c["start"], "end": c["end"],
                  "file": c["file"], "empty": c["end"] < c["start"]} for c in book["chapters"]]
     sel = book.get("selection") or {}
+    puzzles, puzzle_book, sol_nodes = puzzle_data(book, ch, lines, nodes)
     return {
         "book": {"title": book["title"], "pdf": book["pdf"]},
         "chapter": {"index": idx, "title": ch["title"], "start": ch["start"], "end": ch["end"],
@@ -3028,7 +3029,31 @@ def chapter_data(book, ch, pgn_text, engine=False):
         "engine": bool(engine),
         # bookmarks the build was given; the browser's own come first
         "bookmarks": bookmarks_of(book),
+        # the puzzles (assemble.puzzle_index): those printed on the chapter's pages, with their
+        # solutions wherever they stand, and those whose solution lines are in the chapter ("here"
+        # false); whether the book is likely a book of puzzles; the moves of the solution lines
+        # in the chapter, each with its puzzle's diagram
+        "puzzles": puzzles, "puzzleBook": puzzle_book, "solNodes": sol_nodes,
     }
+
+
+def puzzle_data(book, ch, lines, nodes):
+    """(puzzles, puzzleBook, solNodes) of chapter_data: see there."""
+    pz = book.get("puzzles") or {}
+    items = pz.get("items") or []
+    out = []
+    for it in items:
+        sol = it.get("solution") or {}
+        mine = ch["start"] <= it["page"] <= ch["end"]
+        if mine or sol.get("line") in lines:
+            out.append(dict(it, here=mine))
+    by_line = {(it.get("solution") or {}).get("line"): it["diagram"] for it in out
+               if (it.get("solution") or {}).get("line") in lines}
+    sol_nodes = {nid: by_line[n["line"]] for nid, n in nodes.items()
+                 if n["line"] in by_line and n.get("parent") is not None}
+    book_info = {"likely": bool(pz.get("likely")), "score": pz.get("score", 0),
+                 "reasons": pz.get("reasons") or {}, "count": len(items)}
+    return out, book_info, sol_nodes
 
 
 def legal_moves(fen):
@@ -3577,6 +3602,10 @@ def index_html(book, thumbs, sizes, app=False, loading=False):
                    "diagrams": [{"id": d["id"], "kind": d["kind"], "label": d.get("label")}
                                 for d in p["diagrams"]]}
                   for p in book["pages"] if p["diagrams"]],
+        # every puzzle of the book, for the tally of the reader's answers (chapter_data "puzzles")
+        "puzzles": [{k: it.get(k) for k in ("diagram", "label", "page", "chapter", "solution")}
+                    for it in (book.get("puzzles") or {}).get("items") or []],
+        "puzzleBook": puzzle_data(book, {"start": 0, "end": -1}, {}, {})[1],
     }
     rep = {
         "__TITLE__": e(f"{book['title']} Contents"),

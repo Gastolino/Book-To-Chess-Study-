@@ -136,6 +136,7 @@ def _update(state, book, fix, res):
     book["attached"] = assemble.public_list(b.attached)
     book["waiting"] = assemble.public_list(b.waiting)
     book["corrections"] = fix
+    assemble.puzzle_index(book, b)
     book["symbols"] = dict(assemble._symbol_counts(
         {pg["page"]: pg["marks"] for pg in book["pages"]}, book.get("letters"),
         fix["glyphs"]).most_common())
@@ -272,7 +273,8 @@ def chapter_patch(book, ch, old, with_pgn=True, replace=False):
              "lines": new["lines"], "lineOrder": new["lineOrder"], "pages": pages,
              "unattached": new["unattached"], "dismissed": new["dismissed"],
              "corrections": new["corrections"], "symbols": new["symbols"],
-             "pgn": new["pgn"]}
+             "pgn": new["pgn"], "puzzles": new.get("puzzles") or [],
+             "puzzleBook": new.get("puzzleBook"), "solNodes": new.get("solNodes") or {}}
     if replace:
         patch["reading"] = new.get("reading")
         patch["pages"] = {p: {"marks": pg["marks"], "diagrams": pg["diagrams"]}
