@@ -74,3 +74,42 @@ def test_a_zip_that_is_no_epub_or_a_locked_epub_is_refused(tmp_path):
     with pytest.raises(epub.EpubError) as e:
         epub.convert(locked.read_bytes())
     assert str(e.value) == LOCKED
+
+
+def test_an_epub_book_is_read_like_a_pdf_book(tmp_path):
+    from chessbook.assemble import build_book
+    from test_assemble import MAIN_SAN, line_titled, main_line, sans
+    book = build_book(make_epub(tmp_path / "x.epub"), output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books")
+    assert (tmp_path / "output" / "x.epub" / "book.json").exists()
+    assert book["title"] == "Little Epub" and book["pdf"] == "x.epub.pdf"
+    game = line_titled(book, "Smith - Jones")
+    assert (game["kind"], game["status"]) == ("game", "ok")
+    assert sans(book, main_line(book, game)) == MAIN_SAN
+    # the first exercise's board picture is a diagram, and its solution waits for its position
+    board = book["pages"][2]["diagrams"][0]
+    assert (board["kind"], board["label"]) == ("board", "1")
+    assert line_titled(book, "Solutions 1")["diagram"] == board["id"]
+
+
+def test_make_reader_takes_an_epub(tmp_path, monkeypatch, capsys):
+    import make_reader
+    from chessbook import assemble, corrections, selection
+    monkeypatch.setattr(assemble, "OUTPUT_DIR", tmp_path / "output")
+    monkeypatch.setattr(selection, "BOOKS_DIR", tmp_path / "books")
+    monkeypatch.setattr(corrections, "BOOKS_DIR", tmp_path / "books")
+    make_reader.main([str(make_epub(tmp_path / "x.epub")), "--passes", "1"])
+    assert (tmp_path / "output" / "x.epub" / "reader" / "index.html").exists()
+    assert (tmp_path / "x.epub.pdf").exists()
+    locked = make_epub(tmp_path / "locked.epub", encrypted=True)
+    with pytest.raises(SystemExit) as e:
+        make_reader.main([str(locked)])
+    assert e.value.code == 1 and LOCKED in capsys.readouterr().out
+
+
+def test_svg_boards_come_through_as_pictures(tmp_path):
+    """MuPDF draws an EPUB's SVG board as a picture, so it is a diagram too."""
+    from chessbook.assemble import build_book
+    book = build_book(make_epub(tmp_path / "s.epub", svg=True), output_dir=tmp_path / "output",
+                      books_dir=tmp_path / "books")
+    assert [d["kind"] for pg in book["pages"] for d in pg["diagrams"]] == ["board", "board"]

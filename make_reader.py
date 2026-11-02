@@ -1,9 +1,12 @@
-"""Build the interactive book reader for a chess book PDF.
+"""Build the interactive book reader for a chess book PDF or EPUB.
 
 Usage:
-    python3 make_reader.py BOOK.pdf [--chapters 5,7] [--selection FILE]
+    python3 make_reader.py BOOK.pdf|BOOK.epub [--chapters 5,7] [--selection FILE]
                            [--corrections FILE] [--letters English] [--passes 3] [--reuse]
                            [--engine DIR]
+
+An EPUB is first laid out into pages, as BOOK.epub.pdf beside it (see
+chessbook/epub.py); <book> is then BOOK.epub.
 
 Writes, under output/<book>/:
     book.json           every line, move, variation and comment the program assembled
@@ -35,13 +38,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from chessbook import assemble, corrections, engine_files, reader, selection  # noqa: E402
+from chessbook import assemble, corrections, engine_files, epub, reader, selection  # noqa: E402
 from chessbook.movetext import LETTER_SETS  # noqa: E402
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Build the interactive reader of a chess book PDF.")
-    ap.add_argument("pdf", type=Path)
+    ap.add_argument("pdf", type=Path, help="chess book PDF or EPUB")
     ap.add_argument("--chapters", default=None,
                     help="comma-separated chapter numbers (the NN of chNN.html)")
     ap.add_argument("--selection", type=Path, default=None,
@@ -58,6 +61,11 @@ def main(argv=None):
     pdf = args.pdf
     if not pdf.exists():
         raise SystemExit(f"Cannot find {pdf}.")
+    try:
+        pdf = epub.as_pdf(pdf)
+    except epub.EpubError as e:
+        print(e)
+        raise SystemExit(1)
     t0 = time.perf_counter()
     if args.selection:
         data = selection.parse_selection_text(args.selection.read_text(encoding="utf-8"))
