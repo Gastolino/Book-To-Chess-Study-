@@ -413,6 +413,24 @@ def test_cover_is_a_small_jpeg(tmp_path, monkeypatch, garbled):
     assert data[:3] == b"\xff\xd8\xff" and len(data) < 60000
 
 
+def test_driver_converts_an_epub(tmp_path, monkeypatch):
+    """An EPUB added in the browser is laid out into a PDF, which is then read as any PDF."""
+    import zipfile
+    from epub_fixture import make_epub
+    driver = _driver(tmp_path, monkeypatch)
+    src = make_epub(tmp_path / "little.epub")
+    out = json.loads(driver.convert(str(src)))
+    pdf = Path(out["path"])
+    assert pdf == tmp_path / "little.epub.pdf" and pdf.read_bytes()[:5] == b"%PDF-"
+    assert not src.exists()
+    driver.process(str(pdf), lambda *_: None)
+    assert driver.STATE["book"]["lines"] and driver.STATE["book"]["title"] == "Little Epub"
+    with zipfile.ZipFile(tmp_path / "plain.epub", "w") as z:
+        z.writestr("a.txt", "no book")
+    assert json.loads(driver.convert(str(tmp_path / "plain.epub"))) == {
+        "error": "The program cannot open this EPUB file."}
+
+
 # ---------------------------------------------------------------- the server
 
 def _node_ready():

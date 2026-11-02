@@ -156,6 +156,21 @@ onmessage = async (event) => {
     } else if (msg.type === "cover") {
       const bytes = bytesOf(driver.cover("/books/" + msg.name));
       postMessage({ type: "cover", bytes }, [bytes.buffer]);
+    } else if (msg.type === "convert") {
+      // an EPUB the reader added, laid out into a PDF that the library then adds as any PDF
+      const path = "/books/" + msg.name;
+      let out;
+      try {
+        py.FS.writeFile(path, new Uint8Array(msg.bytes));
+        out = JSON.parse(driver.convert(path));
+      } catch (err) { out = { error: errorWords(err) }; }
+      if (out.error) {
+        postMessage({ type: "converted", error: out.error });
+      } else {
+        const bytes = py.FS.readFile(out.path);
+        postMessage({ type: "converted", name: out.path.slice("/books/".length), bytes }, [bytes.buffer]);
+        py.FS.unlink(out.path);
+      }
     } else if (msg.type === "chapter") {
       // prepare: the chapter the reader is about to turn to, built without opening it
       const html = driver.chapter(msg.name, msg.prepare ? () => {} : say, !!msg.small, !!msg.prepare);
