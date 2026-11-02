@@ -398,6 +398,28 @@ def test_the_app_takes_an_epub(tmp_path):
     assert "chessbook/epub.py" in zipfile.ZipFile(tmp_path / "site" / "app.zip").namelist()
 
 
+def test_a_book_file_carries_the_answers_to_the_puzzles(tmp_path):
+    """The answers to a book's puzzles (the reader's "chessbook-puzzles:" key) go
+    into the book file's book.json beside the corrections, the selection and
+    the bookmarks, and come back from it into the browser, for a new book and
+    for one the library holds; the server keeps only the three it knows."""
+    build(tmp_path)
+    lib = (tmp_path / "site" / "library.js").read_text(encoding="utf-8")
+    assert 'const FILE_KINDS = KINDS.concat(["puzzles"]);' in lib
+    assert 'const KINDS = ["corrections", "selection", "bookmarks"];' in lib
+    book_file = lib[lib.index("async function bookFile(b)"):lib.index("async function addBookFile(file)")]
+    assert 'puzzles = localData(b, "puzzles")' in book_file
+    assert "puzzles: { data: puzzles.data, updated: puzzles.updated }," in book_file
+    add = lib[lib.index("async function addBookFile(file)"):lib.index("async function mergeBookFile(")]
+    assert "for (const kind of FILE_KINDS) {" in add and "localStorage.setItem(storageKey(mm, kind), v)" in add
+    merge = lib[lib.index("async function mergeBookFile("):lib.index("api.open = async function")]
+    assert "for (const kind of FILE_KINDS) {" in merge
+    # the reader keeps the answers under the key the library writes
+    from chessbook import puzzle_js
+    assert '"chessbook-puzzles:" + D.book.pdf + ":" + D.pageCount' in puzzle_js.PUZZLE_JS
+    assert '"chessbook-" + kind + ":" + mm.name + ":" + mm.pages' in lib
+
+
 def test_the_icons_are_the_revolving_book_at_their_sizes():
     """The app's icons (tools/make_icons.py) are the revolving book that
     chessbook/style.py draws: web/icon.svg is that drawing, still, on the page

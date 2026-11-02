@@ -54,6 +54,9 @@ const LIB = (() => {
   const SOURCE = "chessbook-source:";
   // what the reader keeps in localStorage under "chessbook-<kind>:<file>:<pages>"
   const KINDS = ["corrections", "selection", "bookmarks"];
+  // and the reader's answers to the book's puzzles ("chessbook-puzzles:..."), which a book file
+  // carries and this browser keeps, but which the server does not hold
+  const FILE_KINDS = KINDS.concat(["puzzles"]);
   let readyWaiters = [];
   let store = null;
 
@@ -518,8 +521,8 @@ const LIB = (() => {
     return titleOf(b).replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) ||
       "Chess book";
   }
-  // What the browser holds for book b of the kind "corrections", "selection"
-  // or "bookmarks": {data, updated} (updated is 0 when it holds nothing).
+  // What the browser holds for book b of the kind "corrections", "selection",
+  // "bookmarks" or "puzzles": {data, updated} (updated is 0 when it holds nothing).
   function localData(b, kind) {
     const mm = meta(b.id);
     const key = storageKey({ name: mm.name || safeName(b.fileName), pages: b.pages || mm.pages }, kind);
@@ -545,7 +548,7 @@ const LIB = (() => {
     const position = local && (!b.position || local.updated > b.position.updated)
       ? Object.assign({}, local.data, { updated: local.updated }) : b.position;
     const corr = localData(b, "corrections"), sel = localData(b, "selection");
-    const marks = bookmarksOf(b);
+    const marks = bookmarksOf(b), puzzles = localData(b, "puzzles");
     const info = {
       format: "chessbook", formatVersion: 1, saved: Date.now(), id: b.id, fileName: b.fileName,
       title: b.title || null, pages: b.pages || null, size: pdf.length, added: b.added, opened: b.opened,
@@ -554,6 +557,7 @@ const LIB = (() => {
       corrections: { data: corr.data, updated: corr.updated },
       selection: { data: sel.data, updated: sel.updated },
       bookmarks: { data: marks.data, updated: marks.updated },
+      puzzles: { data: puzzles.data, updated: puzzles.updated },
     };
     const entries = [{ name: "book.json", bytes: new TextEncoder().encode(JSON.stringify(info, null, 1)) },
                      { name: "book.pdf", bytes: pdf }];
@@ -800,7 +804,7 @@ const LIB = (() => {
     yes.focus();
   }
   // What the browser keeps for a removed book: its record, its corrections, its
-  // selection and its bookmarks.
+  // selection, its bookmarks and the answers to its puzzles.
   function forget(b) {
     const name = meta(b.id).name || safeName(b.fileName);
     try {
@@ -808,7 +812,7 @@ const LIB = (() => {
       const keys = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && KINDS.some((kind) => k.startsWith("chessbook-" + kind + ":" + name + ":"))) keys.push(k);
+        if (k && FILE_KINDS.some((kind) => k.startsWith("chessbook-" + kind + ":" + name + ":"))) keys.push(k);
       }
       keys.forEach((k) => localStorage.removeItem(k));
     } catch (e) { /* no storage */ }
@@ -1082,11 +1086,12 @@ const LIB = (() => {
                         : "The book could not be added to your library (" + err.message + "). ") +
           "It opens for now, and is not kept.", true);
     }
-    // the corrections, the selection, the bookmarks and the place, as the reader keeps them
+    // the corrections, the selection, the bookmarks, the answers to the puzzles and the place, as
+    // the reader keeps them
     const mm = meta(id);
     mm.name = name;
     if (info.pages) mm.pages = info.pages;
-    for (const kind of KINDS) {
+    for (const kind of FILE_KINDS) {
       const d = info[kind];
       if (!d || !d.data || !info.pages) continue;
       const v = JSON.stringify(d.data);
@@ -1118,7 +1123,7 @@ const LIB = (() => {
     mm.pages = mm.pages || b.pages || info.pages;
     const pages = b.pages || info.pages;
     let verdict = "same";
-    for (const kind of KINDS) {
+    for (const kind of FILE_KINDS) {
       const here = localData(Object.assign({}, b, { pages }), kind);
       const there = info[kind] || { data: null, updated: 0 };
       const v = there.data ? JSON.stringify(there.data) : null;
