@@ -738,11 +738,13 @@ const LIB = (() => {
       if (/\.epub\.pdf$/i.test(b.fileName)) {
         const e = document.createElement("span");
         e.className = "meta epub";
-        e.textContent = "Laid out from an EPUB file, so its page numbers differ from the printed book.";
+        e.textContent = EPUB_NOTE;
         words.append(e);
       }
       open.append(cover, words);
-      open.setAttribute("aria-label", "Open " + titleOf(b) + ". " + describe(b) + ".");
+      // the label replaces the button's words for a screen reader, so it holds the EPUB's note too
+      open.setAttribute("aria-label", "Open " + titleOf(b) + ". " + describe(b) + "." +
+                        (/\.epub\.pdf$/i.test(b.fileName) ? " " + EPUB_NOTE : ""));
       open.addEventListener("click", () => api.open(b));
       const acts = document.createElement("span");
       acts.className = "acts";
@@ -947,6 +949,8 @@ const LIB = (() => {
   // <name>.epub.pdf, so that it never stands for the reader's own <name>.pdf.
   let converting = null;
   api.convert = convertEpub;
+  const EPUB_NOTE = "Laid out from an EPUB file, so its page numbers are the program's own and differ from any printed edition.";
+  const ALREADY = "This book is already in your library, so the program opens it.";
   async function convertEpub(file) {
     await whenReady();
     say("Preparing the EPUB book for reading.");
@@ -955,9 +959,20 @@ const LIB = (() => {
       converting = resolve;
       worker.postMessage({ type: "convert", name: safeName(file.name), bytes }, [bytes]);
     });
-    if (m.error) throw new Error(m.error);
+    if (m.error) {
+      const err = new Error(m.error);
+      err.epub = !!m.epub;  // the program's message for the reader (chessbook/epub.py EpubError)
+      throw err;
+    }
     return new File([m.bytes], file.name.replace(/\.epub$/i, "") + ".epub.pdf", { type: "application/pdf" });
   }
+  // What the reader is told when an EPUB cannot be laid out: the program's own message (a locked
+  // or broken EPUB), or for any other failure what to do about it.
+  function epubWords(err) {
+    return err && err.epub ? String(err.message)
+      : "The program cannot read this file as an EPUB book. Please choose a chess book PDF or EPUB file.";
+  }
+  api.epubWords = epubWords;
   // The PDF of an EPUB is added as any PDF. The same EPUB gives the same PDF, so its id knows
   // the book again on any device; the EPUB's own hash (SOURCE) knows it again on this one after
   // a new program has laid it out differently.
@@ -972,14 +987,13 @@ const LIB = (() => {
       const known = id && api.books.find((b) => b.id === id);
       if (known) {
         busy = false;
-        say("This book is already in your library.");
-        return api.open(known);
+        return api.open(known, null, null, null, ALREADY);
       }
       pdf = await convertEpub(file);
     } catch (err) {
       busy = false;
       working(false);
-      say("The program could not open this EPUB book (" + String(err.message).replace(/\.$/, "") + ").", true);
+      say(epubWords(err), true);
       return;
     }
     busy = false;
@@ -996,8 +1010,7 @@ const LIB = (() => {
       const known = api.books.find((b) => b.id === id);
       if (known) {
         busy = false;
-        say("This book is already in your library.");
-        return api.open(known);
+        return api.open(known, null, null, null, ALREADY);
       }
       if (buffer.byteLength > store.maxPdf) {
         busy = false;
@@ -1161,8 +1174,9 @@ const LIB = (() => {
   // the app comes back to the book: it opens where the reader was (the
   // record's chapter, page, move and view) rather than at the place stored;
   // at = {chapter, page, node, key} opens it at a bookmark instead of the
-  // place last read.
-  api.open = async function (b, given, resume, at) {
+  // place last read. note is said in place of "Opening the book." (the book
+  // was added again and is already in the library).
+  api.open = async function (b, given, resume, at, note) {
     if (busy) return;
     busy = true;
     working(true);
@@ -1175,7 +1189,7 @@ const LIB = (() => {
       else SESSION.begin({ id: b.id, kind: store.kind, title: titleOf(b), name }, null);
     }
     try {
-      if (!given) say(store.kind === "device" ? "Opening the book." : "Downloading the book.");
+      if (!given) say(note || (store.kind === "device" ? "Opening the book." : "Downloading the book."));
       const pdf = given ? given.pdf : await store.pdf(b.id, (text) => say(text));
       // The PDF goes to the worker and is not kept here: "Read again" and a
       // stale reading take it from the store again (a book file the store
@@ -1205,7 +1219,7 @@ const LIB = (() => {
         api.current.file = file;
         lastFile = file;
         lastName = b.fileName;
-        say("Opening the book.");
+        say(note || "Opening the book.");
         // the store's copy is handed over whole; a book file's part is copied out of the file
         const bytes = given ? pdf.slice().buffer : pdf.buffer;
         worker.postMessage({ type: "restore", name, bytes, reading: reading.buffer,

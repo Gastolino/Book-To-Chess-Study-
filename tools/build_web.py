@@ -961,7 +961,7 @@ async function take(file) {
     catch (err) {
       busy = false;
       working(false);
-      status("The program could not open this EPUB book (" + String(err.message).replace(/\\.$/, "") + ").", true);
+      status(LIB.epubWords(err), true);
       return;
     }
     busy = false;
@@ -981,7 +981,8 @@ async function read(file, fileName, partial) {
   lastName = fileName;
   $("again").hidden = true;
   working(true);
-  status("Reading " + fileName);
+  // the name of the file the reader chose: an EPUB's, not that of the PDF it is laid out into
+  status("Reading " + fileName.replace(/\\.epub\\.pdf$/i, ".epub"));
   const bytes = await file.arrayBuffer();
   const name = fileName.replace(/[^\\w.\\-]+/g, "_");
   if (!LIB.on) {

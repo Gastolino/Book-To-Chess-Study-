@@ -979,13 +979,14 @@ def cover(path):
 def convert(path):
     """An EPUB the reader added, laid out into a PDF (chessbook/epub.py):
     /books/<name>.epub.pdf, for the worker to read and remove; the EPUB is
-    removed. JSON: {"path": the PDF} or {"error": what the reader is told}."""
+    removed. JSON: {"path": the PDF} or {"error": what the reader is told,
+    "epub": true}, the EpubError's message, written for the reader."""
     from chessbook import epub
     src = Path(path)
     try:
         pdf = epub.convert(src.read_bytes())
     except epub.EpubError as e:
-        return json.dumps({"error": str(e)})
+        return json.dumps({"error": str(e), "epub": True})
     finally:
         src.unlink(missing_ok=True)
     out = src.with_name(src.name[:-5] + ".epub.pdf" if src.name.lower().endswith(".epub")

@@ -427,8 +427,10 @@ def test_driver_converts_an_epub(tmp_path, monkeypatch):
     assert driver.STATE["book"]["lines"] and driver.STATE["book"]["title"] == "Little Epub"
     with zipfile.ZipFile(tmp_path / "plain.epub", "w") as z:
         z.writestr("a.txt", "no book")
+    # the EpubError's message goes to the reader as it is (marked "epub")
     assert json.loads(driver.convert(str(tmp_path / "plain.epub"))) == {
-        "error": "The program cannot open this EPUB file."}
+        "error": "The program cannot read this file as an EPUB book. Please choose a chess book PDF or EPUB file.",
+        "epub": True}
 
 
 # ---------------------------------------------------------------- the server

@@ -23,7 +23,7 @@ PAGE = (432, 648)
 FONT = 10
 PRODUCER = "chessbook epub"
 LOCKED = "This EPUB is locked by its seller, so the program cannot read it."
-UNREADABLE = "The program cannot open this EPUB file."
+UNREADABLE = "The program cannot read this file as an EPUB book. Please choose a chess book PDF or EPUB file."
 # The two ways an EPUB hides the fonts it embeds so that they are not copied
 # out of it. A book whose encryption.xml names only these, on font files, has
 # no lock on its text: MuPDF sets it in its own fonts.

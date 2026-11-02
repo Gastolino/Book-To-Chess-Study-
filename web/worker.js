@@ -165,7 +165,7 @@ onmessage = async (event) => {
         out = JSON.parse(driver.convert(path));
       } catch (err) { out = { error: errorWords(err) }; }
       if (out.error) {
-        postMessage({ type: "converted", error: out.error });
+        postMessage({ type: "converted", error: out.error, epub: !!out.epub });
       } else {
         const bytes = py.FS.readFile(out.path);
         postMessage({ type: "converted", name: out.path.slice("/books/".length), bytes }, [bytes.buffer]);

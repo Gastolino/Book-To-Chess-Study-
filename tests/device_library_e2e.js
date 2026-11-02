@@ -628,17 +628,15 @@ async function run() {
         title: li.querySelector(".title").textContent, epub: (li.querySelector(".meta.epub") || {}).textContent || null })));
       check("the library lists the EPUB by its title, marked as laid out from an EPUB",
             entry.length === 1 && entry[0].title === "Little Epub" &&
-            entry[0].epub === "Laid out from an EPUB file, so its page numbers differ from the printed book.", entry);
+            entry[0].epub === "Laid out from an EPUB file, so its page numbers are the program's own and differ from any printed edition.", entry);
       await whenReady(e);
       await e.instrument();
-      // what the page says, kept (the book opens at once and says more)
-      await e.page.evaluate(() => {
-        const said = status;
-        window.__statuses = [];
-        status = (text, error) => { window.__statuses.push(String(text)); return said(text, error); };
-      });
+      const label = await e.page.evaluate(() => document.querySelector("#books li.book .open").getAttribute("aria-label"));
+      check("the EPUB's note is in the entry's label", label.endsWith(" Laid out from an EPUB file, so its page " +
+            "numbers are the program's own and differ from any printed edition."), label);
+      // what the page shows (not only what it is told: a later message must not replace it at once)
       await e.page.setInputFiles("#file", epubFile);
-      await e.until(() => e.page.evaluate(() => window.__statuses.some((s) => /already in your library/.test(s))),
+      await e.until(() => e.page.evaluate(() => /already in your library/.test(document.getElementById("status").textContent)),
                     "the library saying it holds the EPUB already", 120000);
       await e.page.waitForFunction(() => document.body.dataset.book === "opened", null, { timeout: 600000 });
       check("adding the same EPUB again says the library holds it and opens it",

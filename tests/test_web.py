@@ -385,16 +385,28 @@ def test_the_app_takes_an_epub(tmp_path):
     assert "or click to choose a PDF or EPUB file" in page and "Please choose a PDF or EPUB file." in page
     assert "if (LIB.isEpub(raw, file.name)) {" in page and "pdf = await LIB.convert(file);" in page
     assert page.count('replace(/(\\.epub)?\\.pdf$/i, "")') == 2
+    # the status names the file the reader chose, not the PDF it is laid out into
+    assert 'status("Reading " + fileName.replace(/\\.epub\\.pdf$/i, ".epub"));' in page
+    assert "status(LIB.epubWords(err), true);" in page and "could not open this EPUB book (" not in page
     lib = (tmp_path / "site" / "library.js").read_text(encoding="utf-8")
     for text in ('type: "convert"', 'm.type === "converted"', '"mimetypeapplication/epub+zip"',
                  '"chessbook-source:"', 'replace(/(\\.epub)?\\.pdf$/i, "")', "if (isEpub(raw, file.name)) return addEpub(file);",
-                 "Laid out from an EPUB file, so its page numbers differ from the printed book.",
+                 "Laid out from an EPUB file, so its page numbers are the program's own and differ from any "
+                 "printed edition.",
+                 # the note is in the entry's label too, which a screen reader says in place of its words
+                 '(/\\.epub\\.pdf$/i.test(b.fileName) ? " " + EPUB_NOTE : "")',
+                 # a book added again opens saying so, in place of "Opening the book." (said after it
+                 # at once, the first message was never seen)
+                 "return api.open(known, null, null, null, ALREADY);",
+                 'say(note || (store.kind === "device" ? "Opening the book." : "Downloading the book."));',
+                 # the EpubError's message is shown as it is
+                 "err.epub = !!m.epub;", "say(epubWords(err), true);",
                  "Please choose a chess book PDF or EPUB, or a book file saved from a library."):
         assert text in lib, text
     # the EPUB test comes before the book file's: both are zips
     assert lib.index("return addEpub(file)") < lib.index("return addBookFile(file)")
     worker = (tmp_path / "site" / "worker.js").read_text(encoding="utf-8")
-    assert 'msg.type === "convert"' in worker and 'type: "converted"' in worker
+    assert 'msg.type === "convert"' in worker and 'type: "converted", error: out.error, epub: !!out.epub' in worker
     assert "chessbook/epub.py" in zipfile.ZipFile(tmp_path / "site" / "app.zip").namelist()
 
 

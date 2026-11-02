@@ -82,7 +82,7 @@ def test_as_pdf_writes_the_pdf_once_beside_the_epub(tmp_path, monkeypatch):
 def test_a_zip_that_is_no_epub_or_a_locked_epub_is_refused(tmp_path):
     with zipfile.ZipFile(tmp_path / "plain.epub", "w") as z:
         z.writestr("a.txt", "no book")
-    with pytest.raises(epub.EpubError, match="cannot open this EPUB"):
+    with pytest.raises(epub.EpubError, match="cannot read this file as an EPUB book"):
         epub.as_pdf(tmp_path / "plain.epub")
     locked = make_epub(tmp_path / "locked.epub", encrypted=True)
     with pytest.raises(epub.EpubError) as e:
