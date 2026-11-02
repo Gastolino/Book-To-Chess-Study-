@@ -1,6 +1,6 @@
 """Stage 1: inspect a chess book PDF.
 
-Usage:  python stage1_inspect.py BOOK.pdf
+Usage:  python stage1_inspect.py BOOK.pdf|BOOK.epub
 
 Writes output/<book>/stage1/inspect.html, 300 dpi renders of sample pages with
 every board picture outlined, and two JSON files for Stage 2: diagrams.json
@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pymupdf
 
-from chessbook import style, textdiagram
+from chessbook import epub, style, textdiagram
 
 DPI = 300
 MAX_SAMPLES = 12
@@ -529,12 +529,18 @@ def analyse(pdf, out_dir):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Inspect a chess book PDF (Stage 1).")
+    ap = argparse.ArgumentParser(description="Inspect a chess book PDF or EPUB (Stage 1).")
     ap.add_argument("pdf", type=Path)
     args = ap.parse_args()
     pdf = args.pdf
     if not pdf.exists():
         raise SystemExit(f"Cannot find {pdf}.")
+    try:
+        # an EPUB is read from the pages the reader shows (BOOK.epub.pdf), and
+        # its results go to output/BOOK.epub/stage1, where the reader looks
+        pdf = epub.as_pdf(pdf)
+    except epub.EpubError as e:
+        raise SystemExit(str(e))
     out_dir = Path("output") / pdf.stem / "stage1"
     out_dir.mkdir(parents=True, exist_ok=True)
     doc, n, producer, pages, diagrams, numbers, refs = analyse(pdf, out_dir)

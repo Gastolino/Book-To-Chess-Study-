@@ -8530,7 +8530,10 @@ def main(argv=None):
     ap.add_argument("--letters", default=None)
     ap.add_argument("--passes", type=int, default=3)
     args = ap.parse_args(argv)
-    book = build_book(args.pdf, letters=args.letters, passes=args.passes, progress=print)
+    try:
+        book = build_book(args.pdf, letters=args.letters, passes=args.passes, progress=print)
+    except epub.EpubError as e:
+        raise SystemExit(str(e))
     print(json.dumps(book["stats"], indent=1))
 
 

@@ -52,10 +52,31 @@ def _prose(n):
     return " ".join(PROSE[k % len(PROSE)] for k in range(n))
 
 
-def make_epub(path, title="Little Epub", game=GAME_EN, svg=False, encrypted=False):
+def encryption_xml(entries):
+    """META-INF/encryption.xml that names each (algorithm, file) of entries."""
+    data = "".join(
+        '<enc:EncryptedData xmlns:enc="http://www.w3.org/2001/04/xmlenc#">'
+        f'<enc:EncryptionMethod Algorithm="{alg}"/>'
+        f'<enc:CipherData><enc:CipherReference URI="{uri}"/></enc:CipherData></enc:EncryptedData>'
+        for alg, uri in entries)
+    return f'<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container">{data}</encryption>'
+
+
+AES = "http://www.w3.org/2001/04/xmlenc#aes128-cbc"
+IDPF_FONTS = "http://www.idpf.org/2008/embedding"
+ADOBE_FONTS = "http://ns.adobe.com/pdf/enc#RC"
+
+
+def make_epub(path, title="Little Epub", game=GAME_EN, svg=False, encrypted=False,
+              obfuscated_fonts=False, rights=False, prose=1):
     """Write the book to path and return it. encrypted adds
-    META-INF/encryption.xml, as a seller's lock does."""
+    META-INF/encryption.xml that encrypts the chapters, as a seller's lock
+    does; obfuscated_fonts embeds a font and an encryption.xml that only
+    obfuscates it, as publishers do in books with no lock; rights adds
+    META-INF/rights.xml (Adobe's lock). prose makes the prose that many times
+    longer."""
     path = Path(path)
+    words = lambda n: _prose(n * prose)  # noqa: E731
     if svg:
         board = lambda n: f"<p>{n}</p><div>{board_svg()}</div><p>White to move</p>"  # noqa: E731
     else:
@@ -64,17 +85,17 @@ def make_epub(path, title="Little Epub", game=GAME_EN, svg=False, encrypted=Fals
     pages = {
         "title.xhtml": _page(title, f"<h1>{title}</h1><p>A chess book for beginners.</p>"),
         "ch1.xhtml": _page("Chapter 1", (
-            f"<h1>Chapter 1</h1><p>{_prose(60)}</p><h2>SHORT GAMES</h2>"
+            f"<h1>Chapter 1</h1><p>{words(60)}</p><h2>SHORT GAMES</h2>"
             f"<p><b>Smith - Jones,</b> London 1901</p><p><b>{game[0]}</b></p>"
             "<p><i>Better is 3...Bc5 4.c3 Nf6 with a quiet game.</i></p>"
             f"<p><b>{game[1]}</b></p><p><b>{game[2]}</b></p>"
             "<p><i>The king has to walk into the open.</i></p>"
             f"<p><b>{game[3]}</b></p><p>White has a strong attack.</p><p><b>1-0</b></p>"
-            f"<p>{_prose(80)}</p>")),
-        "ex.xhtml": _page("Exercises", f"<h2>EXERCISES</h2>{board(1)}<p>{_prose(30)}</p>{board(2)}"),
+            f"<p>{words(80)}</p>")),
+        "ex.xhtml": _page("Exercises", f"<h2>EXERCISES</h2>{board(1)}<p>{words(30)}</p>{board(2)}"),
         "sol.xhtml": _page("Solutions", (
             "<h2>SOLUTIONS</h2><p><b>1. 1.Rd8+ Kh7 2.Rd7</b></p><p>2. White wins with 1.Nf6+.</p>"
-            f"<p>{_prose(40)}</p>")),
+            f"<p>{words(40)}</p>")),
     }
     nav = _page("Contents", (
         '<nav epub:type="toc"><ol><li><a href="ch1.xhtml">Chapter 1</a></li>'
@@ -85,6 +106,8 @@ def make_epub(path, title="Little Epub", game=GAME_EN, svg=False, encrypted=Fals
 <navPoint id="n2" playOrder="2"><navLabel><text>Exercises</text></navLabel><content src="ex.xhtml"/></navPoint>
 </navMap></ncx>"""
     items = "".join(f'<item id="{n[:-6]}" href="{n}" media-type="application/xhtml+xml"/>' for n in pages)
+    if obfuscated_fonts:
+        items += '<item id="font" href="fonts/a.otf" media-type="font/otf"/>'
     pics = "" if svg else "".join(f'<item id="b{n}" href="board{n}.png" media-type="image/png"/>'
                                   for n in (1, 2))
     spine = "".join(f'<itemref idref="{n[:-6]}"/>' for n in pages)
@@ -100,8 +123,14 @@ def make_epub(path, title="Little Epub", game=GAME_EN, svg=False, encrypted=Fals
         z.writestr(zipfile.ZipInfo("mimetype"), MIMETYPE, compress_type=zipfile.ZIP_STORED)
         z.writestr("META-INF/container.xml", CONTAINER)
         if encrypted:
-            z.writestr("META-INF/encryption.xml", '<encryption xmlns="urn:oasis:names:tc:opendocument:'
-                                                  'xmlns:container"/>')
+            z.writestr("META-INF/encryption.xml", encryption_xml(
+                [(AES, "OEBPS/ch1.xhtml"), (AES, "OEBPS/ex.xhtml")]))
+        elif obfuscated_fonts:
+            z.writestr("META-INF/encryption.xml", encryption_xml(
+                [(IDPF_FONTS, "OEBPS/fonts/a.otf"), (ADOBE_FONTS, "OEBPS/fonts/a.otf")]))
+            z.writestr("OEBPS/fonts/a.otf", bytes(range(256)) * 8)
+        if rights:
+            z.writestr("META-INF/rights.xml", "<rights/>")
         z.writestr("OEBPS/content.opf", opf)
         z.writestr("OEBPS/nav.xhtml", nav)
         z.writestr("OEBPS/toc.ncx", ncx)

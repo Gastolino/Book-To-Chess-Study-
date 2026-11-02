@@ -356,6 +356,42 @@ def drop_injected(text, strings):
     return out
 
 
+# The typographic ligatures (U+FB00-FB04) and their letters.
+LIGATURES = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl"}
+
+
+def _from_epub(doc):
+    """Whether doc is a book laid out from an EPUB (chessbook/epub.py)."""
+    c = _cache(doc)
+    if "epub" not in c:
+        c["epub"] = ((doc.metadata or {}).get("producer") or "") == "chessbook epub"
+    return c["epub"]
+
+
+def _split_ligatures(d):
+    """Split each ligature of a rawdict page d into its letters, its box
+    divided evenly between them. MuPDF's layout of an EPUB sets ff, fi and fl
+    as ligatures, so that a move such as Rff1 would read with no file."""
+    for b in d["blocks"]:
+        for ln in b.get("lines", ()):
+            for s in ln["spans"]:
+                if not any(c["c"] in LIGATURES for c in s["chars"]):
+                    continue
+                out = []
+                for c in s["chars"]:
+                    letters = LIGATURES.get(c["c"])
+                    if not letters:
+                        out.append(c)
+                        continue
+                    x0, y0, x1, y1 = c["bbox"]
+                    w = (x1 - x0) / len(letters)
+                    ox, oy = c["origin"]
+                    for k, ch in enumerate(letters):
+                        out.append({**c, "c": ch, "bbox": (x0 + k * w, y0, x0 + (k + 1) * w, y1),
+                                    "origin": (ox + k * w, oy)})
+                s["chars"] = out
+
+
 def _raw_page(doc, i):
     cache = _cache(doc)["raw"]
     if i in cache:
@@ -365,6 +401,8 @@ def _raw_page(doc, i):
     d = page.get_text("rawdict", flags=_FLAGS)
     fig = _cache(doc).get("figmap")
     letters = _cache(doc).get("lettermap")
+    if _from_epub(doc):
+        _split_ligatures(d)
     lines, whole = [], []
     for b in d["blocks"]:
         if b.get("type", 0) != 0:

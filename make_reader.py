@@ -64,8 +64,7 @@ def main(argv=None):
     try:
         pdf = epub.as_pdf(pdf)
     except epub.EpubError as e:
-        print(e)
-        raise SystemExit(1)
+        raise SystemExit(str(e))  # to stderr, with exit code 1, as the line above
     t0 = time.perf_counter()
     if args.selection:
         data = selection.parse_selection_text(args.selection.read_text(encoding="utf-8"))
