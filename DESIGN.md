@@ -51,6 +51,11 @@ chess notation.
 - While Hide next moves is on, a plain box in the paper colour with a 1px
   dotted outline covers each printed move the reader has not reached. It is
   the one filled shape over the page, and it carries no text.
+- Puzzle mode (the Puzzles icon, a piece of a jigsaw puzzle) covers the moves
+  of a puzzle's solution with the same box until the reader checks an answer
+  to that puzzle. The status of an answer (matches, side line, differs, noted,
+  not tried) is a small ring in the ok, doubt or fail colour beside its word,
+  and never a fill.
 
 ## Colour
 

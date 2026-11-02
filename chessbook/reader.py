@@ -38,6 +38,7 @@ import pymupdf
 from . import corrections, pgnout, style
 from .chess_js import CHESS_JS
 from .engine_js import ENGINE_CSS, ENGINE_JS
+from .puzzle_js import INDEX_PUZZLE_JS, PUZZLE_CSS, PUZZLE_JS
 from .region_js import REGION_CSS, REGION_JS
 from .review_js import CORRECTIONS_JS, EYE_SVG, REVIEW_CSS, REVIEW_JS
 from .movetext import LETTER_SETS, junk_prefix
@@ -619,7 +620,7 @@ column-gap:24px;align-items:start}
 .mbar{padding:10px 24px}
 .mbtns{gap:0 20px}
 .mini.on{width:260px}}
-""" + REVIEW_CSS + ENGINE_CSS + REGION_CSS
+""" + REVIEW_CSS + ENGINE_CSS + REGION_CSS + PUZZLE_CSS
 
 CHAPTER_JS = r"""
 (function(){
@@ -638,9 +639,13 @@ const S = {page: null, node: null, line: null, flip: false, diagram: null, mini:
 // "w", "b" or "both"); seen: the moves reached, which show (not stored: a reload covers the rest);
 // timer: the book's reply to come
 const HM = {on: false, side: "first", seen: new Set(), timer: 0};
-// a move is hidden while the mode is on and the reader has not reached it; a line's start never is
-// (the puzzles reuse the rule)
-function hidden(id){ const n = D.nodes[id]; return HM.on && !!n && n.parent != null && !HM.seen.has(id); }
+// a move is hidden while the mode is on and the reader has not reached it; a line's start never is.
+// Puzzle mode hides with the same cover the moves of the solutions whose answers the reader has not
+// checked (pzHidden, chessbook/puzzle_js.py)
+function hidden(id){
+  const n = D.nodes[id];
+  return !!n && n.parent != null && ((HM.on && !HM.seen.has(id)) || pzHidden(id));
+}
 function seedSeen(){ for (let id = S.node; id != null && D.nodes[id]; id = D.nodes[id].parent) HM.seen.add(id); }
 const imgCache = {};
 const IMG_KEEP = 4;  // decoded page pictures kept for the diagram crops: the last few pages only
@@ -861,6 +866,7 @@ function nodeFen(id){ const n = D.nodes[id]; return n && n.fen ? n.fen : null; }
 function setState(){
   window.readerState = {fen: S.node ? nodeFen(S.node) : null, nodeId: S.node, page: S.page};
   if (S.diagram) window.readerState.diagram = S.diagram;
+  if (PZ.id) Object.assign(window.readerState, {puzzle: PZ.id, fen: PZ.fen});
   // the app's library keeps the page, the move and its box last read, to open the book there again
   if (window.CHESSBOOK_APP && S.page) {
     parent.postMessage({position: {page: S.page, node: S.node || null, key: atKey(), label: label(S.page)}}, "*");
@@ -869,6 +875,7 @@ function setState(){
   if (!t) return;
   // (while the thread asks for a move, the bar names the move its board shows)
   if (TH.on && TH.fen) { threadLabel(); return; }
+  if (PZ.id && PZ.items[PZ.id]) { t.textContent = pzName(PZ.items[PZ.id]); return; }
   if (S.node) t.innerHTML = D.nodes[S.node].parent == null ? "Start position" :
     "<span class=n>" + moveHtml(S.node, true) + "</span>";
   else if (S.diagram) t.textContent = cap(diagramLabel(S.diagram));
@@ -1642,6 +1649,8 @@ function boardFor(){
   // [kind, html or diagram id, note]
   // a move asked for on the board (the thread): its position, with the move offered drawn on it
   if (TH.on && TH.fen) return ["svg", offerArrow(boardSvg(TH.fen, S.flip, TH.uci), TH.offer, S.flip), ""];
+  // a puzzle open: its position, and the answer played on it so far
+  if (PZ.id) return PZ.fen ? ["svg", boardSvg(PZ.fen, S.flip, PZ.uci), pzBoardNote()] : ["crop", PZ.id, pzBoardNote()];
   if (S.preview) return ["svg", boardSvg(S.preview.fen, S.flip, S.preview.uci), S.preview.note];
   const n = S.node ? D.nodes[S.node] : null;
   const fen = n ? nodeFen(S.node) : null;
@@ -1733,7 +1742,7 @@ function renderMini(){
   if (S.diagram && !S.node) { kind = "crop"; x = S.diagram; }
   // (while a section of the page is drawn, the board keeps off the page as it does for an editor)
   const editing = !!(RV.edit && document.getElementById("fix") && !$("fix").hidden) || RG.draw;
-  const want = S.mini === null ? !!(S.node || S.diagram || editing) : S.mini;
+  const want = S.mini === null ? !!(S.node || S.diagram || PZ.id || editing) : S.mini;
   $("mboard").setAttribute("aria-pressed", String(want));
   // while the thread asks for a move, the move is made on the full board: it stands at the foot of the
   // window under the sheet, and the small board is not shown (one board, with squares a finger fits)
@@ -2164,8 +2173,11 @@ function selectNode(id, opts){
   opts = opts || {};
   const n = D.nodes[id];
   if (!n) return;
+  // (a puzzle's solution, hidden until the reader checks an answer, is not chosen)
+  if (pzBlocks(id)) return;
   const treeFocus = $("tree").contains(document.activeElement);
   if (S.diagram) closeDiagram();
+  if (PZ.id) puzzleClose(true);
   S.preview = null;
   if (RV.edit && !(RV.edit.kind === "move" && RV.edit.node === id) && RV.edit.kind !== "symbol" &&
       RV.edit.kind !== "region" && !(RV.edit.kind === "gap" && gapKeyOf(id) === RV.edit.key) &&
@@ -2204,6 +2216,7 @@ function firstLineHere(){
 // the arrows: the next box of the sentence, the page turned only the way they go
 function step(dir){
   S.wanted = null;
+  if (PZ.id) { puzzleStep(dir); return; }
   if (!S.node) {
     const lid = S.line || firstLineHere();
     if (lid) selectNode(D.lines[lid].root, {at: null, scrollPage: true});
@@ -2220,7 +2233,7 @@ function stepTo(id){
 // up and down: the move's other variations, at the box nearest this one (a page away at most)
 function sideStep(dir){
   S.wanted = null;
-  if (!S.node) return;
+  if (!S.node || PZ.id) return;
   const sib = siblings(S.node);
   let j = sib.indexOf(S.node) + dir;
   // (a hidden variation is skipped: Hide next moves)
@@ -2235,6 +2248,7 @@ function sideStep(dir){
 // last move shown while Hide next moves is on
 function toEnd(dir){
   S.wanted = null;
+  if (PZ.id) { if (dir < 0) puzzleRestart(); return; }
   if (!S.line) S.line = firstLineHere();
   if (!S.line) return;
   const root = D.lines[S.line].root;
@@ -2251,6 +2265,7 @@ function toEnd(dir){
 }
 // a click on a hidden move: the position before it (a line's first move: the start position)
 function hiddenClick(id){
+  if (pzHidden(id)) { puzzleHiddenClick(D.solNodes[id]); return; }
   selectNode(D.nodes[id].parent, {at: null, scrollPage: true});
   say("This move is hidden. Find it on the board, or press the right arrow to see the book's move.");
 }
@@ -2295,6 +2310,8 @@ function defaultView(){
 // reading mode, and for a diagram no line reaches, the diagram's own panel (its reading, Use this
 // diagram, Correct the position).
 function openDiagram(id){
+  // puzzle mode: a puzzle's diagram opens the puzzle, and the line of its solution stays hidden
+  if (PZ.on && PZ.items[id] && PZ.items[id].here) { puzzleOpen(id); return; }
   const [, d] = diagramInfo(id);
   if (d && !reading()) {
     const lid = (d.lines || []).find(l => D.lines[l]);
@@ -2307,6 +2324,7 @@ function showDiagram(id){
   const [p, d] = diagramInfo(id);
   if (!d) return;
   if (RV.edit) closeFix();
+  if (PZ.id) puzzleClose(true);
   S.diagram = id;
   for (const el of document.querySelectorAll(".diag.current")) el.classList.remove("current");
   const el = document.querySelector(".diag[data-diagram='" + id + "']");
@@ -2764,6 +2782,8 @@ function init(){
     catch (e) { hd = false; }
     HM.side = ["first", "w", "b", "both"].includes(side) ? side : "first";
     setHide(hd, true); }
+  // puzzle mode, as the reader left it, before the page shows its covers
+  initPuzzles();
   // (the pencil is the tool reading mode starts with, as when the reader turns it on)
   if (rd && !PEN.on) setPencil(true, true);
   // the moves of the sections read on the pages that the book does not hold yet (the reader opened
@@ -2801,7 +2821,7 @@ function init(){
 }
 init();
 })();
-""".replace("init();\n})();", REVIEW_JS.replace("__EYE__", EYE_SVG) + REGION_JS + ENGINE_JS +
+""".replace("init();\n})();", REVIEW_JS.replace("__EYE__", EYE_SVG) + REGION_JS + ENGINE_JS + PUZZLE_JS +
                                      "\ninit();\n})();")
 
 CHAPTER_HTML = """<!doctype html>
@@ -2826,10 +2846,11 @@ CHAPTER_HTML = """<!doctype html>
 <a class="nav ib" href="index.html" aria-label="Contents" title="Contents: the chapters and their pages">__ICON_CONTENTS__</a>
 <button class="ib" id="bmbtn" aria-pressed="false" aria-label="Bookmark this page" title="Bookmark: a tap marks this page and the chosen move.">__ICON_BOOKMARK__</button>
 <button class="ib" id="invbtn" aria-pressed="false" aria-label="Invert the page: white text on black" title="Invert the page: white text on black.">__ICON_INVERT__</button>
+<button class="tb" id="pzbtn" aria-pressed="false" hidden>My answers</button>
 __PGNBTN__
 </nav>
 </header>
-<div class="notes small"><p id="pagemsg" role="status"></p><p class="muted" id="selnote" role="status"></p></div>
+<div class="notes small"><p id="pagemsg" role="status"></p><p class="muted" id="selnote" role="status"></p><p class="pzask" id="pzask"></p></div>
 <main class="reader">
 <section class="pagecol" aria-label="Book page">
 <p class="offpage small" id="offpage"></p>
@@ -2885,6 +2906,7 @@ __PGNBTN__
 <span class="gap"></span>
 <button class="ib" id="showread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
 <button class="ib" id="bhide" aria-pressed="false" aria-label="Hide next moves" title="Hide next moves">__ICON_HIDE__</button>
+<button class="ib" id="bpuzzle" aria-pressed="false" aria-label="Puzzles" title="Puzzles" hidden>__ICON_PUZZLE__</button>
 <span class="gap"></span>
 <button class="ib" id="bflip" title="Turn the board round" aria-label="Turn the board round">__ICON_FLIP__</button>
 <button class="ib" id="bcpu" aria-pressed="false" title="Analysis with Stockfish" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
@@ -2897,6 +2919,7 @@ __PGNBTN__
 </section>
 <section class="sec" id="evset" aria-label="Analysis settings" hidden></section>
 <section class="sec" id="fix" aria-label="Correction" hidden></section>
+<section class="sec" id="pzsec" aria-label="My answers" hidden></section>
 <section class="sec" id="review" aria-label="Review" hidden>
 <div class="revhead"><h2 class="ltitle">Review</h2></div>
 <p class="small muted" id="revsum"></p>
@@ -2915,6 +2938,7 @@ __PGNBTN__
 <div class="mside"><span class="mtxt" id="mtxt"></span><span class="meval small" id="mevalnum"></span>
 <span class="mbtns"><button class="ib" id="mread" aria-pressed="false" aria-label="Show reading" title="Show reading">__ICON_READING__</button>
 <button class="ib" id="mhide" aria-pressed="false" aria-label="Hide next moves" title="Hide next moves">__ICON_HIDE__</button>
+<button class="ib" id="mpuzzle" aria-pressed="false" aria-label="Puzzles" title="Puzzles" hidden>__ICON_PUZZLE__</button>
 <button class="ib rtool" id="mpen" aria-pressed="false" aria-label="Pencil: correct what the program read">__ICON_PENCIL__</button>
 <button class="ib rtool" id="mregion" aria-pressed="false" aria-label="Read a section of the page that the program missed">__ICON_SECTION__</button>
 <button class="ib" id="mcpu" aria-pressed="false" aria-label="Analysis with Stockfish">__ICON_CPU__</button>
@@ -3133,6 +3157,7 @@ def chapter_html(book, ch, images, pgn_text, pgn_info, engine=False):
         "__ICON_BOOKMARK__": style.icon("bookmark"),
         "__ICON_INVERT__": style.icon("invert"),
         "__ICON_HIDE__": style.icon("hide"),
+        "__ICON_PUZZLE__": style.icon("puzzle"),
         "__PIECES__": _pieces_defs(),
         "__EYE__": EYE_SVG,
         "__SELJS__": SELECTION_JS,
@@ -3410,6 +3435,7 @@ INDEX_HTML = """<!doctype html>
 <p class="summary">__SUMMARY__</p>
 <p class="summary small muted" id="fixnote"></p>
 <p class="summary small" id="bmlist">__BOOKMARKS__</p>
+<p class="summary small pzline" id="pzline" hidden></p>
 __COLS__
 <ol class="chapters">
 __CHAPTERS__
@@ -3421,6 +3447,7 @@ __CHAPTERS__
 <script>__CORRJS__</script>
 <script>__CHESSJS__</script>
 <script>__JS__</script>
+<script>__PZJS__</script>
 </body>
 </html>
 """
@@ -3631,6 +3658,7 @@ def index_html(book, thumbs, sizes, app=False, loading=False):
         "__CORRJS__": CORRECTIONS_JS,
         "__CHESSJS__": CHESS_JS,
         "__JS__": INDEX_JS,
+        "__PZJS__": INDEX_PUZZLE_JS,
         "__DATA__": _json_script(data),
     }
     out = INDEX_HTML

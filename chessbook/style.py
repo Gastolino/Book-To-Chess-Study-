@@ -178,6 +178,8 @@ ICONS = {
     "bookmark": "<path d='M5.5 3.5h9v13l-4.5-3.3-4.5 3.3z'/>",
     # an eye struck through: the next moves hidden (Hide next moves)
     "hide": "<path d='M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5zM4 16L16 4'/>",
+    # a piece of a jigsaw puzzle: a square with a knob on its top and on its right (Puzzles)
+    "puzzle": "<path d='M3.5 6.5h4a2 2 0 1 1 4 0h4v4a2 2 0 1 1 0 4v2.5h-12z'/>",
     # a circle, the left half filled: the page shown in reverse
     "invert": "<circle cx='10' cy='10' r='6.5'/><path d='M10 3.5a6.5 6.5 0 0 0 0 13z' fill='currentColor' stroke='none'/>",
     # two filled squares, the second up and to the right of the first, overlapping by a quarter:

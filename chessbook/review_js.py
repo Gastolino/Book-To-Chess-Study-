@@ -2264,6 +2264,7 @@ function applyPatch(p){
     for (const d of D.pages[k].diagrams || []) kinds[d.id] = d.kind;
   }
   for (const k of ["unattached", "dismissed", "symbols", "pgn"]) if (p[k] !== undefined) D[k] = p[k];
+  for (const k of ["puzzles", "puzzleBook", "solNodes"]) if (p[k] !== undefined) D[k] = p[k];
   if (p.corrections) { D.corrections = p.corrections; FIX.rebase(p.corrections); }
   // a new reading of the chapter while the app reads the book (see progressive.py)
   const reread = p.reading !== undefined;
@@ -2289,6 +2290,7 @@ function applyPatch(p){
   threadRebase();
   showPage(S.page);
   renderTree(); renderBoard(); renderInfo(); layoutPanel(false); highlightMark(false);
+  puzzlePatched(p);
   if (RV.on) { const keep = RV.cur; renderReview(); RV.cur = keep; }
   if (edit && edit.kind === "move" && !$("fix").hidden) {
     if (edit.node) { openMove(edit.node); setMsg("Your correction is applied.", "good"); }
@@ -2373,6 +2375,8 @@ function moveSource(box){
   // is, fen, gap: the gap in the text the move fills, or null}, or null when the board takes no move
   // while a move is asked for (the thread) the board takes it from the position the thread shows
   if (TH.on && box.id !== "dpanel") return threadSource();
+  // a puzzle open: the board takes the reader's answer, for both sides
+  if (PZ.id) return PZ.fen && box.id !== "dpanel" ? {puzzle: true, id: null, at: null, fen: PZ.fen, gap: null} : null;
   if (S.preview || (RV.edit && RV.edit.kind === "diagram")) return null;
   if (box.id === "dpanel") {
     // the diagram view: its position, when it starts the line the panel names
@@ -2632,6 +2636,8 @@ function boardMove(src, m){
   if (S.diagram) { closeDiagram(); renderBoard(); }
   // the move the thread asked for
   if (src.thread) { threadMove(m); return; }
+  // a puzzle's answer: the move is noted, and no correction is asked for
+  if (src.puzzle) { puzzleMove(m); return; }
   // Hide next moves: the move is judged against the book's hidden move
   clearTimeout(HM.timer);
   if (HM.on && !src.gap && hideMove(src, m)) return;
@@ -2787,6 +2793,7 @@ function askPromotion(src, moves){
 // a move tried on the board that is not legal there: one line says so, in the thread's sheet or on
 // the page, and names the first move before it that the program reads with doubt
 function notLegal(src){
+  if (src.puzzle) { say("That move is not legal here."); return; }
   let first = null;
   for (let id = src.at; id != null && D.nodes[id]; id = D.nodes[id].parent) if (doubted(id)) first = id;
   const t = "Not legal here: an earlier move may be misread." +

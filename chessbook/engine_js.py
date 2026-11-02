@@ -334,6 +334,7 @@ function evInfo(line){
 function shownFen(){
   // the position the board shows (the board of a diagram, a preview, a move, the position
   // before a gap, the start of the line), or null when it shows no position
+  if (PZ.id) return PZ.fen;
   if (S.diagram) { const [, d] = diagramInfo(S.diagram); return d && d.fen ? d.fen : null; }
   if (TH.on && TH.fen) return TH.fen;
   if (S.preview) return S.preview.fen;
@@ -492,7 +493,8 @@ function evRenderNow(){
   const canPlay = !!src && src.fen === EV.fen;
   let h = "";
   // Hide next moves: the engine's moves would tell the book's (the bar stays)
-  if (HM.on && EV.on) h = "<li class='small muted'>Stockfish's moves are hidden while Hide next moves is on.</li>";
+  if (PZ.id && EV.on) h = "<li class='small muted'>Stockfish's moves are hidden while a puzzle is open.</li>";
+  else if (HM.on && EV.on) h = "<li class='small muted'>Stockfish's moves are hidden while Hide next moves is on.</li>";
   else EV.lines.forEach((l, i) => {
     if (!l) return;
     const moves = evSan(EV.fen, l.pv);
@@ -531,7 +533,7 @@ function deeper(){
 function evArrow(){
   // the top suggestion as an arrow on the board, when the settings ask for it
   for (const el of document.querySelectorAll("#board .eva, #board .evh")) el.remove();
-  if (HM.on) return;
+  if (HM.on || PZ.id) return;
   if (!EV.on || !EV.settings.arrow || !EV.lines[0] || !EV.fen) return;
   const svg = $("board").querySelector("svg.board");
   if (!svg) return;
