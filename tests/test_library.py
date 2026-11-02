@@ -86,6 +86,22 @@ def test_a_stored_reading_opens_the_same_book(tmp_path, monkeypatch, garbled):
     assert "<html" in driver.index()
 
 
+def test_a_reading_from_before_the_puzzles_gets_its_puzzles(tmp_path, monkeypatch, garbled):
+    """A reading stored by code before the puzzle books holds no "puzzles": the
+    restored book has them, from book.json alone, as a new reading would."""
+    driver = _driver(tmp_path, monkeypatch)
+    driver.process(str(garbled), lambda *_: None)
+    want = json.loads(json.dumps(driver.STATE["book"]["puzzles"]))
+    del driver.STATE["book"]["puzzles"]
+    driver.STATE["reading_version"] = "older-code"
+    old = tmp_path / "old.bin"
+    old.write_bytes(driver.save_reading())
+    driver.STATE.clear()
+    events = json.loads(driver.restore(str(garbled), str(old)))
+    assert events[0]["outdated"] == "code"
+    assert driver.STATE["book"]["puzzles"] == want
+
+
 def test_a_reading_without_thumbnails_is_saved_again_with_them(tmp_path, monkeypatch, garbled):
     """A reading stored before the thumbnails went into it draws them once,
     asks to be saved again, and keeps the version of the code that made it

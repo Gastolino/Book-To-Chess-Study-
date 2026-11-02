@@ -115,7 +115,9 @@ def test_a_puzzle_book_is_found(puzzles):
     assert sol["main"][0][1] == "d1d8"
     assert sol["alts"] == [["Rd7", "d1d7"]]
     assert [it["solution"]["main"] for it in items[1:8:2]] == [[["Ra8#", "a1a8"]]] * 4
-    assert items[8]["solution"] == {"note": "9. Nf6+", "page": 6, "san": ["Nf6+"]}
+    # (with the key and box of its mark, which the reader covers)
+    assert items[8]["solution"] == {"note": "9. Nf6+", "page": 6, "san": ["Nf6+"], "key": "6:50,272:Nf6+",
+                                    "bbox": [50.0, 272.0, 71.2, 282.0]}
     assert items[9]["solution"] is None
 
 
@@ -150,6 +152,43 @@ def test_a_game_book_is_not_a_puzzle_book(tmp_path):
     assert [it["diagram"] for it in book2["puzzles"]["items"]] == ["p6-1", "p6-2"]
 
 
+def test_a_game_s_moves_are_no_solution_in_words(puzzles):
+    """A run of moves placed in no line that starts with a puzzle's number is
+    a game's opening when it goes on to the next number ("1.d4 d5 2.c4"), and
+    no solution in words; nor is a sentence outside the places where the
+    book prints solutions."""
+    _, _, book = puzzles
+    assert any(u["text"].startswith("1.d4 d5 2.c4") for u in book["unattached"])
+    # puzzle 1 without its line: the game's moves on pages 7 and 8 are not its solution
+    b1 = dict(book, lines=[L for L in book["lines"] if L["id"] != "L1"])
+    assert puzzle_index(b1)["items"][0]["solution"] is None
+    assert b1["puzzles"]["reasons"]["tied"] == 8
+    # puzzle 2 without its line, and "2.c4 e6 3.Nc3" placed in no line on page 7
+    b2 = dict(book, lines=[L for L in book["lines"] if L["id"] != "L2"],
+              unattached=book["unattached"] + [{"page": 7, "chapter": 2, "text": "2.c4 e6 3.Nc3"}])
+    assert puzzle_index(b2)["items"][1]["solution"] is None
+    # a sentence in the chapter of puzzles, before its last puzzle, is no solution either
+    b4 = dict(b1, unattached=book["unattached"] + [{"page": 4, "chapter": 1, "text": "1. Rd8+ wins."}])
+    assert puzzle_index(b4)["items"][0]["solution"] is None
+    # (after the chapter's last puzzle it is one)
+    b5 = dict(b1, unattached=book["unattached"] + [{"page": 6, "chapter": 1, "text": "1. Rd8+ wins."}])
+    assert puzzle_index(b5)["items"][0]["solution"]["note"] == "1. Rd8+ wins."
+    # while one that reads as a solution, where the book prints them, is
+    b3 = dict(book, lines=[L for L in book["lines"] if L["id"] != "L3"],
+              unattached=book["unattached"] + [{"page": 6, "chapter": 2, "text": "3. Ra8 mates."}])
+    assert puzzle_index(b3)["items"][2]["solution"]["note"] == "3. Ra8 mates."
+
+
+def test_chapter_data_covers_the_solution_in_words(puzzles):
+    """The chapter of solutions knows the mark of a solution in words
+    (solMarks), and holds its puzzle."""
+    _, _, book = puzzles
+    d2 = reader.chapter_data(book, book["chapters"][2], "")
+    assert d2["solMarks"] == {"6:50,272:Nf6+": "p5-1"}
+    assert "9" in [it["label"] for it in d2["puzzles"]]
+    assert reader.chapter_data(book, book["chapters"][1], "")["solMarks"] == {}
+
+
 def test_puzzle_index_again(puzzles):
     """puzzle_index gives the same from book.json alone (the browser app's
     corrections bring the book up to date without the builder's records)."""
@@ -175,7 +214,8 @@ def test_chapter_data_copies_the_solutions(puzzles):
                                 "reasons": book["puzzles"]["reasons"], "count": 10}
     assert d1["solNodes"] == {}
     d2 = reader.chapter_data(book, ch2, "")
-    assert [it["label"] for it in d2["puzzles"]] == [str(k) for k in range(1, 9)]
+    # (puzzle 9's solution in words is printed there too)
+    assert [it["label"] for it in d2["puzzles"]] == [str(k) for k in range(1, 10)]
     assert not any(it["here"] for it in d2["puzzles"])
     l1 = d2["lines"]["L1"]
     sol = {nid for nid, did in d2["solNodes"].items() if did == "p3-1"}

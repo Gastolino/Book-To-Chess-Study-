@@ -877,6 +877,10 @@ def restore(path, reading_path, selection_json=None, corrections_json=None):
                  selection=header.get("selection"), restored=True, timeline={}, outdated=outdated,
                  reading_version=header.get("version"), thumbs_drawn=False,
                  keep_later=later if keep is None and outdated != "state" else None)
+    if "puzzles" not in book:
+        # a reading stored by code before the puzzle books: its puzzles, from book.json alone
+        from chessbook import assemble
+        assemble.puzzle_index(book)
     reader.build_reader(book, pdf, STATE["out"], chapters=set(), app=True, thumbs=STATE["thumbs"])
     html = (STATE["out"] / "index.html").read_text(encoding="utf-8")
     _lighten(full=True)

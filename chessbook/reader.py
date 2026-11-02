@@ -3071,7 +3071,7 @@ def chapter_data(book, ch, pgn_text, engine=False):
     chapters = [{"index": c["index"], "title": c["title"], "start": c["start"], "end": c["end"],
                  "file": c["file"], "empty": c["end"] < c["start"]} for c in book["chapters"]]
     sel = book.get("selection") or {}
-    puzzles, puzzle_book, sol_nodes = puzzle_data(book, ch, lines, nodes)
+    puzzles, puzzle_book, sol_nodes, sol_marks = puzzle_data(book, ch, lines, nodes)
     return {
         "book": {"title": book["title"], "pdf": book["pdf"]},
         "chapter": {"index": idx, "title": ch["title"], "start": ch["start"], "end": ch["end"],
@@ -3100,27 +3100,32 @@ def chapter_data(book, ch, pgn_text, engine=False):
         # solutions wherever they stand, and those whose solution lines are in the chapter ("here"
         # false); whether the book is likely a book of puzzles; the moves of the solution lines
         # in the chapter, each with its puzzle's diagram
-        "puzzles": puzzles, "puzzleBook": puzzle_book, "solNodes": sol_nodes,
+        "puzzles": puzzles, "puzzleBook": puzzle_book, "solNodes": sol_nodes, "solMarks": sol_marks,
     }
 
 
 def puzzle_data(book, ch, lines, nodes):
-    """(puzzles, puzzleBook, solNodes) of chapter_data: see there."""
+    """(puzzles, puzzleBook, solNodes, solMarks) of chapter_data: see there.
+    solMarks: the key of each mark in no line, on the chapter's pages, that
+    is the solution in words of a puzzle, with the puzzle's diagram."""
     pz = book.get("puzzles") or {}
     items = pz.get("items") or []
-    out = []
+    out, sol_marks = [], {}
     for it in items:
         sol = it.get("solution") or {}
         mine = ch["start"] <= it["page"] <= ch["end"]
-        if mine or sol.get("line") in lines:
+        noted_here = bool(sol.get("note")) and ch["start"] <= (sol.get("page") or 0) <= ch["end"]
+        if mine or sol.get("line") in lines or noted_here:
             out.append(dict(it, here=mine))
+        if noted_here and sol.get("key"):
+            sol_marks[sol["key"]] = it["diagram"]
     by_line = {(it.get("solution") or {}).get("line"): it["diagram"] for it in out
                if (it.get("solution") or {}).get("line") in lines}
     sol_nodes = {nid: by_line[n["line"]] for nid, n in nodes.items()
                  if n["line"] in by_line and n.get("parent") is not None}
     book_info = {"likely": bool(pz.get("likely")), "score": pz.get("score", 0),
                  "reasons": pz.get("reasons") or {}, "count": len(items)}
-    return out, book_info, sol_nodes
+    return out, book_info, sol_nodes, sol_marks
 
 
 def legal_moves(fen):

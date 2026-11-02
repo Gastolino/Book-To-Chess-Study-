@@ -274,7 +274,8 @@ def chapter_patch(book, ch, old, with_pgn=True, replace=False):
              "unattached": new["unattached"], "dismissed": new["dismissed"],
              "corrections": new["corrections"], "symbols": new["symbols"],
              "pgn": new["pgn"], "puzzles": new.get("puzzles") or [],
-             "puzzleBook": new.get("puzzleBook"), "solNodes": new.get("solNodes") or {}}
+             "puzzleBook": new.get("puzzleBook"), "solNodes": new.get("solNodes") or {},
+             "solMarks": new.get("solMarks") or {}}
     if replace:
         patch["reading"] = new.get("reading")
         patch["pages"] = {p: {"marks": pg["marks"], "diagrams": pg["diagrams"]}

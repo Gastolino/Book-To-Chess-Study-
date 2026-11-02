@@ -2264,7 +2264,7 @@ function applyPatch(p){
     for (const d of D.pages[k].diagrams || []) kinds[d.id] = d.kind;
   }
   for (const k of ["unattached", "dismissed", "symbols", "pgn"]) if (p[k] !== undefined) D[k] = p[k];
-  for (const k of ["puzzles", "puzzleBook", "solNodes"]) if (p[k] !== undefined) D[k] = p[k];
+  for (const k of ["puzzles", "puzzleBook", "solNodes", "solMarks"]) if (p[k] !== undefined) D[k] = p[k];
   if (p.corrections) { D.corrections = p.corrections; FIX.rebase(p.corrections); }
   // a new reading of the chapter while the app reads the book (see progressive.py)
   const reread = p.reading !== undefined;

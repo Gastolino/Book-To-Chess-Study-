@@ -8444,6 +8444,41 @@ def _note_san(text):
     return out
 
 
+def _keyed_note(text, lab):
+    """Whether the text after a puzzle's label ("9." of "9. Nf6+ wins") reads
+    as a keyed solution rather than as the numbered moves of a game: a game's
+    moves that start with the number go on to the next one ("1.d4 d5 2.c4")."""
+    if lab.isdigit():
+        return not re.search(r"(?<![0-9])" + str(int(lab) + 1) + r"\.", text)
+    return True
+
+
+def _solution_places(book, lines, items):
+    """Whether a sentence on (chapter, page) stands where a book prints its
+    solutions: in a chapter titled as solutions ("Solutions", "Answers",
+    "Key"), at or after a section or line titled so in its chapter, or in a
+    chapter of puzzles after its last puzzle."""
+    chapters = book.get("chapters") or []
+    sol_chapters = {c.get("number") for c in chapters
+                    if SOLUTIONS_RE.search(f"{c.get('title') or ''} {c.get('subtitle') or ''}")}
+    starts = {}
+    for c in chapters:
+        for sec in c.get("sections") or []:
+            if SOLUTIONS_RE.search(sec.get("title") or "") and sec.get("page"):
+                starts[c.get("number")] = min(starts.get(c.get("number"), sec["page"]), sec["page"])
+    for L in lines.values():
+        if SOLUTIONS_RE.search(f"{L.get('section') or ''} {L.get('title') or ''}"):
+            starts[L.get("chapter")] = min(starts.get(L.get("chapter"), L["page"]), L["page"])
+    last = {}
+    for it in items:
+        last[it["chapter"]] = max(last.get(it["chapter"], 0), it["page"])
+
+    def place(chapter, page):
+        return (chapter in sol_chapters or (chapter in starts and page >= starts[chapter])
+                or (chapter in last and page > last[chapter]))
+    return place
+
+
 def puzzle_index(book, b=None):
     """book["puzzles"]: whether the book is likely a book of puzzles, and its
     puzzles with the solutions the program found for them.
@@ -8454,7 +8489,9 @@ def puzzle_index(book, b=None):
     page (a line whose exercise number or title gives its label first), or
     else a sentence on a later page placed in no line that starts with the
     label and a dot ("9. Nf6+ wins": a note solution, with the moves that
-    read as moves in "san"). The book is likely a puzzle book when it has
+    read as moves in "san", and the key and box of its mark, which the reader
+    covers), where the book prints solutions (_solution_places) and not as a
+    game's numbered moves ("1.d4 d5 2.c4" is no solution to puzzle 1). The book is likely a puzzle book when it has
     PUZZLE_MIN puzzles at least and half its board diagrams are puzzles or
     half its puzzles have a solution; a chapter or section of solutions
     ("Solutions", "Answers", "Key") only adds to the score.
@@ -8463,7 +8500,7 @@ def puzzle_index(book, b=None):
          "items": [{"diagram", "label", "page", "chapter", "side", "start_fen",
                     "solution": {"line", "page", "chapter", "status", "main": [[san, uci]],
                                  "alts": [[san, uci]]}
-                              | {"note", "page", "san"} | None}]}
+                              | {"note", "page", "san", "key", "bbox"} | None}]}
 
     A line still waiting for its position gives its printed moves with uci
     None. b (the builder) gives the sequences placed in no line with their
@@ -8486,17 +8523,24 @@ def puzzle_index(book, b=None):
             pick = next((L for L in later if L.get("exercise") == lab or ends.search(L.get("title") or "")),
                         later[0] if later else None)
             solution = _solution_line(pick, nodes) if pick else None
-            if solution is None:
-                head = f"{lab}."
-                u = next((u for u in loose if (u.get("page") or 0) > pg["page"]
-                          and (u.get("text") or "").lstrip().startswith(head)), None)
-                if u is not None:
-                    text = re.sub(r"\s+", " ", u["text"]).strip()
-                    solution = {"note": text, "page": u["page"], "san": _note_san(text[len(head):])}
             items.append({"diagram": d["id"], "label": lab, "page": pg["page"],
                           "chapter": pg.get("chapter"), "side": d.get("side"),
                           "start_fen": (pick or {}).get("start_fen") or d.get("fen"),
                           "solution": solution})
+    # the solutions in words, once the chapters' puzzles are known
+    place = _solution_places(book, lines, items)
+    for it in items:
+        if it["solution"] is not None:
+            continue
+        head = f"{it['label']}."
+        for u in loose:
+            text = re.sub(r"\s+", " ", u.get("text") or "").strip()
+            if ((u.get("page") or 0) > it["page"] and text.startswith(head)
+                    and _keyed_note(text[len(head):], it["label"])
+                    and place(u.get("chapter"), u.get("page") or 0)):
+                it["solution"] = {"note": text, "page": u["page"], "san": _note_san(text[len(head):]),
+                                  "key": u.get("key"), "bbox": u.get("bbox")}
+                break
     sections = sum(1 for c in book.get("chapters") or [] if SOLUTIONS_RE.search(c.get("title") or ""))
     sections += len({L.get("section") for L in lines.values() if SOLUTIONS_RE.search(L.get("section") or "")})
     sections += sum(1 for L in lines.values() if SOLUTIONS_RE.search(L.get("title") or "")
