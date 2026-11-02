@@ -920,6 +920,76 @@ def test_hide_next_moves_in_chromium(little):
         assert (screens / name).stat().st_size > 10000, name
 
 
+PUZZLE_SENTENCE = ("Puzzle mode (the Puzzles icon, a piece of a jigsaw puzzle) covers the moves of a puzzle's "
+                   "solution with the same box until the reader checks an answer to that puzzle.")
+
+
+def test_puzzle_controls(little):
+    """The puzzles' switch (the panel's and the phone bar's), My answers, the
+    question's place and the list's section are in the chapter page, with the
+    cover of a hidden move for puzzle mode, the key the answers are kept
+    under and the sentence of DESIGN.md; the contents page holds the line of
+    the tally. The little book is no puzzle book: its two puzzles are in its
+    data, and no question is asked."""
+    out, book, _ = little
+    assert "puzzle" in style.ICONS
+    text = (out / "ch01.html").read_text(encoding="utf-8")
+    for el in ('id="bpuzzle"', 'id="mpuzzle"', 'id="pzbtn"', 'id="pzask"', 'id="pzsec"'):
+        assert el in text, el
+    assert style.icon("puzzle") in text and "__ICON_" not in text
+    assert "body.puzzling .mark.hid" in reader.CHAPTER_CSS and '"chessbook-puzzles:"' in reader.CHAPTER_JS
+    data = script_json(text, "data")
+    assert data["puzzleBook"]["likely"] is False and data["puzzleBook"]["count"] == 2
+    assert [it["diagram"] for it in data["puzzles"]] == ["p6-1", "p6-2"]
+    index = (out / "index.html").read_text(encoding="utf-8")
+    assert 'id="pzline"' in index and '"chessbook-puzzles:"' in index
+    assert [it["label"] for it in script_json(index, "data")["puzzles"]] == ["1", "2"]
+    guide = re.sub(r"\s+", " ", (ROOT / "DESIGN.md").read_text(encoding="utf-8"))
+    assert PUZZLE_SENTENCE in guide
+
+
+PUZZLE_CHECKS = ("prompt shows", "prompt answer stored", "prompt shows once", "solution covered on the page",
+                 "no solution SAN in the tree", "covered move says why", "diagram opens the puzzle", "engine arrow off",
+                 "move noted on the board", "note says noted", "wrong answer differs", "side line", "tries counted",
+                 "solution shown", "right answer matches", "my answers list", "tally", "note solution asks",
+                 "own mark stored", "check all", "answers survive reload", "checked solutions uncovered", "index tally",
+                 "toggle turns the mode off", "phone light", "phone dark", "no console errors")
+
+
+@pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")
+def test_puzzles_in_chromium(tmp_path):
+    """Puzzle mode (tests/puzzle_e2e.js) in the reader of the puzzle book of
+    tests/test_puzzles.py: the question to a likely puzzle book, asked once
+    and stored; the solutions covered in the chapter of solutions; a puzzle
+    opened from its diagram, answered on the board, noted and checked (a
+    wrong move differs, the book's side line, a right move matches, a
+    solution in words marked by the reader); My answers and its tally; the
+    answers after a reload; the tally of the contents page; the switch off.
+    Screenshots in the light and dark schemes, on a desktop and on an iPhone
+    13."""
+    from test_puzzles import make_puzzle_book, puzzle_fens
+    pdf = make_puzzle_book(tmp_path / "puzzles.pdf")
+    book = build_book(pdf, output_dir=tmp_path / "output", books_dir=tmp_path / "books",
+                      diagram_fens=puzzle_fens())
+    assert book["puzzles"]["likely"]
+    out = tmp_path / "output" / "puzzles" / "reader"
+    reader.build_reader(book, pdf, out)
+    screens = ROOT / "output" / "screens"
+    env = dict(os.environ, NODE_PATH=NODE_PATH)
+    proc = subprocess.run([NODE, str(ROOT / "tests" / "puzzle_e2e.js"), str(out), str(screens)],
+                          capture_output=True, text=True, env=env, timeout=600)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    assert lines, proc.stdout + proc.stderr
+    res = json.loads(lines[-1])
+    failed = [c for c in res["checks"] if not c["ok"]]
+    assert res["ok"], (res.get("failure"), failed, res["errors"])
+    assert res["errors"] == []
+    done = {c["name"] for c in res["checks"] if c["ok"]}
+    assert set(PUZZLE_CHECKS) <= done, set(PUZZLE_CHECKS) - done
+    for name in ("puzzle_1280_light.png", "puzzle_1280_dark.png", "puzzle_390_light.png", "puzzle_390_dark.png"):
+        assert (screens / name).stat().st_size > 10000, name
+
+
 STAGE1_REPORT = ROOT / "output" / "primer" / "stage1" / "inspect.html"
 
 
