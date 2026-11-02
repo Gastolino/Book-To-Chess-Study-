@@ -2218,14 +2218,17 @@ function sideStep(dir){
   S.wanted = null;
   if (!S.node) return;
   const sib = siblings(S.node);
-  const j = sib.indexOf(S.node) + dir;
+  let j = sib.indexOf(S.node) + dir;
+  // (a hidden variation is skipped: Hide next moves)
+  while (j >= 0 && j < sib.length && hidden(sib[j])) j += dir;
   if (j < 0 || j >= sib.length) return;
   const id = sib[j], P = placeNow(), from = litOf(P) || (P.last && P.last.page === S.page ? P.last : null);
   let box = nearest(boxesOn(id, S.page), from);
   if (!box) box = nearest((OCC[id] || []).filter(b => Math.abs(b.page - S.page) === 1), from || {pos: S.page * 1e5});
   selectNode(id, {at: box, scrollPage: true});
 }
-// Home: the start position, on this page; End: the forward steps to the end of the line
+// Home: the start position, on this page; End: the forward steps to the end of the line, or to the
+// last move shown while Hide next moves is on
 function toEnd(dir){
   S.wanted = null;
   if (!S.line) S.line = firstLineHere();
@@ -2236,7 +2239,7 @@ function toEnd(dir){
   if (!P.node) P = {node: root, at: null, last: P.last, page: S.page, line: S.line};
   for (let k = 0; k < 5000; k++) {
     const t = stepPlace(P, 1);
-    if (!t) break;
+    if (!t || hidden(t.node)) break;
     P = stepped(P, t);
   }
   S.last = placeOf(P.last);
