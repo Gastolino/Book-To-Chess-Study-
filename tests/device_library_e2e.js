@@ -3,7 +3,7 @@
 // (tests/test_device_library.py serves the site and runs this).
 //
 // Usage:
-//   NODE_PATH=/opt/node22/lib/node_modules node tests/device_library_e2e.js SITE_URL BOOK1 BOOK2 WORK_DIR SCREENS_DIR
+//   NODE_PATH=/opt/node22/lib/node_modules node tests/device_library_e2e.js SITE_URL BOOK1 BOOK2 WORK_DIR SCREENS_DIR [EPUB]
 //
 // The test:
 //   - in a browser profile kept on disk (WORK_DIR/profile-a), finds the
@@ -23,6 +23,9 @@
 //     without being read, with the correction, at the stored place; the
 //     library lists the bookmark under the book and opens the book there;
 //     adding the file again says the library holds the book already;
+//   - in a fresh profile, adds the EPUB (when given): it is laid out into a
+//     PDF, read and kept; the library lists it by its title, marked as laid
+//     out from an EPUB, and adding it again says the library holds it;
 //   - takes pictures of the library with both books (added from their
 //     files) on an iPhone 13 and an iPad in landscape, light and dark;
 //   - removes the book after its confirmation: its files, its record, its
@@ -43,7 +46,7 @@ const { chromium, devices } = require("playwright");
 const path = require("path");
 const fs = require("fs");
 
-const [siteUrl, book1, book2, work, screens] = process.argv.slice(2);
+const [siteUrl, book1, book2, work, screens, epubFile] = process.argv.slice(2);
 const out = { ok: false, checks: [], errors: [], timings: {}, screenshots: [], notes: [], storage: {} };
 let mode = "";
 function check(name, cond, detail) {
@@ -610,6 +613,38 @@ async function run() {
       check("offline, the app opens and the book shows its page", offPage > 0, offPage);
       await c.ctx.setOffline(false);
       await c.close();
+    }
+
+    // ---------------------------------------------------------------- an EPUB
+    if (epubFile) {
+      const e = await device("an EPUB", DESK);
+      await openLibrary(e);
+      await addBook(e, epubFile);
+      const fileName = await e.page.evaluate(() => LIB.current.book.fileName);
+      check("an EPUB is kept as the PDF it is laid out into",
+            fileName === path.basename(epubFile).replace(/\.epub$/i, "") + ".epub.pdf", fileName);
+      await openLibrary(e);
+      const entry = await e.page.evaluate(() => Array.from(document.querySelectorAll("#books li.book"), (li) => ({
+        title: li.querySelector(".title").textContent, epub: (li.querySelector(".meta.epub") || {}).textContent || null })));
+      check("the library lists the EPUB by its title, marked as laid out from an EPUB",
+            entry.length === 1 && entry[0].title === "Little Epub" &&
+            entry[0].epub === "Laid out from an EPUB file, so its page numbers differ from the printed book.", entry);
+      await whenReady(e);
+      await e.instrument();
+      // what the page says, kept (the book opens at once and says more)
+      await e.page.evaluate(() => {
+        const said = status;
+        window.__statuses = [];
+        status = (text, error) => { window.__statuses.push(String(text)); return said(text, error); };
+      });
+      await e.page.setInputFiles("#file", epubFile);
+      await e.until(() => e.page.evaluate(() => window.__statuses.some((s) => /already in your library/.test(s))),
+                    "the library saying it holds the EPUB already", 120000);
+      await e.page.waitForFunction(() => document.body.dataset.book === "opened", null, { timeout: 600000 });
+      check("adding the same EPUB again says the library holds it and opens it",
+            (await e.stored()).books.length === 1 && !(await e.page.evaluate(() => window.__sent)).includes("convert"),
+            await e.page.evaluate(() => window.__sent));
+      await e.close();
     }
 
     // ---------------------------------------------------------------- pictures of the library

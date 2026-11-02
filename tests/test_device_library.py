@@ -3,7 +3,8 @@ the static site that GitHub Pages serves, with no server: a book added once
 opens again without being read, with its corrections and at its place, after
 the browser is started again; a book saved as a book file (.chessbook) opens
 in another browser profile the same way; removing a book leaves nothing
-behind (tests/device_library_e2e.js).
+behind; an EPUB is laid out into a PDF and kept as one, and known again
+(tests/device_library_e2e.js).
 
 The test needs a local Pyodide distribution and the PyMuPDF and python-chess
 wheels for Pyodide (CHESSBOOK_PYODIDE, CHESSBOOK_WHEELS, as
@@ -103,6 +104,8 @@ def test_device_library_end_to_end(tmp_path):
         second = tmp_path / "endgame_lessons.pdf"
         doc.save(second)
         books = [str(first), str(second)]
+    from epub_fixture import make_epub
+    epub = make_epub(tmp_path / "little_epub.epub")
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), functools.partial(_Handler, directory=str(site)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -111,7 +114,7 @@ def test_device_library_end_to_end(tmp_path):
         env = dict(os.environ, NODE_PATH=NODE_PATH)
         proc = subprocess.run([NODE, str(ROOT / "tests" / "device_library_e2e.js"),
                                f"http://127.0.0.1:{server.server_address[1]}/", *books[:2],
-                               str(tmp_path / "work"), str(screens)],
+                               str(tmp_path / "work"), str(screens), str(epub)],
                               capture_output=True, text=True, env=env, timeout=7200)
     finally:
         server.shutdown()
@@ -142,7 +145,10 @@ def test_device_library_end_to_end(tmp_path):
             "the sign of work shows while the reading is stored",
             "and stops saying so once the library holds it",
             "a stored book draws no thumbnails again",
-            "offline, the app opens and the book shows its page"} <= names
+            "offline, the app opens and the book shows its page",
+            "an EPUB is kept as the PDF it is laid out into",
+            "the library lists the EPUB by its title, marked as laid out from an EPUB",
+            "adding the same EPUB again says the library holds it and opens it"} <= names
     print(json.dumps(res["timings"], indent=1))
     print(json.dumps(res["storage"], indent=1))
     print("\n".join(res["notes"]))
