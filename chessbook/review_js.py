@@ -1162,6 +1162,8 @@ function pageEyes(){
     b.style.left = pct(m.bbox[0] - w * 0.15, P.w); b.style.top = pct(m.bbox[1] - h * 0.35, P.h);
     b.style.width = pct(w, P.w); b.style.height = pct(h, P.h);
     b.innerHTML = EYE;
+    // (none on a hidden move: Hide next moves)
+    if (m.node && hidden(m.node)) b.classList.add("hid");
     const t = "Unreadable piece symbol “" + shown(m.symbol) + "”: choose the piece it stands for";
     b.title = t; b.setAttribute("aria-label", t); b.setAttribute("aria-haspopup", "menu");
     ov.appendChild(b);
@@ -2280,6 +2282,9 @@ function applyPatch(p){
   if (edit && edit.node && (ren[edit.node] || !D.nodes[edit.node])) edit.node = ren[edit.node] || null;
   if (S.node) S.line = D.nodes[S.node].line;
   else if (S.line && !D.lines[S.line]) S.line = null;
+  // (the moves reached, by their new ids: the one the reader is on and those before it)
+  HM.seen.clear();
+  seedSeen();
   // (the thread finds its moves again before the page names them)
   threadRebase();
   showPage(S.page);
@@ -2627,10 +2632,19 @@ function boardMove(src, m){
   if (S.diagram) { closeDiagram(); renderBoard(); }
   // the move the thread asked for
   if (src.thread) { threadMove(m); return; }
+  // Hide next moves: the move is judged against the book's hidden move
+  clearTimeout(HM.timer);
+  if (HM.on && !src.gap && hideMove(src, m)) return;
   const at = D.nodes[src.at];
   // the move the line holds here: a step, as the arrow makes it
   const hit = at.children.find(c => D.nodes[c].uci === m[1] && decoded(D.nodes[c]));
   if (hit) { stepTo(hit); openIfFailed(hit); return; }
+  offBook(src, m);
+}
+// a move on the board that the line does not hold here: it fills a gap, makes the reader's variation
+// longer, or opens the chooser (correct the line, add a variation)
+function offBook(src, m){
+  const at = D.nodes[src.at];
   // a gap in the text: the move fills it (a correction, so in reading mode only)
   const gapHere = !!src.gap && samePos(gapMoves(src.gap)[0], src.fen);
   if (gapHere && reading()) {
@@ -2686,6 +2700,64 @@ function boardMove(src, m){
   for (const o of opts) $(o[0]).addEventListener("click", o[2]);
   $("bmcancel").addEventListener("click", () => closeFix());
   keepChooserInView();
+}
+/* ---------------- Hide next moves: the reader's move against the book's */
+// The reader's move (uci) from node at, judged against the book's: verdict "book" (the book's move),
+// "variation" (a variation the book gives), "wrong" (another move), "unread" (the program could not
+// read the book's move) or "end" (the line ends here); hit: the book's move played, exp: the move
+// the book plays. (The puzzles judge with it too.)
+function judgeMove(at, uci){
+  const exp = cont(at);
+  const hit = D.nodes[at].children.find(c => D.nodes[c].uci === uci && decoded(D.nodes[c])) || null;
+  const verdict = hit ? (hit === exp ? "book" : "variation") : !exp ? "end" : !decoded(D.nodes[exp]) ? "unread" : "wrong";
+  return {verdict, hit, exp};
+}
+// true when the move is answered here: a hidden move of the book steps to it and shows it, and
+// another move is refused; a move the reader can see already goes on as usual
+function hideMove(src, m){
+  const j = judgeMove(src.at, m[1]);
+  if (j.hit) {
+    if (!hidden(j.hit)) return false;
+    stepTo(j.hit);
+    say("Right: " + moveText(j.hit, true) + (j.verdict === "book" ? " is the book's move." : " is a variation in the book."));
+    hideReply();
+    return true;
+  }
+  if (j.verdict === "end" || !hidden(j.exp)) return false;
+  if (j.verdict === "unread") {
+    say("The program could not read the book's next move here, so it cannot check yours.");
+    offBook(src, m);
+    return true;
+  }
+  hideWrong(src, m, j.exp);
+  return true;
+}
+function hideWrong(src, m, exp){
+  const n = D.nodes[exp];
+  let h = "<div class=fh><h3>Your move <span class=n>" + esc(playedText(src, m)) + "</span></h3></div>";
+  h += "<p class='small muted'>The book plays another move here." + (n.status === "guessed" || n.status === "ambiguous" ?
+    " The program's reading of the book's move is in doubt, so check the page." : "") + "</p>";
+  h += "<div class=boardacts><button class=tb id=hmagain>Try again</button><button class=tb id=hmshow>Show the book's move</button>" +
+    (reading() ? "<button class=tb id=hmfix>Correct the book's move</button>" : "") + "</div>";
+  RV.edit = {kind: "hidemove"};
+  showFix(h, "hidemove", false);
+  preview(CJ.after(src.fen, m[1]), m[1], "");
+  $("hmagain").addEventListener("click", hideAgain);
+  $("hmshow").addEventListener("click", () => { closeFix(); stepTo(exp); hideReply(); });
+  if ($("hmfix")) $("hmfix").addEventListener("click", () => { closeFix(); offBook(src, m); });
+  keepChooserInView();
+}
+// Try again (or Escape): the board shows the position before the move once more
+function hideAgain(){ closeFix(); preview(null); BM.pick = null; }
+// the book's reply, when the other side plays it, after a moment (at once with less motion)
+function hideReply(){
+  clearTimeout(HM.timer);
+  const L = S.line ? D.lines[S.line] : null;
+  const me = HM.side === "first" ? ((L && (L.start_fen || nodeFen(L.root))) || "- w").split(" ")[1] : HM.side;
+  const c = S.node ? cont(S.node) : null;
+  if (me === "both" || !c || !decoded(D.nodes[c]) || (D.nodes[c].black ? "b" : "w") === me) return;
+  const from = S.node;
+  HM.timer = setTimeout(() => { HM.timer = 0; if (HM.on && S.node === from && D.nodes[c]) stepTo(c); }, REDUCED.matches ? 0 : 500);
 }
 function keepChooserInView(){
   // on a wide screen the chooser sits below the board: the panel scrolls until it shows whole
@@ -2837,7 +2909,11 @@ function initReview(){
   document.addEventListener("click", (e) => {
     if (!e.target.closest("#symmenu") && !e.target.closest(".eye")) closeSymMenu();
   });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSymMenu(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    closeSymMenu();
+    if (RV.edit && RV.edit.kind === "hidemove") hideAgain();
+  });
   window.addEventListener("scroll", closeSymMenu, {passive: true});
   window.addEventListener("resize", placeSheet);
 }

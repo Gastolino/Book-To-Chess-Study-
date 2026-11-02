@@ -62,7 +62,7 @@ font-variant-ligatures:none}
 .evset .row{display:grid;grid-template-columns:7em minmax(0,1fr);align-items:baseline;gap:4px 16px}
 .evset .lab{color:var(--muted)}
 .evset .opts{display:flex;flex-wrap:wrap;gap:4px 16px;min-width:0}
-.evset .tb[aria-pressed="true"]{color:var(--accent);text-decoration:underline}
+.evset .tb[aria-pressed="true"],.evset .tb[aria-checked="true"]{color:var(--accent);text-decoration:underline}
 .evfoot{color:var(--muted);border-top:1px solid var(--line);padding-top:8px;margin-top:4px}
 .meval{flex:none;font-family:"Geist Mono",ui-monospace,Menlo,Consolas,monospace;font-variant-ligatures:none;
 font-variant-numeric:tabular-nums;color:var(--muted)}
@@ -431,6 +431,7 @@ function setAnalysis(on){
   }
   EV.ran = shownFen();
   evStatus();
+  evRender();
   if (!EV.worker) evStart(); else evGo();
   layoutPanel(false);
 }
@@ -490,7 +491,9 @@ function evRenderNow(){
   const src = EV.fen ? moveSource($("board")) : null;
   const canPlay = !!src && src.fen === EV.fen;
   let h = "";
-  EV.lines.forEach((l, i) => {
+  // Hide next moves: the engine's moves would tell the book's (the bar stays)
+  if (HM.on && EV.on) h = "<li class='small muted'>Stockfish's moves are hidden while Hide next moves is on.</li>";
+  else EV.lines.forEach((l, i) => {
     if (!l) return;
     const moves = evSan(EV.fen, l.pv);
     if (!moves.length) return;
@@ -528,6 +531,7 @@ function deeper(){
 function evArrow(){
   // the top suggestion as an arrow on the board, when the settings ask for it
   for (const el of document.querySelectorAll("#board .eva, #board .evh")) el.remove();
+  if (HM.on) return;
   if (!EV.on || !EV.settings.arrow || !EV.lines[0] || !EV.fen) return;
   const svg = $("board").querySelector("svg.board");
   if (!svg) return;
@@ -570,12 +574,19 @@ function renderSettings(){
   h += row("Analyse", opt("auto", true, "every position shown") + opt("auto", false, "only when the icon is pressed"));
   h += row("Arrow", opt("arrow", true, "best move on the board") + opt("arrow", false, "none"));
   h += row("Memory", opt("hash", 16, "16 MB") + opt("hash", 32, "32 MB"));
+  // the side whose moves the reader finds while Hide next moves is on (the book plays the other's)
+  const side = (v, label) => "<button class='tb' role='radio' data-set='hideside' data-value='" + v + "' aria-checked='" +
+    String(HM.side === v) + "'>" + esc(label) + "</button>";
+  h += "<div class='row'><span class='lab' id='hmside'>You play</span><span class='opts' role='radiogroup' " +
+    "aria-labelledby='hmside'>" + side("first", "The side to move first") + side("w", "White") + side("b", "Black") +
+    side("both", "Both sides") + "</span></div>";
   h += "<p class='evfoot small'>" + esc((EV.name || ENGINE.name) + " (" + ENGINE.build + "), free software under the GNU General " +
     "Public License, version 3") + (ENGINE_BASE ? " (<a href='" + esc(ENGINE_BASE + "Copying.txt") + "' target='_blank' rel='noopener'>licence</a>)" : "") +
     ". The engine runs on this device and sends nothing anywhere.</p>";
   $("evset").innerHTML = "<div class='evset small'>" + h + "</div>";
 }
 function setOption(key, value){
+  if (key === "hideside") { setHideSide(value); renderSettings(); return; }
   const s = EV.settings;
   if (key === "lines" || key === "hash") value = parseInt(value, 10);
   else if (key === "auto" || key === "arrow") value = value === "true";
