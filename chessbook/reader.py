@@ -551,7 +551,10 @@ body{padding-bottom:64px}
 padding:8px 16px;background:var(--bg);border-top:1px solid var(--line)}
 .mside{flex:1;min-width:0;display:flex;align-items:center;gap:4px 12px}
 .mtxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mbtns{display:flex;align-items:center;gap:0 12px;flex:none}
+/* (the icons close together, as in the bar at the top, so that the current move keeps its room
+   beside them; the words Board and Moves stand further apart) */
+.mbtns{display:flex;align-items:center;gap:0 4px;flex:none}
+.mbtns .tb{margin-left:8px}
 .mbar .ib{padding:8px 6px}
 #mboard[aria-pressed="true"],#mzoom[aria-pressed="true"],#mread[aria-pressed="true"],#mhide[aria-pressed="true"]{color:var(--accent)}
 /* the bar's magnifier enlarges the page: the button under the page is for wider screens */
