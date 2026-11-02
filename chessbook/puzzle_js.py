@@ -25,7 +25,12 @@ key for the tally of the whole book):
 
     {"mode": "puzzles" | "book" | null,
      "answers": {<diagram id>: {"moves": [[san, uci]], "tries", "noted" (ISO time), "side",
-                               "check": null | "right" | "alt" | "wrong" | "own-right" | "own-wrong"}}}
+                               "check": null | "right" | "part" | "alt" | "wrong" | "own-right" | "own-wrong"}}}
+
+("part": the answer begins as the book's solution and then leaves it.) The
+answer in progress of each puzzle, and the puzzle open, are kept for the tab
+(sessionStorage, "<key>:draft"), so that a reload or a tap elsewhere loses
+no move played.
 """
 
 PUZZLE_CSS = r"""
@@ -35,6 +40,10 @@ body.puzzling .mark.hid{background:var(--page);outline:1px dotted var(--muted);c
 body.puzzling .mark.hid::after,body.puzzling .eye.hid{display:none}
 .notes .pzask{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px}
 .notes .pzask .tb{color:var(--accent)}
+/* (the two answers to the question wrap together, as one choice) */
+.pzask .acts,#pzline .acts{display:inline-flex;gap:16px;white-space:nowrap}
+#pzline .pzsw{margin-right:16px}
+#pagemsg .tb{color:var(--accent);margin-left:8px}
 .pzp{display:grid;gap:8px}
 .pzp .pzmoves{font-family:"Geist Mono",ui-monospace,Menlo,Consolas,monospace;font-variant-ligatures:none;
 font-weight:500;overflow-wrap:anywhere}
@@ -51,9 +60,9 @@ vertical-align:1px;border:1.5px solid var(--muted);background:none;box-sizing:bo
 .pzdot.fail{border-color:var(--fail)}
 .pzdot.none{border-style:dotted}
 #pzsec[hidden]{display:none}
-/* (on a phone the top bar has no room for the words: the puzzle's panel offers them) */
-@media (max-width:700px){.tools #pzbtn{display:none}}
-@media (max-width:360px){#mpuzzle{display:none}}
+/* (on a phone the top bar has no room for the words: the puzzle's panel offers them, in a chapter
+   that prints puzzles; a chapter of solutions alone keeps them in the top bar) */
+@media (max-width:700px){.pzhere .tools #pzbtn{display:none}}
 .puzzlesopen .lsec,.puzzlesopen .treesec,.puzzlesopen #infosec{display:none}
 .pzrows{list-style:none;margin:8px 0 0;padding:0}
 .pzrows li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:baseline;gap:4px 12px;
@@ -63,6 +72,7 @@ padding:6px 0;border-top:1px solid var(--line)}
 .pzrows .tb{text-align:left}
 .pzsum{display:grid;gap:6px}
 .pzsum .acts{display:flex;flex-wrap:wrap;gap:4px 16px}
+.pzsub{margin:16px 0 0;font-weight:500}
 """
 
 PUZZLE_JS = r"""
@@ -74,10 +84,26 @@ const PZKEY = "chessbook-puzzles:" + D.book.pdf + ":" + D.pageCount;
 // puzzles by diagram; lineOf: the puzzle of each solution line here; sides: the side to move the reader
 // chose where the book does not say; res: what the panel says of the answer; solution: the book's
 // solution listed in the panel
+// drafts: the answer in progress of each puzzle (kept for the tab, with the puzzle open)
 const PZ = {on: false, id: null, moves: [], start: null, fen: null, uci: null, items: {}, lineOf: {}, sides: {},
-  res: "", solution: false, store: {mode: null, answers: {}}};
-const PZ_WORDS = {right: "Matches", alt: "Side line", wrong: "Differs", "own-right": "Matches", "own-wrong": "Differs"};
-const PZ_DOTS = {right: "ok", alt: "alt", wrong: "fail", "own-right": "ok", "own-wrong": "fail"};
+  res: "", solution: false, store: {mode: null, answers: {}}, drafts: {}, open: null};
+const PZ_WORDS = {right: "Matches", part: "Partly matches", alt: "Side line", wrong: "Differs", "own-right": "Matches",
+  "own-wrong": "Differs"};
+const PZ_DOTS = {right: "ok", part: "alt", alt: "alt", wrong: "fail", "own-right": "ok", "own-wrong": "fail"};
+function pzDraftRead(){
+  let v = null;
+  try { v = JSON.parse(sessionStorage.getItem(PZKEY + ":draft") || "null"); } catch (e) { v = null; }
+  PZ.drafts = v && v.drafts && typeof v.drafts === "object" ? v.drafts : {};
+  PZ.open = v && typeof v.open === "string" ? v.open : null;
+}
+function pzDraftWrite(){
+  if (PZ.id) {
+    if (PZ.moves.length) PZ.drafts[PZ.id] = PZ.moves.map(m => [m[0], m[1]]);
+    else delete PZ.drafts[PZ.id];
+  }
+  try { sessionStorage.setItem(PZKEY + ":draft", JSON.stringify({drafts: PZ.drafts, open: PZ.open})); }
+  catch (e) { /* no storage */ }
+}
 function pzRead(){
   let v = null;
   try { v = JSON.parse(localStorage.getItem(PZKEY) || "null"); } catch (e) { v = null; }
@@ -115,18 +141,40 @@ function pzHiddenRoot(id){
   const did = PZ.lineOf[n.line];
   return did && !pzChecked(did) ? did : null;
 }
-// selectNode asks first: a hidden solution is not chosen (the puzzle opens instead, when it is here)
+// the mark of a solution in words (a sentence placed in no line), covered as the moves are
+function pzHiddenSeq(key){
+  if (!PZ.on || !key) return false;
+  const did = (D.solMarks || {})[key];
+  return !!did && !pzChecked(did);
+}
+// selectNode asks first: a hidden solution is not chosen. The message says whose solution it is and
+// offers to open the puzzle; the page stays (the arrows and End read on through a page of solutions)
 function pzBlocks(id){
   const did = pzHidden(id) ? D.solNodes[id] : pzHiddenRoot(id);
   if (!did) return false;
-  puzzleHiddenClick(did);
+  pzSayHidden(did);
   return true;
 }
+// a tap on a covered solution: a puzzle on this page opens; else the message offers it
 function puzzleHiddenClick(did){
   const it = PZ.items[did];
-  const name = it ? "puzzle " + it.label : "a puzzle";
-  if (it && it.here) puzzleOpen(did);
-  say("These moves are the book's solution to " + name + ". They stay hidden until you check your answer.");
+  if (it && it.here && it.page === S.page) { puzzleOpen(did); return; }
+  pzSayHidden(did);
+}
+function pzSayHidden(did){
+  const it = PZ.items[did];
+  if (!it) { say("These moves are the book's solution to a puzzle. They stay hidden until you check your answer."); return; }
+  $("pagemsg").innerHTML = esc("These moves are the book's solution to puzzle " + it.label + ", on " + pageName(it.page) +
+    ". They stay hidden until you check your answer.") + "<button class=tb data-pzgo='" + esc(did) + "'>Open puzzle " +
+    esc(it.label) + "</button>";
+}
+// open the puzzle, here or in the chapter that prints it (whose reader opens it from the address)
+function pzGo(did){
+  const it = PZ.items[did];
+  if (!it) return;
+  if (it.here) { puzzleOpen(did); return; }
+  const c = chapterFor(it.page);
+  if (c && c.file && !c.empty) openFile(c.file + "#page=" + it.page + "&puzzle=" + encodeURIComponent(did));
 }
 function pzName(it){ return "Puzzle " + it.label; }
 function withTurn(fen, side){
@@ -158,6 +206,13 @@ function pzLine(fen, moves){
   });
   return out.join(" ");
 }
+// the move san as the k-th ply from the position fen: "2.Rd7", "1...Kh7"
+function pzPly(fen, k, san){
+  const p = String(fen || "- w - - 0 1").split(" ");
+  const black0 = p[1] === "b", num0 = parseInt(p[5], 10) || 1;
+  const black = black0 !== (k % 2 === 1), num = num0 + Math.floor((k + (black0 ? 1 : 0)) / 2);
+  return num + (black ? "..." : ".") + san;
+}
 function pzSan(s){ return String(s || "").replace(/[+#!?]+$/, ""); }
 function pzSame(a, b){ return !!a && !!b && (a[1] && b[1] ? a[1] === b[1] : pzSan(a[0]) === pzSan(b[0])); }
 function pzStatus(it){
@@ -180,7 +235,16 @@ function puzzleOpen(did){
   if (TH.on) threadEnd();
   if (PZ.id !== did) { PZ.res = ""; PZ.solution = false; }
   PZ.id = did;
+  PZ.open = did;
   PZ.start = pzStart(it); PZ.fen = PZ.start; PZ.moves = []; PZ.uci = null;
+  // the answer in progress comes back: the same puzzle opened again, after a tap elsewhere or a reload
+  for (const m of PZ.drafts[did] || []) {
+    if (!PZ.fen || !CJ.legalMoves(PZ.fen).some(x => x[1] === m[1])) break;
+    PZ.moves.push([m[0], m[1]]); PZ.fen = CJ.after(PZ.fen, m[1]); PZ.uci = m[1];
+  }
+  pzDraftWrite();
+  // (the moves forward are the reader's to play: the arrows only take back)
+  for (const b of [$("bfwd"), $("bend")]) if (b) b.setAttribute("aria-disabled", "true");
   S.preview = null; BM.pick = null;
   if (it.page !== S.page && (it.page in D.pages)) showPage(it.page);
   for (const el of document.querySelectorAll(".diag.current")) el.classList.remove("current");
@@ -194,6 +258,9 @@ function puzzleOpen(did){
 function puzzleClose(quiet){
   if (!PZ.id) return;
   PZ.id = null; PZ.moves = []; PZ.fen = PZ.start = PZ.uci = null; PZ.res = ""; PZ.solution = false;
+  PZ.open = null;
+  pzDraftWrite();
+  for (const b of [$("bfwd"), $("bend")]) if (b) b.removeAttribute("aria-disabled");
   $("dpanel").hidden = true; $("dpanel").innerHTML = ""; $("dpanel").classList.remove("pzp");
   for (const el of document.querySelectorAll(".diag.current")) el.classList.remove("current");
   if (!quiet) { renderBoard(); layoutPanel(false); setState(); }
@@ -207,6 +274,8 @@ function puzzleShow(){
   const it = PZ.items[PZ.id];
   if (!it) return;
   const box = $("dpanel"), a = pzAnswer(it.diagram);
+  // the button the reader pressed keeps the focus (or the next one there is, or the result)
+  const had = box.contains(document.activeElement) ? document.activeElement.id || "pzres" : null;
   let h = "<div class=dhead><h3>" + esc(pzName(it) + ", " + pageName(it.page)) + "</h3><button class=tb id=pzclose>Close</button></div>";
   if (!PZ.start) {
     h += "<p class='small muted'>The program could not read this position.</p>" +
@@ -226,8 +295,12 @@ function puzzleShow(){
       "<button class=tb id=pzmine>My answers</button></div>";
     if (reading()) h += "<p class='small rtool'><button class=tb id=pzfix>Correct the position</button></p>";
   }
-  h += "<div class='pzres small' id=pzres role=status>" + PZ.res + pzSolutionHtml(it) + "</div>";
-  box.innerHTML = h;
+  // the result is a live region that stays, so that a screen reader says each new result
+  if (!$("pzbody") || !box.contains($("pzbody")) || !$("pzres") || !box.contains($("pzres")))
+    box.innerHTML = "<div id=pzbody class=pzp></div><div class='pzres small' id=pzres role=status tabindex=-1></div>";
+  $("pzbody").innerHTML = h;
+  const res = PZ.res + pzSolutionHtml(it);
+  if ($("pzres").innerHTML !== res) $("pzres").innerHTML = res;
   box.classList.add("pzp");
   box.hidden = false;
   $("pzclose").addEventListener("click", () => puzzleClose());
@@ -239,11 +312,16 @@ function puzzleShow(){
   for (const b of box.querySelectorAll("[data-pzside]")) b.addEventListener("click", () => {
     PZ.sides[it.diagram] = b.dataset.pzside;
     PZ.start = PZ.fen = pzStart(it); PZ.moves = []; PZ.uci = null;
+    pzDraftWrite();
     renderBoard(); puzzleShow();
   });
   for (const b of box.querySelectorAll("[data-pzown]")) b.addEventListener("click", () => pzOwn(it.diagram, b.dataset.pzown === "1"));
   if ($("pzsol")) $("pzsol").addEventListener("click", () => puzzleSolution(it.diagram));
   for (const l of box.querySelectorAll("a[data-page]")) l.addEventListener("click", (e) => { e.preventDefault(); goPage(l.dataset.page); });
+  if (had) {
+    const el = $(had) && box.contains($(had)) && !$(had).hidden ? $(had) : $("pzcheck") || $("pznote") || $("pzres");
+    if (el) el.focus({preventScroll: true});
+  }
 }
 // the position an answer starts from: the one it was noted in
 function pzFenOf(it, a){
@@ -265,6 +343,7 @@ function puzzleMove(m){
   PZ.fen = CJ.after(PZ.fen, m[1]);
   PZ.uci = m[1];
   BM.pick = null;
+  pzDraftWrite();
   renderBoard();
   puzzleShow();
   setState();
@@ -276,11 +355,13 @@ function puzzleStep(dir){
     PZ.fen = PZ.start;
     for (const m of PZ.moves) PZ.fen = CJ.after(PZ.fen, m[1]);
     PZ.uci = PZ.moves.length ? PZ.moves[PZ.moves.length - 1][1] : null;
+    pzDraftWrite();
     renderBoard(); puzzleShow(); setState();
   }
 }
 function puzzleRestart(){
   PZ.moves = []; PZ.fen = PZ.start; PZ.uci = null; BM.pick = null;
+  pzDraftWrite();
   renderBoard(); puzzleShow(); setState();
 }
 function puzzleNote(){
@@ -290,6 +371,9 @@ function puzzleNote(){
   PZ.store.answers[it.diagram] = {moves: PZ.moves.map(m => [m[0], m[1]]), tries: ((prev && prev.tries) || 0) + 1,
     noted: new Date().toISOString(), check: null, side: PZ.start.split(" ")[1] || "w"};
   pzWrite();
+  // (the answer is noted: the draft is done with; the moves stay on the board)
+  delete PZ.drafts[it.diagram];
+  try { sessionStorage.setItem(PZKEY + ":draft", JSON.stringify({drafts: PZ.drafts, open: PZ.open})); } catch (e) { /* no storage */ }
   PZ.solution = false;
   PZ.res = "<p>" + esc("Your answer " + pzLine(PZ.start, PZ.moves) + " is noted. The book's solution stays hidden.") + "</p>";
   hideRefresh();
@@ -323,6 +407,12 @@ function pzJudge(it){
   if (s.note) return {check: null, words: "The book's solution, on " + pageName(s.page) + ": " + s.note};
   const fen = pzFenOf(it, a), j = pzMatch(it, a.moves);
   const mine = pzLine(fen, a.moves.slice(0, 1)), book = s.main.length ? pzLine(it.start_fen || fen, s.main.slice(0, 1)) : "";
+  if (j.first === "book" && j.k < Math.min(a.moves.length, s.main.length)) {
+    // the answer leaves the book's solution after its first moves: where, and what the book plays there
+    const at = it.start_fen || fen;
+    return {check: "part", words: (j.k > 1 ? "Your first " + j.k + " moves match the book." : "Your first move matches the book.") +
+      " Your move " + pzPly(at, j.k, a.moves[j.k][0]) + " differs: the book plays " + pzPly(at, j.k, s.main[j.k][0]) + "."};
+  }
   if (j.first === "book")
     return {check: "right", words: "Your first move matches the book." + (j.k > 1 ? " The first " + j.k + " moves match." : "")};
   if (j.first === "variation") return {check: "alt", words: "The book gives " + mine + " as a side line and plays " + book + "."};
@@ -375,7 +465,8 @@ function setPuzzles(on, quiet){
     const t = on ? "Puzzles: on. A tap turns puzzle mode off" : "Puzzles: work the book's puzzles on the board";
     b.title = t; b.setAttribute("aria-label", t);
   }
-  if (!on) { puzzleClose(true); setAnswers(false); }
+  // (a puzzle open: the board, the bar and the state leave it too)
+  if (!on) { puzzleClose(!PZ.id); setAnswers(false); }
   // (a solution move that puzzle mode now hides is chosen no longer)
   if (on && S.node && (pzHidden(S.node) || pzHiddenRoot(S.node))) {
     S.node = null; S.at = null;
@@ -398,9 +489,9 @@ function pzAsk(){
   if (!B.likely || PZ.store.mode !== null) { el.innerHTML = ""; return; }
   const sent = R.tied >= R.puzzles / 2 ?
     "In this book " + R.tied + " of " + R.boards + " diagrams have their solutions on later pages." :
-    "In this book " + R.puzzles + " of " + R.boards + " diagrams are positions that no line plays from on their page.";
+    "In this book " + R.puzzles + " of " + R.boards + " diagrams have no moves after them on their page, as puzzles do.";
   el.innerHTML = "<span>" + esc(sent + " Do you want to work them as puzzles? The program keeps the solutions hidden and notes your answers.") +
-    "</span><button class=tb id=pzyes>Work them as puzzles</button><button class=tb id=pzno>Read it as a book</button>";
+    "</span><span class=acts><button class=tb id=pzyes>Work them as puzzles</button><button class=tb id=pzno>Read it as a book</button></span>";
   $("pzyes").addEventListener("click", () => { pzMode("puzzles"); pzAsk(); });
   $("pzno").addEventListener("click", () => { pzMode("book"); pzAsk(); });
 }
@@ -427,27 +518,31 @@ function setAnswers(on){
 function renderAnswers(){
   const sec = $("pzsec");
   if (!sec || sec.hidden) return;
-  const items = pzHere();
+  const items = pzHere(), other = (D.puzzles || []).filter(it => !it.here);
+  const rows = (list) => "<ul class='pzrows small'>" + list.map(it =>
+    "<li><button class=tb data-pzopen='" + esc(it.diagram) + "'>" + esc(pzName(it)) + "</button>" +
+    "<a class=pp href='#page=" + it.page + "' data-page='" + it.page + "'>" + esc(pageName(it.page)) + "</a>" + pzStatusHtml(it) +
+    "</li>").join("") + "</ul>";
   let h = "<div class=revhead><h2 class=ltitle>My answers</h2><button class=tb id=pzlclose>Close</button></div>";
-  if (!items.length) {
-    h += "<p class='small muted'>This chapter prints no puzzles. The book's solutions on its pages stay hidden until you check your answers.</p>";
+  if (!items.length && !other.length) {
+    h += "<p class='small muted'>This chapter prints no puzzles and no solutions of the book's puzzles.</p>";
   } else {
-    h += "<div class='pzsum small'><p id=pztally>" + esc(pzTally(items)) + "</p>" +
-      "<div class=acts><button class=tb id=pzall>Check all my answers</button></div></div><ul class='pzrows small'>";
-    for (const it of items)
-      h += "<li><button class=tb data-pzopen='" + esc(it.diagram) + "'>" + esc(pzName(it)) + "</button>" +
-        "<a class=pp href='#page=" + it.page + "' data-page='" + it.page + "'>" + esc(pageName(it.page)) + "</a>" + pzStatusHtml(it) + "</li>";
-    h += "</ul>";
+    h += "<div class='pzsum small'><p id=pztally>" + esc(items.length ? pzTally(items) :
+      "This chapter prints no puzzles, but the solutions of the puzzles below. They stay hidden until you check your answers.") +
+      "</p><div class=acts><button class=tb id=pzall>Check all my answers</button></div></div>";
+    if (items.length) h += rows(items);
+    // (a chapter of solutions: the puzzles its pages solve, each with the page that prints it)
+    if (other.length) h += "<h3 class='pzsub small'>Solutions on these pages</h3>" + rows(other);
   }
   sec.innerHTML = h;
   $("pzlclose").addEventListener("click", () => setAnswers(false));
   if ($("pzall")) $("pzall").addEventListener("click", checkAll);
-  for (const b of sec.querySelectorAll("[data-pzopen]")) b.addEventListener("click", () => puzzleOpen(b.dataset.pzopen));
+  for (const b of sec.querySelectorAll("[data-pzopen]")) b.addEventListener("click", () => pzGo(b.dataset.pzopen));
   for (const l of sec.querySelectorAll("a[data-page]")) l.addEventListener("click", (e) => { e.preventDefault(); goPage(l.dataset.page); });
 }
 function checkAll(){
   let k = 0;
-  for (const it of pzHere()) {
+  for (const it of D.puzzles || []) {
     const a = pzAnswer(it.diagram);
     if (!a || !it.solution || !it.solution.line) continue;
     const j = pzJudge(it);
@@ -462,8 +557,13 @@ function checkAll(){
 }
 // the buttons, the question and the list after a change
 function pzRefresh(){
-  const show = (D.puzzleBook && D.puzzleBook.count >= 3) || PZ.on;
-  for (const b of [$("bpuzzle"), $("mpuzzle")]) if (b) b.hidden = !show;
+  const B = D.puzzleBook || {};
+  const show = B.count >= 3 || PZ.on;
+  if ($("bpuzzle")) $("bpuzzle").hidden = !show;
+  // (the phone bar keeps its room for the current move: its switch shows only in a book of puzzles,
+  // or while the mode is on; the one under the board is always there)
+  if ($("mpuzzle")) $("mpuzzle").hidden = !(PZ.on || B.likely);
+  document.body.classList.toggle("pzhere", pzHere().length > 0);
   const pb = $("pzbtn");
   if (pb) pb.hidden = !PZ.on;
   pzAsk();
@@ -474,12 +574,21 @@ function puzzlePatched(p){
   for (const k of ["puzzles", "puzzleBook", "solNodes"]) if (p[k] !== undefined) D[k] = p[k];
   pzIndex();
   if (PZ.id && !PZ.items[PZ.id]) puzzleClose(true);
-  else if (PZ.id) { const keep = PZ.moves; puzzleOpen(PZ.id); for (const m of keep) if (CJ.legalMoves(PZ.fen).some(x => x[1] === m[1])) puzzleMove(m); }
+  // (the answer in progress is its draft, which the puzzle opened again plays once more)
+  else if (PZ.id) puzzleOpen(PZ.id);
   pzRefresh();
+}
+// after the page and the place are shown: the puzzle the reader had open in this tab, on this page
+function puzzleResume(){
+  if (!PZ.on || PZ.id || S.diagram) return;
+  const did = PZ.open, it = did ? PZ.items[did] : null;
+  if (it && it.here && it.page === S.page) puzzleOpen(did);
 }
 function initPuzzles(){
   PZ.store = pzRead();
+  pzDraftRead();
   pzIndex();
+  $("pagemsg").addEventListener("click", (e) => { const b = e.target.closest("[data-pzgo]"); if (b) pzGo(b.dataset.pzgo); });
   for (const b of [$("bpuzzle"), $("mpuzzle")]) if (b) b.addEventListener("click", () => pzMode(PZ.on ? "book" : "puzzles"));
   $("pzbtn").addEventListener("click", () => setAnswers($("pzsec").hidden));
   // an answer noted in another page of this book (the contents page, another tab)
@@ -520,12 +629,15 @@ function render(){
   if (B.likely && st.mode === null) {
     const sent = R.tied >= R.puzzles / 2 ?
       "In this book " + R.tied + " of " + R.boards + " diagrams have their solutions on later pages." :
-      "In this book " + R.puzzles + " of " + R.boards + " diagrams are positions that no line plays from on their page.";
+      "In this book " + R.puzzles + " of " + R.boards + " diagrams have no moves after them on their page, as puzzles do.";
     h += "<span>" + esc(sent + " Do you want to work them as puzzles? The program keeps the solutions hidden and notes your answers.") +
-      "</span> <button class=tb data-mode=puzzles>Work them as puzzles</button> <button class=tb data-mode=book>Read it as a book</button>";
+      "</span> <span class=acts><button class=tb data-mode=puzzles>Work them as puzzles</button>" +
+      "<button class=tb data-mode=book>Read it as a book</button></span>";
   } else if (items.length >= 3 || st.mode === "puzzles") {
     const on = st.mode === "puzzles";
-    h += "<button class=tb id=pztoggle aria-pressed='" + String(on) + "' data-mode='" + (on ? "book" : "puzzles") + "'>Puzzles</button> ";
+    // (the switch says its state in words, apart from the tally)
+    h += "<button class='tb pzsw' id=pztoggle aria-pressed='" + String(on) + "' data-mode='" + (on ? "book" : "puzzles") + "'>Puzzles: " +
+      (on ? "on" : "off") + "</button>";
     if (on) {
       // (an answer to a diagram that a new reading no longer holds stays stored, out of the tally)
       const noted = items.filter(it => st.answers[it.diagram] && Array.isArray(st.answers[it.diagram].moves));

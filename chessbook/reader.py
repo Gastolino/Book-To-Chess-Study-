@@ -1321,7 +1321,7 @@ function showPage(p){
     if (m.node) b.dataset.node = m.node;
     if (m.seq) b.dataset.seq = m.seq;
     b.dataset.mark = i;
-    if (m.node && hidden(m.node)) b.classList.add("hid");
+    if ((m.node && hidden(m.node)) || (m.seq && pzHiddenSeq(m.seq))) b.classList.add("hid");
     markTitle(b, m);
     ov.appendChild(b);
   });
@@ -1503,8 +1503,8 @@ function hideRefresh(){
   }
   const P = S.page ? D.pages[S.page] : null;
   if (!P) return;
-  for (const el of $("ov").querySelectorAll(".mark[data-node]")) {
-    const hid = hidden(el.dataset.node);
+  for (const el of $("ov").querySelectorAll(".mark[data-node],.mark[data-seq]")) {
+    const hid = el.dataset.node ? hidden(el.dataset.node) : pzHiddenSeq(el.dataset.seq);
     if (el.classList.contains("hid") === hid) continue;
     el.classList.toggle("hid", hid);
     markTitle(el, P.marks[parseInt(el.dataset.mark, 10)]);
@@ -2196,6 +2196,8 @@ function selectNode(id, opts){
   if (!n) return;
   // (a puzzle's solution, hidden until the reader checks an answer, is not chosen)
   if (pzBlocks(id)) return;
+  // (My answers takes the move list's place: a move chosen brings the list back)
+  if (!$("pzsec").hidden) setAnswers(false);
   const treeFocus = $("tree").contains(document.activeElement);
   if (S.diagram) closeDiagram();
   if (PZ.id) puzzleClose(true);
@@ -2241,7 +2243,7 @@ function step(dir){
   S.wanted = null;
   if (PZ.id) { puzzleStep(dir); return; }
   if (!S.node) {
-    const lid = S.line || firstLineHere();
+    const lid = openLine(S.line || firstLineHere());
     if (lid) selectNode(D.lines[lid].root, {at: null, scrollPage: true});
     return;
   }
@@ -2273,6 +2275,7 @@ function toEnd(dir){
   S.wanted = null;
   if (PZ.id) { if (dir < 0) puzzleRestart(); return; }
   if (!S.line) S.line = firstLineHere();
+  S.line = openLine(S.line);
   if (!S.line) return;
   const root = D.lines[S.line].root;
   if (dir < 0) { selectNode(root, {at: null, scrollPage: true}); return; }
@@ -2285,6 +2288,11 @@ function toEnd(dir){
   }
   S.last = placeOf(P.last);
   selectNode(P.node, {at: P.at, scrollPage: true});
+}
+// the line lid, or, when puzzle mode covers it (a puzzle's solution), the first line here it does not
+function openLine(lid){
+  if (!lid || !D.lines[lid] || !pzHiddenRoot(D.lines[lid].root)) return lid;
+  return linesHere().find(l => D.lines[l] && !pzHiddenRoot(D.lines[l].root)) || lid;
 }
 // a click on a hidden move: the position before it (a line's first move: the start position)
 function hiddenClick(id){
@@ -2351,6 +2359,7 @@ function showDiagram(id){
   if (!d) return;
   if (RV.edit) closeFix();
   if (PZ.id) puzzleClose(true);
+  if (!$("pzsec").hidden) setAnswers(false);
   S.diagram = id;
   for (const el of document.querySelectorAll(".diag.current")) el.classList.remove("current");
   const el = document.querySelector(".diag[data-diagram='" + id + "']");
@@ -2576,6 +2585,14 @@ function fromHash(){
     goPage(tn[1], true);
     return true;
   }
+  const pz = /^page=(\d+)&puzzle=([^&]+)$/.exec(h);
+  if (pz) {
+    goPage(pz[1], true);
+    let did = "";
+    try { did = decodeURIComponent(pz[2]); } catch (e) { did = ""; }
+    if (PZ.on && PZ.items[did] && PZ.items[did].here) puzzleOpen(did);
+    return true;
+  }
   const m = /^(page|node|line)=(.+)$/.exec(h);
   if (!m) return false;
   if (m[1] === "page") { goPage(m[2], true); return true; }
@@ -2617,6 +2634,8 @@ function init(){
     // in the move list
     if (b.dataset.node && b.classList.contains("mark") && hidden(b.dataset.node) && !PEN.connect && !regionOpen() &&
         !(RV.edit && RV.edit.kind === "seq")) { hiddenClick(b.dataset.node); return; }
+    // (a puzzle's solution in words, covered until the reader checks an answer)
+    if (b.dataset.seq && !b.dataset.node && pzHiddenSeq(b.dataset.seq)) { puzzleHiddenClick(D.solMarks[b.dataset.seq]); return; }
     if (penClick(b)) return;
     if (b.dataset.eye) { openSymMenu(b); return; }
     if (RV.edit && RV.edit.kind === "seq" && b.dataset.node) {
@@ -2837,6 +2856,8 @@ function init(){
   // a link to a page (from the contents page, or the page arrows at the end of a chapter) shows
   // the first line on that page, as an opening without a link does
   if (!fromHash() || (!S.node && !S.diagram)) defaultView();
+  // (the puzzle the reader had open in this tab, on the page shown)
+  puzzleResume();
   if (arrived) {
     // this reader opened from a turn in the chapter before or after: the page shows where that
     // reader left its place, enlarged if that page was, and its picture fades in over the place

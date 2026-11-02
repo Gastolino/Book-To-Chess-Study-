@@ -379,7 +379,7 @@ function buildItems(){
           n.corrected === "placed" || n.corrected === "connected" || n.corrected === "split" ||
           (n.key && (FIX.get("moves", n.key) || FIX.get("connect", n.key) || FIX.get("disconnect", n.key)));
         if (need) out.push({kind: "move", node: m.node, page, order: i, y: m.bbox[1]});
-      } else if (m.seq && !seen.has(m.seq)) {
+      } else if (m.seq && !seen.has(m.seq) && !pzHiddenSeq(m.seq)) {
         seen.add(m.seq);
         out.push({kind: "seq", key: m.seq, page, order: i, y: m.bbox[1]});
       }

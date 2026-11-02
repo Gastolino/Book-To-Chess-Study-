@@ -432,6 +432,62 @@ def test_a_book_file_carries_the_answers_to_the_puzzles(tmp_path):
     assert '"chessbook-" + kind + ":" + mm.name + ":" + mm.pages' in lib
 
 
+def _js_function(src, name):
+    """The source of the function `name` of library.js, by its braces."""
+    i = src.index("  function " + name + "(")
+    depth, j = 0, src.index("{", i)
+    while True:
+        depth += {"{": 1, "}": -1}.get(src[j], 0)
+        if depth == 0:
+            return src[i:j + 1]
+        j += 1
+
+
+PUZZLE_DATES_JS = r"""
+const store = {};
+const localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); },
+  removeItem: (k) => { delete store[k]; } };
+const META = "chessbook-meta:", KINDS = ["corrections", "selection", "bookmarks"], FILE_KINDS = KINDS.concat(["puzzles"]);
+let pushed = 0, now = 1000;
+Date.now = () => now;
+const schedule = () => { pushed++; };
+const api = { current: { id: "b1" } };
+const safeName = (s) => s;
+__FUNCS__
+const b = { id: "b1", fileName: "x.pdf", pages: 9 };
+saveMeta("b1", { name: "x.pdf", pages: 9 });
+// device B: the reader answers a puzzle at time 2000 (the reader's page writes the key; the shell sees it)
+now = 2000;
+const key = "chessbook-puzzles:x.pdf:9";
+localStorage.setItem(key, JSON.stringify({ mode: "puzzles", answers: {} }));
+noticeKey(key);
+// later (an import at time 9000), the device's answers are dated by their change, not by now
+now = 9000;
+const here = localData(b, "puzzles");
+console.log(JSON.stringify({ updated: here.updated, pushed }));
+"""
+
+
+def test_the_answers_to_the_puzzles_are_dated_when_they_change(tmp_path):
+    """A change of the answers made on this device is dated when it is made (as
+    the corrections are), so that a book file from another device whose
+    answers are newer replaces them on import; the change is not sent to the
+    server, which keeps only the three kinds it knows."""
+    import json
+    import shutil
+    node = shutil.which("node") or "/opt/node22/bin/node"
+    if not Path(node).exists():
+        pytest.skip("node is missing")
+    build(tmp_path)
+    lib = (tmp_path / "site" / "library.js").read_text(encoding="utf-8")
+    funcs = "\n".join(_js_function(lib, n) for n in
+                      ("meta", "saveMeta", "storageKey", "localValue", "seen", "noticeKey", "localData"))
+    js = tmp_path / "dates.js"
+    js.write_text(PUZZLE_DATES_JS.replace("__FUNCS__", funcs), encoding="utf-8")
+    out = json.loads(subprocess.run([node, str(js)], capture_output=True, text=True, check=True).stdout)
+    assert out == {"updated": 2000, "pushed": 0}
+
+
 def test_the_icons_are_the_revolving_book_at_their_sizes():
     """The app's icons (tools/make_icons.py) are the revolving book that
     chessbook/style.py draws: web/icon.svg is that drawing, still, on the page

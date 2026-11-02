@@ -959,7 +959,14 @@ PUZZLE_CHECKS = ("prompt shows", "prompt answer stored", "prompt shows once", "s
                  "move noted on the board", "note says noted", "wrong answer differs", "side line", "tries counted",
                  "solution shown", "right answer matches", "my answers list", "tally", "note solution asks",
                  "own mark stored", "check all", "answers survive reload", "checked solutions uncovered", "index tally",
-                 "toggle turns the mode off", "phone light", "phone dark", "no console errors")
+                 "toggle turns the mode off", "phone light", "phone dark", "no console errors",
+                 # the review of the mode
+                 "the two answers on one line", "solution in words covered", "the arrow stays on the page of solutions",
+                 "my answers in the chapter of solutions", "a covered move offers its puzzle",
+                 "the puzzle opens in its chapter", "a second tap keeps the answer", "a reload keeps the answer",
+                 "forward arrows off in a puzzle", "the focus stays on the button pressed",
+                 "a move chosen closes my answers", "partly matches", "off with a puzzle open",
+                 "no sideways scroll at 360px")
 
 
 @pytest.mark.skipif(not _browser_ready(), reason="node, Playwright or Chromium is missing")

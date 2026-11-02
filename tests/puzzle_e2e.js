@@ -11,8 +11,15 @@
 // solution: 1.h3 for puzzle 1 differs, 1.Rd7 is the book's side line, 1.Ra8# for puzzle 2 matches,
 // and the answer to puzzle 9 (a solution in words) is marked by the reader. My answers lists the
 // puzzles and the tally; the answers outlast a reload; the solution of a checked puzzle shows; the
-// contents page gives the tally of the book; the switch turns the mode off and the covers go. On an
-// iPhone 13 the page does not scroll sideways. Screenshots in the light and dark schemes, on a
+// contents page gives the tally of the book; the switch turns the mode off and the covers go.
+// The review of the mode: the question's two answers stay on one line; in the chapter of solutions
+// the solution in words is covered too, a covered move offers to open its puzzle, My answers lists
+// the puzzles solved there and leaves when a move is chosen, and the arrow stays on the page; the
+// engine's arrow is off with Stockfish on; an answer in progress outlasts a second tap and a
+// reload; the focus stays on the button pressed; an answer that leaves the solution after its
+// first move partly matches and says where; turning the mode off with a puzzle open leaves it. On
+// an iPhone 13 the page does not scroll sideways and the bar names the puzzle whole, nor on a
+// 360px phone. Screenshots in the light and dark schemes, on a
 // desktop and on the phone. Prints one JSON object; the exit code is 1 when a check fails.
 const { chromium, devices } = require("playwright");
 const path = require("path");
@@ -93,6 +100,8 @@ const KEY_PREFIX = "chessbook-puzzles:";
       toggle: !document.getElementById("bpuzzle").hidden, on: document.body.classList.contains("puzzling") }));
     check("prompt shows", ask.shown && ask.text.indexOf("In this book 9 of 10 diagrams have their solutions on later pages.") === 0 &&
       ask.text.indexOf("Do you want to work them as puzzles?") > 0 && ask.toggle && !ask.on, ask);
+    const tops = await page.evaluate(() => ["pzyes", "pzno"].map(id => Math.round(document.getElementById(id).getBoundingClientRect().top)));
+    check("the two answers on one line", tops[0] === tops[1], tops);
     await page.click("#pzyes");
     let st = await stored(page);
     const on = await page.evaluate(() => ({ on: document.body.classList.contains("puzzling"),
@@ -123,6 +132,31 @@ const KEY_PREFIX = "chessbook-puzzles:";
     const tapped = await panel(page);
     check("covered move says why", tapped.msg.indexOf("the book's solution to puzzle") > 0 &&
       (await page.evaluate(() => window.readerState.nodeId)) !== firstHid, tapped);
+    // the solution in words is covered as the moves are, and says nothing of itself
+    const note = await page.evaluate(() => {
+      const el = document.querySelector("#ov .mark[data-seq='6:50,272:Nf6+']");
+      return el ? { hid: el.classList.contains("hid"), title: el.title, label: el.getAttribute("aria-label") } : null;
+    });
+    check("solution in words covered", note && note.hid && note.title === "A hidden move" && note.label === "A hidden move", note);
+    // the arrow reads on through the page of solutions: the page stays
+    await page.mouse.move(5, 5);
+    await page.keyboard.press("ArrowRight");
+    check("the arrow stays on the page of solutions", (await page.evaluate(() => window.readerState.page)) === 6);
+    // My answers lists the puzzles that the chapter solves, each with its page
+    await page.click("#pzbtn");
+    const sols = await page.evaluate(() => ({ text: document.getElementById("pzsec").innerText,
+      rows: document.querySelectorAll("#pzsec .pzrows li").length }));
+    check("my answers in the chapter of solutions", sols.text.indexOf("Solutions on these pages") >= 0 && sols.rows === 9 &&
+      sols.text.indexOf("Puzzle 9") >= 0, sols);
+    await page.click("#pzlclose");
+    // the message's button opens the puzzle in the chapter that prints it
+    await page.click("#ov .mark[data-node='" + firstHid + "']");
+    const go = await page.evaluate(() => (document.querySelector("#pagemsg [data-pzgo]") || {}).textContent || null);
+    check("a covered move offers its puzzle", /^Open puzzle \d+$/.test(go || ""), go);
+    const want = await page.evaluate(() => document.querySelector("#pagemsg [data-pzgo]").dataset.pzgo);
+    await page.click("#pagemsg [data-pzgo]");
+    await page.waitForFunction((id) => window.READER && window.readerState && window.readerState.puzzle === id, want);
+    check("the puzzle opens in its chapter", /ch01\.html/.test(page.url()), page.url());
 
     // a puzzle's diagram stays on its page and opens the puzzle
     await page.goto(url("ch01.html"));
@@ -132,18 +166,37 @@ const KEY_PREFIX = "chessbook-puzzles:";
     check("diagram opens the puzzle", pv.shown && pv.page === 3 && /^Puzzle 1, page /.test(pv.text) &&
       pv.text.indexOf("White to play.") >= 0 && pv.text.indexOf("Note this answer") >= 0 &&
       pv.text.indexOf("Check my answer") < 0 && pv.fen === "6k1/5pp1/7p/8/8/8/5PPP/3R2K1 w - - 0 1", pv);
-    check("engine arrow off", await page.evaluate(() => !document.querySelector("#board .eva")));
+    // the engine's arrow and lines are off while a puzzle is open, with Stockfish on
+    await page.click("#bcpu");
+    await page.waitForFunction(() => /Stockfish's moves are hidden while a puzzle is open\./.test(
+      document.getElementById("evlines").innerText), null, { timeout: 60000 });
+    await page.waitForTimeout(1500);
+    check("engine arrow off", await page.evaluate(() => !document.querySelector("#board .eva") &&
+      window.readerState.puzzle === "p3-1"));
+    await page.click("#bcpu");
 
     // a wrong answer differs from the book
     await drag(page, "h2", "h3");
     pv = await panel(page);
     check("move noted on the board", pv.text.indexOf("1.h3") >= 0 && pv.fen.indexOf(" b ") > 0, pv);
+    // the answer in progress outlasts a second tap on the diagram, and a reload
+    await openPuzzle(page, "p3-1");
+    pv = await panel(page);
+    check("a second tap keeps the answer", pv.text.indexOf("1.h3") >= 0 && pv.fen.indexOf(" b ") > 0, pv);
+    await page.reload();
+    await page.waitForFunction(() => window.READER && window.readerState && window.readerState.puzzle === "p3-1");
+    pv = await panel(page);
+    check("a reload keeps the answer", pv.text.indexOf("1.h3") >= 0 && pv.fen.indexOf(" b ") > 0, pv);
+    check("forward arrows off in a puzzle", await page.evaluate(() =>
+      document.getElementById("bfwd").getAttribute("aria-disabled") === "true"));
     let [noted, checked] = await noteAndCheck(page);
     check("note says noted", noted.text.indexOf("Your answer 1.h3 is noted. The book's solution stays hidden.") >= 0, noted);
     check("wrong answer differs", checked.text.indexOf("The book plays 1.Rd8+. You noted 1.h3.") >= 0 &&
       checked.text.indexOf("Differs") >= 0, checked);
-    // again, with the book's side line
-    await page.click("#pzagain");
+    // again, with the book's side line; the button pressed keeps the focus
+    await page.focus("#pzagain");
+    await page.keyboard.press("Enter");
+    check("the focus stays on the button pressed", (await page.evaluate(() => document.activeElement.id)) === "pzagain");
     await drag(page, "d1", "d7");
     [noted, checked] = await noteAndCheck(page);
     check("side line", checked.text.indexOf("The book gives 1.Rd7 as a side line and plays 1.Rd8+.") >= 0 &&
@@ -216,6 +269,14 @@ const KEY_PREFIX = "chessbook-puzzles:";
       return { p1: of("p3-1").filter(n => hid.has(n)).length, p4: of("p3-4").filter(n => hid.has(n)).length, n4: of("p3-4").length };
     });
     check("checked solutions uncovered", part.p1 === 0 && part.p4 === part.n4 && part.n4 > 0, part);
+    // a move chosen while My answers is open brings the move list back
+    await page.click("#pzbtn");
+    const shownMove = await page.evaluate(() => Object.keys(READER.solNodes).find(n => READER.solNodes[n] === "p3-1" &&
+      document.querySelector("#ov .mark[data-node='" + n + "']:not(.hid)")));
+    await page.click("#ov .mark[data-node='" + shownMove + "']");
+    const back = await page.evaluate(() => ({ list: !document.getElementById("pzsec").hidden,
+      tree: getComputedStyle(document.querySelector(".treesec")).display, node: window.readerState.nodeId }));
+    check("a move chosen closes my answers", !back.list && back.tree !== "none" && back.node === shownMove, back);
 
     // the contents page: the tally of the whole book
     await page.goto(url("index.html"));
@@ -233,7 +294,38 @@ const KEY_PREFIX = "chessbook-puzzles:";
       answersBtn: !document.getElementById("pzbtn").hidden }));
     check("toggle turns the mode off", st.mode === "book" && Object.keys(st.answers).length === 4 && !offv.on &&
       offv.pressed === "false" && offv.hid === 0 && !offv.answersBtn, { st, offv });
+
+    // an answer that leaves the book's solution after its first moves partly matches, and says where
+    await page.click("#bpuzzle");
+    await page.goto(url("ch01.html#page=4"));
+    await page.waitForFunction(() => window.READER && window.readerState && window.readerState.page === 4);
+    await openPuzzle(page, "p4-1");
+    await drag(page, "d1", "d8");
+    await drag(page, "g8", "h7");
+    await drag(page, "h2", "h3");
+    [noted, checked] = await noteAndCheck(page);
+    st = await stored(page);
+    check("partly matches", checked.text.indexOf("Your first 2 moves match the book. Your move 2.h3 differs: the book plays 2.Rd7.") >= 0 &&
+      checked.text.indexOf("Partly matches") >= 0 && st.answers["p4-1"].check === "part", { checked, a: st.answers["p4-1"] });
+    // turning the mode off with the puzzle open leaves the puzzle: the board, the bar and the state
+    await page.click("#bpuzzle");
+    const closed = await page.evaluate(() => ({ puzzle: window.readerState.puzzle || null, panel: !document.getElementById("dpanel").hidden,
+      bar: document.getElementById("mtxt").textContent }));
+    check("off with a puzzle open", !closed.puzzle && !closed.panel && closed.bar.indexOf("Puzzle") < 0, closed);
     await ctx.close();
+
+    // ---------------------------------------------------------------- a 360px phone
+    {
+      const narrow = await browser.newContext({ viewport: { width: 360, height: 664 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 });
+      const np = await narrow.newPage();
+      watch(np);
+      await np.goto(url("ch01.html"));
+      await np.waitForFunction(() => window.READER && window.readerState);
+      const w = await np.evaluate(() => ({ sw: document.documentElement.scrollWidth, vw: window.visualViewport.width,
+        controls: Math.round(document.querySelector(".controls").getBoundingClientRect().right) }));
+      check("no sideways scroll at 360px", w.sw <= 360 && w.controls <= 360, w);
+      await narrow.close();
+    }
 
     // ---------------------------------------------------------------- iPhone 13
     for (const scheme of ["light", "dark"]) {
@@ -250,8 +342,9 @@ const KEY_PREFIX = "chessbook-puzzles:";
       await pp.waitForFunction(() => window.readerState.puzzle === "p3-2");
       const ph = await pp.evaluate(() => ({ sw: document.documentElement.scrollWidth, w: window.innerWidth,
         mp: !document.getElementById("mpuzzle").hidden && document.getElementById("mpuzzle").getAttribute("aria-pressed"),
-        panel: !document.getElementById("dpanel").hidden }));
-      check("phone " + scheme, ph.sw <= ph.w && ph.mp === "true" && ph.panel, ph);
+        panel: !document.getElementById("dpanel").hidden, bar: document.getElementById("mtxt").textContent,
+        fits: document.getElementById("mtxt").scrollWidth <= document.getElementById("mtxt").clientWidth }));
+      check("phone " + scheme, ph.sw <= ph.w && ph.mp === "true" && ph.panel && ph.bar === "Puzzle 2" && ph.fits, ph);
       await pp.locator("#dpanel").scrollIntoViewIfNeeded();
       await shot(pp, "puzzle_390_" + scheme + ".png");
       await phone.close();

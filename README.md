@@ -503,6 +503,26 @@ corrections), through Read again, the book file and a new build. In a reader
 built from the command line the board shows your move at once, and the next
 run, with the corrections copied into the chat, adds it to the line.
 
+### Puzzle books
+
+A book of puzzles (numbered positions whose solutions come later, after
+each chapter or at the back) is found by its diagrams: a numbered board
+that no line plays from on its page is a puzzle, and its solution is the
+line on a later page that gives its number (or a sentence that starts with
+it, where the book prints solutions). When most diagrams are puzzles, the
+reader asks once whether to work them as puzzles. In puzzle mode (the
+Puzzles icon under the board) the solutions are covered, moves and
+sentences alike, until you check an answer. A tap on a puzzle's diagram
+opens it under the board: play your answer for both sides, **Note this
+answer**, and later **Check my answer**: it matches, partly matches (the
+message names your first move that differs and the book's move there),
+is the book's side line, or differs; a solution in words you mark
+yourself. **My answers** lists the chapter's puzzles with their status and
+the tally (in a chapter of solutions, the puzzles it solves, each with a
+link to its page); the contents page gives the tally of the book. An answer
+in progress is kept for the tab, through a reload. The answers stay in the
+browser and travel in a book file.
+
 ### Hide next moves
 
 The eye struck through under the board (and in the bar on a phone), or the

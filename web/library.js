@@ -1395,10 +1395,12 @@ const LIB = (() => {
   // Note what the browser holds now for the book: a value that differs from
   // the one seen last is a change made here (to be sent to the server, and
   // dated for a book file).
+  // (the answers to the puzzles are dated too, for a book file, though only the other kinds go
+  // to the server)
   function seen(id) {
     const mm = meta(id);
-    let changed = false;
-    for (const kind of KINDS) {
+    let changed = false, push = false;
+    for (const kind of FILE_KINDS) {
       const key = storageKey(mm, kind);
       if (!key) continue;
       const v = localValue(key);
@@ -1406,15 +1408,14 @@ const LIB = (() => {
       if (v !== st.seen) {
         mm[kind] = { updated: Date.now(), sent: st.sent || 0, seen: v };
         changed = true;
+        if (KINDS.includes(kind)) push = true;
       }
     }
-    if (changed) {
-      saveMeta(id, mm);
-      schedule(PUSH_DELAY);
-    }
+    if (changed) saveMeta(id, mm);
+    if (push) schedule(PUSH_DELAY);
   }
   function noticeKey(key) {
-    const m = /^chessbook-(corrections|selection|bookmarks):/.exec(key);
+    const m = /^chessbook-(corrections|selection|bookmarks|puzzles):/.exec(key);
     if (!m || !api.current) return;
     seen(api.current.id);
   }
